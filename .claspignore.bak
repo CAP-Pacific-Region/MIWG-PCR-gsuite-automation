@@ -1,0 +1,4 @@
+# Ignore everything by default
+**/*
+# Except what's inside src/
+!src/**
