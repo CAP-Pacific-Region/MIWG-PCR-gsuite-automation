@@ -284,11 +284,10 @@ function addDutyPositions(members, dutyPositionData, squadrons) {
   for (let i = 0; i < dutyPositionData.length; i++) {
     if (members[dutyPositionData[i][0]]) {
       let dutyPositionID = dutyPositionData[i][1].trim();
+      const indicator = dutyPositionData[i][4] == '1' ? ' (A)' : ' (P)';
+      const charter = squadrons[dutyPositionData[i][7]] ? squadrons[dutyPositionData[i][7]].charter : 'Unknown';
       members[dutyPositionData[i][0]].dutyPositions.push({
-        value: Utilities.formatString("%s (%s) (%s)",
-          dutyPositionID,
-          (dutyPositionData[i][4] == '1' ? 'A' : 'P'),
-          squadrons[dutyPositionData[i][7]].charter),
+        value: dutyPositionID + indicator + ' (' + charter + ')',
         id: dutyPositionID,
         level: dutyPositionData[i][3],
         assistant: dutyPositionData[i][4] == '1'
@@ -426,7 +425,7 @@ function memberUpdated(newMember, previousMember) {
   return (!newMember || !previousMember) ||
          (newMember.rank !== previousMember.rank ||
           newMember.charter !== previousMember.charter ||
-          newMember.dutyPositions.join('') !== previousMember.dutyPositions.join('') ||
+          JSON.stringify(newMember.dutyPositions) !== JSON.stringify(previousMember.dutyPositions) ||
           newMember.status !== previousMember.status ||
           newMember.email !== previousMember.email);
 }
@@ -1134,6 +1133,56 @@ function addAlias(user) {
 }
 
 /**
+ * Finds and updates users who are missing email aliases
+ * Processes all non-admin, non-suspended users in /MI-001
+ *
+ * @returns {void}
+ */
+function updateMissingAliases() {
+  const start = new Date();
+  let nextPageToken = '';
+  let totalUpdated = 0;
+  let totalFailed = 0;
+  let totalProcessed = 0;
+
+  Logger.info('Starting missing alias update');
+
+  do {
+    let page = AdminDirectory.Users.list({
+      domain: CONFIG.DOMAIN,
+      maxResults: 500,
+      query: 'orgUnitPath=/MI-001 isSuspended=false isAdmin=false',
+      fields: 'users(name/givenName,name/familyName,primaryEmail,aliases),nextPageToken',
+      pageToken: nextPageToken
+    });
+
+    nextPageToken = page.nextPageToken;
+
+    if (page.users) {
+      for (let i = 0; i < page.users.length; i++) {
+        totalProcessed++;
+
+        if (!page.users[i].aliases || page.users[i].aliases.length === 0) {
+          let alias = addAlias(page.users[i]);
+          if (alias) {
+            totalUpdated++;
+          } else {
+            totalFailed++;
+          }
+        }
+      }
+    }
+  } while(nextPageToken);
+
+  Logger.info('Missing alias update completed', {
+    duration: new Date() - start + 'ms',
+    processed: totalProcessed,
+    updated: totalUpdated,
+    failed: totalFailed
+  });
+}
+
+/**
  * Generates an OAuth2 token for a service account to impersonate a user.
  * This is required for APIs like Gmail settings that have strict delegation rules.
  * @param {string} userToImpersonate The email address of the user to impersonate.
@@ -1156,26 +1205,24 @@ function getImpersonatedToken_(userToImpersonate, scope) {
       scope: scope
     };
 
-    const header = { alg: 'RS256', typ: 'JWT' };
-    const toSign =
-      Utilities.base64EncodeWebSafe(JSON.stringify(header)) + '.' +
-      Utilities.base64EncodeWebSafe(JSON.stringify(claimSet));
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const toSign = `${Utilities.base64EncodeWebSafe(JSON.stringify(header))}.${Utilities.base64EncodeWebSafe(JSON.stringify(claimSet))}`;
 
-    const signature = Utilities.computeRsaSha256Signature(toSign, PRIVATE_KEY);
-    const jwt = toSign + '.' + Utilities.base64EncodeWebSafe(signature);
+  const signature = Utilities.computeRsaSha256Signature(toSign, PRIVATE_KEY);
+  const jwt = `${toSign}.${Utilities.base64EncodeWebSafe(signature)}`;
 
-    const response = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
-      method: 'post',
-      contentType: 'application/x-www-form-urlencoded',
-      payload: {
-        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion: jwt
-      }==
-    });
+  const response = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
+    method: 'post',
+    contentType: 'application/x-www-form-urlencoded',
+    payload: {
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: jwt
+    }
+  });
 
-    const token = JSON.parse(response.getContentText());
-    return token.access_token;
-  }
+  const token = JSON.parse(response.getContentText());
+  return token.access_token;
+}
 
 /**
  * Updates Gmail "Send As" display name for a user via impersonation.
@@ -1688,11 +1735,11 @@ function restoreDeletedUsers() {
 function testaddOrUpdateUser() {
   Logger.info('Starting test - addOrUpdateUser');
   let members = getMembers();
-  if (members[454201]) {
-    addOrUpdateUser(members[454201]);
+  if (members[443777]) {
+    addOrUpdateUser(members[443777]);
     Logger.info('Test completed');
   } else {
-    Logger.error('Test member not found', { capsn: 454201 });
+    Logger.error('Test member not found', { capsn: 443777 });
   }
 }
 
@@ -1749,7 +1796,8 @@ function updateSignatureForAllAliases(primaryEmail, signatureHTML) {
   }
 
   try {
-    const sendAsListUrl = 'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs';
+    const sendAsListUrl =
+      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(primaryEmail)}/settings/sendAs`;
     const listResponse = UrlFetchApp.fetch(sendAsListUrl, {
       method: 'get',
       headers: { 'Authorization': 'Bearer ' + accessToken },
@@ -2000,4 +2048,57 @@ function testUpdateSendAs() {
   const display = "Adam, William Lt Col";
 
   updateGmailSendAsDisplayName(email, display);
+}
+
+function updateAllSendAsNames() {
+  Logger.info('Starting updateAllSendAsNames');
+
+  // 1. Fetch CAPWATCH members → build lookup
+  const members = getMembers();
+  const memberIndex = {};
+  for (const capid in members) {
+    memberIndex[String(capid)] = members[capid];
+  }
+
+  // 2. Fetch all Workspace users
+  let pageToken = null;
+  const workspaceUsers = [];
+
+  do {
+    const page = AdminDirectory.Users.list({
+      customer: "my_customer",
+      maxResults: 200,
+      projection: "full",
+      pageToken: pageToken
+    });
+
+    if (page.users) workspaceUsers.push(...page.users);
+    pageToken = page.nextPageToken;
+
+  } while (pageToken);
+
+  // 3. Loop users and update Send-As display name
+  workspaceUsers.forEach(user => {
+    const capid = user.externalIds?.[0]?.value;
+    const member = memberIndex[capid];
+
+    if (!member) {
+      Logger.warn('No CAPWATCH record for user', { email: user.primaryEmail });
+      return;
+    }
+
+    // Build display name exactly like addOrUpdateUser()
+    const displayName = [
+      member.lastName + (member.suffix ? ' ' + member.suffix : ''),
+      ', ',
+      member.firstName,
+      member.middleName ? ' ' + member.middleName : '',
+      member.rank ? ' ' + member.rank : ''
+    ].join('').trim();
+
+    updateGmailSendAsDisplayName(user.primaryEmail, displayName);
+    Utilities.sleep(200);
+  });
+
+  Logger.info('Completed updateAllSendAsNames for all Workspace users');
 }
