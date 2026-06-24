@@ -643,6 +643,12 @@ function isPoBox_(addr) {
   return /^\s*P\.?\s*O\.?\s*(BOX|B\.?O\.?X\.?)/i.test(addr || '');
 }
 
+/**
+ * Builds a map of orgid → best available address from OrgAddresses.txt.
+ * Prefers MEETING address type; falls back to non-PO-box MAIL address.
+ *
+ * @returns {Object} Map of orgid (string) → { addr1, addr2, city, state, zip, lat, lng }
+ */
 function buildOrgAddressMap_() {
   const addressData = parseFile('OrgAddresses');
 
@@ -1014,6 +1020,12 @@ function loadJsonOverride_(filename) {
   }
 }
 
+/**
+ * Loads the airport info cache from Drive (AirportCache.json).
+ * Returns an empty object if the file doesn't exist yet.
+ *
+ * @returns {Object} Map of airport identifier (uppercased) → { name, city, state, lat, lng }
+ */
 function loadAirportCache_() {
   const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
   const files  = folder.getFilesByName(AIRPORT_CACHE_FILENAME);
@@ -1190,6 +1202,14 @@ function fetchAirportInfo_(airportIds) {
   return cache;
 }
 
+/**
+ * Normalizes a raw AirPortID value from CAPWATCH by extracting the first
+ * token before any slash, comma, or whitespace, and uppercasing it.
+ * Example: "KSNA / John Wayne" → "KSNA"
+ *
+ * @param {string} raw - Raw airport identifier from CAPWATCH
+ * @returns {string} Normalized identifier, or empty string if blank
+ */
 function normalizeAirportId(raw) {
   if (!raw || !raw.trim()) return '';
   // Split on slash, comma, or whitespace; take the first token
@@ -1213,6 +1233,13 @@ function isValidAirportId(id) {
   return /^[A-Z0-9]{2,5}$/.test(id);
 }
 
+/**
+ * Converts a unit name to title case while preserving known CAP acronyms
+ * (HQ, CAP) in uppercase.
+ *
+ * @param {string} name - Unit name to convert
+ * @returns {string} Title-cased name with acronyms preserved
+ */
 function unitTitleCase(name) {
   const PRESERVE = new Set(['HQ', 'CAP']);
   return (name || '')
@@ -1223,6 +1250,13 @@ function unitTitleCase(name) {
     });
 }
 
+/**
+ * Sanitizes a string for use as a Calendar resource ID by replacing
+ * non-alphanumeric characters with underscores and truncating to 64 chars.
+ *
+ * @param {string} name - Raw name to sanitize
+ * @returns {string} Sanitized resource ID string
+ */
 function sanitizeResourceId_(name) {
   return name
     .replace(/[^a-zA-Z0-9\-_]/g, '_')
@@ -1263,9 +1297,9 @@ function previewAircraftResources() {
     });
   }
 
-  console.log(`\n=== AIRCRAFT PREVIEW: ${preview.length} aircraft found ===\n`);
+  Logger.info(`Aircraft preview: ${preview.length} aircraft found`);
   if (preview.length > 0) {
-    console.log('Sample entry:', JSON.stringify(preview[0], null, 2));
+    Logger.info('Sample entry', { entry: preview[0] });
   }
 
   Logger.info('Aircraft preview completed', { count: preview.length });
@@ -1297,9 +1331,9 @@ function previewVehicleResources() {
     });
   }
 
-  console.log(`\n=== VEHICLE PREVIEW: ${preview.length} vehicles found ===\n`);
+  Logger.info(`Vehicle preview: ${preview.length} vehicles found`);
   if (preview.length > 0) {
-    console.log('Sample entry:', JSON.stringify(preview[0], null, 2));
+    Logger.info('Sample entry', { entry: preview[0] });
   }
 
   Logger.info('Vehicle preview completed', { count: preview.length });
@@ -1320,8 +1354,8 @@ function testAcCodeResolution() {
     'C206U', 'P210N', 'UNKNOWN'
   ];
 
-  console.log('\n=== ACCODE RESOLUTION TEST ===\n');
+  Logger.info('ACCode resolution test');
   testCodes.forEach(code => {
-    console.log(`${code.padEnd(10)} → ${resolveAircraftModel(code)}`);
+    Logger.info(`${code.padEnd(10)} → ${resolveAircraftModel(code)}`);
   });
 }

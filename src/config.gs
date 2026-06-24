@@ -9,13 +9,11 @@
    * Wing abbreviation
    * Used for building squadron identifiers
    */
-
     WING: "",
 
   /**
   * If unit is a Region, set three letter abbreviation here
   */
-
     REGION: "",
 
   /**
