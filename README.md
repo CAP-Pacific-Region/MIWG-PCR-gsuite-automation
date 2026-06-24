@@ -426,7 +426,7 @@ See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed guidelines.
 
 We use [Semantic Versioning](http://semver.org/) for releases. For available versions, see the [tags on this repository](https://github.com/cap-miwg/gsuite-automation/tags).
 
-**Current Version**: 2.1.0 (June 2025)
+**Current Version**: 2.1.0 (June 2026)
 
 ## License
 
