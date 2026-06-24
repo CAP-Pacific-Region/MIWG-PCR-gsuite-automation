@@ -14,6 +14,7 @@ This project provides a complete automation solution for Civil Air Patrol (CAP) 
 
 - **Automated Account Management**: Creates, updates, and suspends Google Workspace accounts based on member status
 - **Email Group Synchronization**: Maintains email distribution groups based on member attributes (rank, duty positions, achievements, etc.)
+- **Calendar Resource Management**: Syncs wing aircraft and vehicles as bookable Google Calendar resources, with squadron locations as buildings
 - **License Optimization**: Automatically archives inactive accounts and manages license allocation
 - **Data Integration**: Daily downloads and processing of CAPWATCH data files
 - **Error Tracking**: Comprehensive logging and error reporting for troubleshooting
@@ -26,6 +27,7 @@ This project provides a complete automation solution for Civil Air Patrol (CAP) 
 - ✅ **Scalable**: Handles wings of any size with automated batch processing
 - ✅ **Auditable**: Detailed logging tracks all changes for compliance
 - ✅ **No Infrastructure Required**: Runs entirely within Google Apps Script and Drive - no servers or cloud infrastructure needed
+- ✅ **Resource Scheduling**: Aircraft and vehicles bookable directly in Google Calendar with unit contact info attached
 
 ## Table of Contents
 
@@ -36,6 +38,7 @@ This project provides a complete automation solution for Civil Air Patrol (CAP) 
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [Module Documentation](#module-documentation)
+  - [Calendar Resources](#calendar-resources-module)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
@@ -86,6 +89,8 @@ This project provides a complete automation solution for Civil Air Patrol (CAP) 
 │  • Member.txt           • Organization.txt              │
 │  • DutyPosition.txt     • MbrContact.txt                │
 │  • MbrAchievements.txt  • OrgPaths.txt                  │
+│  • Aircraft.txt         • Vehicles.txt                  │
+│  • OrgAddresses.txt     • AirportCache.json             │
 └────────────────────┬────────────────────────────────────┘
                      │ Parse & Process
                      ▼
@@ -95,6 +100,10 @@ This project provides a complete automation solution for Civil Air Patrol (CAP) 
 │  │   Update     │  │   Update     │  │   Manage     │   │
 │  │   Members    │  │   Groups     │  │  Licenses    │   │
 │  └──────────────┘  └──────────────┘  └──────────────┘   │
+│  ┌──────────────┐                                       │
+│  │   Update     │                                       │
+│  │   Resources  │                                       │
+│  └──────────────┘                                       │
 └────────────────────┬────────────────────────────────────┘
                      │ Admin SDK API Calls
                      ▼
@@ -141,6 +150,7 @@ This project provides a complete automation solution for Civil Air Patrol (CAP) 
    - `src/accounts-and-groups/UpdateMembers.gs`
    - `src/accounts-and-groups/UpdateGroups.gs`
    - `src/accounts-and-groups/ManageLicenses.gs`
+   - `src/calendar-resources/UpdateResources.gs` *(optional — see [Calendar Resources](#calendar-resources-module))*
 
 **Note**: When you first run any function, Google Apps Script will automatically prompt you to authorize the required permissions.
 
@@ -241,6 +251,7 @@ Create time-driven triggers for the following functions. **Important**: Due to C
 | `updateAdditionalGroupMembers()` | Daily | 6:00-7:00 AM | Add manual members from spreadsheet |
 | `updateMissingAliases()` | Daily | 6:00-7:00 AM | Fix missing email aliases |
 | `manageLicenseLifecycle()` | Monthly | 15th, 4:00 AM | Archive/delete old accounts |
+| `syncResources()` | Weekly | Sunday, 6:00 AM | Sync aircraft, vehicles, and squadron buildings |
 
 **Note**: Google Apps Script allows 1-hour scheduling blocks. The script will run sometime within the specified hour.
 
@@ -344,6 +355,11 @@ previewLicenseLifecycle();
   - Email group automation
   - License lifecycle management
 
+- **[Calendar Resources](src/calendar-resources/README.md)** - Aircraft, vehicle, and building management
+  - Aircraft resources with airport buildings and maintenance officer contact
+  - Vehicle resources with squadron buildings and transportation officer contact
+  - All wing squadrons added as calendar buildings for event scheduling
+
 - **[Recruiting & Retention](src/recruiting-and-retention/README.md)** - R&R workflows (future)
 
 - **[Utilities](docs/UTILITIES.md)** - Shared helper functions
@@ -375,6 +391,15 @@ previewLicenseLifecycle();
 **Problem**: Authorization errors
 - **Solution**: Re-run `setAuthorization()` with valid credentials
 
+**Problem**: Aircraft or vehicles not appearing in Calendar
+- **Solution**: Verify the `Admin SDK Directory API` is enabled in your Apps Script project's Services
+
+**Problem**: Airport buildings showing ID instead of name (e.g. "C83" instead of "Byron Airport")
+- **Solution**: Delete `AirportCache.json` from your CAPWATCH data folder and re-run `syncResources()`. If the airport still doesn't resolve, add it to `AirportOverrides.json`
+
+**Problem**: Aircraft with `ASSIGN` as airport ID are missing
+- **Solution**: Add an entry to `AircraftOverrides.json` with the correct ICAO code and owning unit orgid
+
 See the [full troubleshooting guide](docs/TROUBLESHOOTING.md) for more solutions.
 
 ## Contributing
@@ -401,7 +426,7 @@ See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed guidelines.
 
 We use [Semantic Versioning](http://semver.org/) for releases. For available versions, see the [tags on this repository](https://github.com/cap-miwg/gsuite-automation/tags).
 
-**Current Version**: 2.0.0 (December 2024)
+**Current Version**: 2.x.x (June 2026)
 
 ## License
 
@@ -417,6 +442,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ### Credits
 
 - Michigan Wing IT Team - Testing and feedback
+- California Wing IT Team - Calendar resources module development and testing
 - CAP National IT - CAPWATCH API access
 
 ## Support
