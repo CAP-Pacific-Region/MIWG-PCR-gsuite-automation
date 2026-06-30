@@ -1,4 +1,41 @@
 /**
+ * -------------------------------------------------------------------------
+ * Version: 1.4.4
+ * Date: 2026-6-6
+ * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
+ *
+ * Description:
+ * - Added CADET_LITE filtering logic and configuration controls.
+ * - Unified cadet duty position handling with senior duty logic, including
+ *   matching field structure, assistant indicators, dutyPositionIds, and
+ *   dutyPositionIdsAndLevel.
+ * - Updated "Member" default organization title to "No Duty Assignment" for
+ *   both seniors and cadets.
+ * - Standardized Directory and Gmail Send-As displayName generation.
+ * - Improved duty position parsing consistency between cadet and senior flows.
+ * - Multiple reliability improvements to user updates, including better
+ *   rank handling, fullName consistency, and org metadata population.
+ * - Fixed Manual Members to process via an OU added to OrgPaths.txt like
+ *   434, PCR-001.
+ * - Updated manager email assignment to follow the CAPWATCH command hierarchy
+ *   so commanders report to the nearest parent-org commander instead of themselves.
+ * - Added managerEmail to member change detection so manager relation updates
+ *   are included in normal Workspace sync runs.
+ * - Updated recovery contact assignment to use CAPWATCH secondary email, then
+ *   cadet parent email, and recovery phone precedence of member cell phone,
+ *   then cadet parent phone.
+ * - Updated Workspace other email to use CAPWATCH EMAIL SECONDARY instead of
+ *   EMAIL PRIMARY.
+ * - Allowed recovery email sources to use DoNotContact rows while keeping
+ *   Workspace other email restricted to contactable EMAIL SECONDARY rows.
+ * - Updated temporary password generation to use WING + script generation date
+ *   + CAPID so non-CAPWATCH accounts do not produce invalid date passwords.
+ * - Updated manager email assignment to resolve commanders by CAPID using the
+ *   Workspace primary email map before falling back to generated email.
+ * -------------------------------------------------------------------------
+ */
+
+/**
  * Member Synchronization Module
  *
  * Manages synchronization between CAPWATCH data and Google Workspace:
@@ -24,6 +61,10 @@
  *   - wing: Wing abbreviation
  *   - orgPath: Google Workspace organizational unit path
  */
+
+ // GLOBAL — CAPID → existing Workspace primary email
+ let workspaceEmailByCapid = {};
+
 function getSquadrons() {
   let squadrons = {};
   let squadronData = parseFile('Organization');
@@ -33,7 +74,6 @@ function getSquadrons() {
       squadrons[squadronData[i][0]] = {
         orgid: squadronData[i][0],
         name: squadronData[i][5],
-        type: squadronData[i][6],
         charter: Utilities.formatString("%s-%s-%03d", squadronData[i][1], squadronData[i][2], squadronData[i][3]),
         unit: squadronData[i][3],
         nextLevel: squadronData[i][4],
@@ -88,54 +128,190 @@ function getSquadrons() {
  * @returns {Object} Manual members indexed by CAPID
  */
 function loadManualMembers(squadrons) {
-  const sheet = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID).getSheetByName('Manual Members');
-  if (!sheet) return {};
+  // Accept either tab name to avoid silent mismatches
+  const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
+  const sheet = ss.getSheetByName('Manual Members') || ss.getSheetByName('ManualMembers');
+  if (!sheet) {
+    Logger.warn("Manual members sheet not found", {
+      spreadsheetId: CONFIG.AUTOMATION_SPREADSHEET_ID,
+      expectedTabs: ['Manual Members', 'ManualMembers']
+    });
+    return {};
+  }
 
-  const rows = sheet.getDataRange().getValues();
-  const header = rows[0];
+  const values = sheet.getDataRange().getValues();
+  if (!values || values.length < 2) {
+    Logger.info('Manual members sheet is empty (no data rows)', {
+      tabName: sheet.getName(),
+      rowCount: values ? values.length : 0
+    });
+    return {};
+  }
+
+  // Normalize headers to avoid issues with trailing spaces / different casing
+  const rawHeader = values[0];
+  const header = rawHeader.map(h => String(h || '').trim());
+
+  // Build OrgID → orgPath lookup from OrgPaths.txt so manual members can reference
+  // orgs outside this wing (e.g., PCR, NHQ) as long as an orgPath mapping exists.
+  const orgPathsMap = {};
+  try {
+    const orgPathsRows = parseFile('OrgPaths');
+    for (let i = 0; i < orgPathsRows.length; i++) {
+      const oid = String(orgPathsRows[i][0] || '').trim();
+      const path = String(orgPathsRows[i][1] || '').trim();
+      if (oid && path) orgPathsMap[oid] = path;
+    }
+  } catch (e) {
+    Logger.warn('Unable to load OrgPaths for manual member fallback', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+  }
+
+  // Build OrgID → { name, charter } lookup from Organization.txt
+  // This allows manual members in external orgs (e.g., PCR, NHQ) to get correct orgName/charter
+  // even when `getSquadrons()` is wing-scoped.
+  const orgMetaMap = {};
+  try {
+    const orgRows = parseFile('Organization');
+    for (let i = 0; i < orgRows.length; i++) {
+      const oid = String(orgRows[i][0] || '').trim();
+      if (!oid) continue;
+
+      // Organization.txt columns used elsewhere in this file:
+      // [1]=Region, [2]=Wing, [3]=Unit number, [5]=Org Name
+      const region = String(orgRows[i][1] || '').trim();
+      const wing = String(orgRows[i][2] || '').trim();
+      const unitNum = orgRows[i][3];
+      const name = String(orgRows[i][5] || '').trim();
+
+      let charter = '';
+      try {
+        charter = Utilities.formatString('%s-%s-%03d', region, wing, unitNum);
+      } catch (ignored) {
+        charter = '';
+      }
+
+      orgMetaMap[oid] = { name: name, charter: charter };
+    }
+  } catch (e) {
+    Logger.warn('Unable to load Organization metadata for manual member fallback', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+  }
+
   const members = {};
+  let added = 0;
+  let skippedNoCapid = 0;
+  let skippedNoOrg = 0;
 
-  for (let i = 1; i < rows.length; i++) {
+  for (let i = 1; i < values.length; i++) {
     const row = {};
     for (let j = 0; j < header.length; j++) {
-      row[header[j]] = rows[i][j];
+      const key = header[j];
+      if (!key) continue;
+      row[key] = values[i][j];
     }
 
-    const orgid = row['OrgID'];
-    const squadron = squadrons[orgid];
-    if (!squadron) continue;
+    const capid = String(row['CAPID'] || '').trim();
+    if (!capid) {
+      skippedNoCapid++;
+      continue;
+    }
 
-    const dutyId = (row['DutyID'] || '').toString().trim();
+    // Prefer wing-scoped squadrons lookup, but allow fallback to OrgPaths mapping
+    // so manual members can be placed into external org OUs (e.g., PCR, NHQ).
+    const orgid = String(row['OrgID'] || '').trim();
+    let squadron = squadrons[orgid];
 
-    members[row['CAPID']] = {
-      capsn: String(row['CAPID']),
-      lastName: row['LastName'],
-      firstName: row['FirstName'],
+    if (!squadron) {
+      const fallbackOrgPath = orgPathsMap[orgid];
+      if (fallbackOrgPath) {
+        // Best-effort metadata for downstream display.
+        // orgPath is the only required field for provisioning placement.
+        const meta = orgMetaMap[orgid] || {};
+        squadron = {
+          charter: String(meta.charter || row['Charter'] || row['charter'] || 'External'),
+          name: String(meta.name || row['OrgName'] || row['OrganizationName'] || row['UnitName'] || 'External Organization'),
+          orgPath: fallbackOrgPath
+        };
+
+        Logger.info('Manual member using OrgPaths fallback', {
+          capid: capid,
+          orgid: orgid,
+          orgPath: fallbackOrgPath
+        });
+      } else {
+        skippedNoOrg++;
+        Logger.warn('Manual member skipped (OrgID not found in squadrons lookup and no OrgPaths mapping)', {
+          capid: capid,
+          orgid: orgid,
+          lastName: row['LastName'] || '',
+          firstName: row['FirstName'] || ''
+        });
+        continue;
+      }
+    }
+
+    const dutyId = String(row['DutyID'] || '').trim();
+    const isAssistant = String(row['Assistant'] || '').trim() === '1';
+
+    // Manual email handling
+    // Email           -> member.secondaryEmail (welcome + template only)
+    // Secondary Email -> member.email (Workspace Email (Other))
+    const secondaryEmail = String(row['Email'] || '').trim();
+    const workspaceEmail = String(row['Secondary Email'] || '').trim();
+
+    // Manual phone handling
+    const primaryPhoneRaw = String(row['Primary Phone'] || '').trim();
+
+    // Normalize phone to E.164 +1XXXXXXXXXX if possible
+    let primaryPhone = '';
+    if (primaryPhoneRaw) {
+      const digits = primaryPhoneRaw.replace(/\D/g, '');
+      if (digits.length >= 10) {
+        primaryPhone = `+1${digits.slice(-10)}`;
+      }
+    }
+
+    members[capid] = {
+      capsn: capid,
+      lastName: row['LastName'] || '',
+      firstName: row['FirstName'] || '',
       orgid: orgid,
-      group: calculateGroup(orgid, squadrons),
+      group: (squadrons[orgid] && typeof calculateGroup === 'function') ? calculateGroup(orgid, squadrons) : '',
       charter: squadron.charter,
       orgName: squadron.name,
-      rank: row['Rank'] || '',
+      rank: String(row['Rank'] || '').trim(),
       type: row['Type'] || 'SENIOR',
       status: row['Status'] || 'ACTIVE',
       middleName: row['MiddleName'] || '',
       suffix: row['Suffix'] || '',
       modified: new Date().toISOString(),
-      orgPath: squadron.orgPath,
-      email: row['Email'] || null,
+      orgPath: (squadron && squadron.orgPath) ? squadron.orgPath : (orgPathsMap[orgid] || ''),
+      email: workspaceEmail || null,
+      secondaryEmail: secondaryEmail || null,
+      phone: primaryPhone || null,
 
-      dutyPositions: dutyId
-        ? [{ id: dutyId, assistant: row['Assistant'] == '1' }]
-        : [],
-
+      dutyPositions: dutyId ? [{ id: dutyId, assistant: isAssistant }] : [],
       dutyPositionIds: dutyId ? [dutyId] : [],
-
+      // Manual members do not have a CAPWATCH level. Keep a placeholder level for parity.
       dutyPositionIdsAndLevel: dutyId ? [dutyId + '_4'] : []
     };
+
+    added++;
   }
+
+  Logger.info('Manual members loaded from sheet', {
+    tabName: sheet.getName(),
+    added: added,
+    skippedNoCapid: skippedNoCapid,
+    skippedNoOrg: skippedNoOrg
+  });
 
   return members;
 }
+
 function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = true) {
   const start = new Date();
   const members = {};
@@ -208,6 +384,31 @@ function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = t
  * @returns {boolean} True if member should be processed
  */
 function shouldProcessMember(memberRow, types) {
+
+// ----- CADET-LITE FILTER (NEW + LOGGING) -----
+if (CONFIG.CADET_LITE === true) {
+  const rank = (memberRow[14] || '').trim();
+  if (CONFIG.CADET_LITE_EXCLUDED_GRADES.indexOf(rank) > -1) {
+
+    // Log exclusion
+    Logger.info("Cadet-Lite: excluded low-grade cadet", {
+      capid: memberRow[0],
+      name: memberRow[3] + " " + memberRow[2],
+      rank: rank,
+      orgid: memberRow[11]
+    });
+
+    // Track counter for summary
+    if (!globalThis.cadetLiteExcludedCount) {
+      globalThis.cadetLiteExcludedCount = 0;
+    }
+    globalThis.cadetLiteExcludedCount++;
+
+    return false;
+  }
+}
+// ---------------------------------------------
+
   return memberRow[24] === 'ACTIVE' &&
          memberRow[13] != 0 &&
          memberRow[13] != 999 &&
@@ -235,6 +436,7 @@ function createMemberObject(memberRow, squadrons) {
     rank: memberRow[14],
     type: memberRow[21],
     status: memberRow[24],
+    joined: memberRow[15],
     modified: memberRow[19],
     orgPath: squadrons[memberRow[11]].orgPath,
     email: null,
@@ -252,18 +454,44 @@ function addContactInfo(members, contactData) {
     const contact = contactData[i][3]?.trim() || '';
     const doNotContact = contactData[i][6]?.toUpperCase() === 'TRUE';
 
-    if (!members[capid] || priority !== 'PRIMARY' || doNotContact) continue;
+    if (!members[capid]) continue;
 
     if (type === 'EMAIL') {
-      const email = sanitizeEmail(contact);
-      if (email) members[capid].email = email;
+      const sanitized = sanitizeEmail(contact);
+      if (!sanitized) continue;
+
+      if (priority === 'PRIMARY') {
+        if (!doNotContact) members[capid].email = sanitized;
+      } else if (priority === 'SECONDARY') {
+        members[capid].secondaryEmail = sanitized;
+        if (!doNotContact) members[capid].otherEmail = sanitized;
+      }
+    } else if (members[capid].type === 'CADET' && type === 'CADET PARENT EMAIL') {
+      const sanitized = sanitizeEmail(contact);
+      if (!sanitized) continue;
+      if (!members[capid].parentEmail || priority === 'PRIMARY') {
+        members[capid].parentEmail = sanitized;
+      }
     }
 
-    if (type.includes('CELL') || type === 'PHONE') {
-      const digits = contact.replace(/\D/g, '');
-      if (digits.length >= 10) {
-        members[capid].phone = `+1${digits.slice(-10)}`;
-      }
+    const digits = contact.replace(/\D/g, '');
+    if (digits.length < 10) continue;
+    if (doNotContact) continue;
+
+    const normalizedPhone = `+1${digits.slice(-10)}`;
+    const isMemberCellPhone = !type.includes('PARENT') &&
+      (type === 'CELL PHONE' || type === 'MOBILE PHONE' || type.includes('CELL'));
+    const isCadetParentPhone = members[capid].type === 'CADET' && type === 'CADET PARENT PHONE';
+
+    if (isMemberCellPhone && (
+      members[capid].phoneSource !== 'MEMBER_CELL' ||
+      priority === 'PRIMARY'
+    )) {
+      members[capid].phone = normalizedPhone;
+      members[capid].phoneSource = 'MEMBER_CELL';
+    } else if (isCadetParentPhone && !members[capid].phone) {
+      members[capid].phone = normalizedPhone;
+      members[capid].phoneSource = 'CADET_PARENT';
     }
   }
 
@@ -302,31 +530,78 @@ function addDutyPositions(members, dutyPositionData, squadrons) {
 }
 
 /**
- * Assigns manager email for each member based on their unit commander from Commanders.txt
+ * Assigns manager email for each member based on the CAPWATCH command hierarchy.
+ * Members report to their own org commander. Commanders report to the nearest
+ * parent org commander instead of reporting to themselves.
+ *
  * @param {Object} members - Members object indexed by CAPID
  */
 function assignManagerEmails(members) {
   const commandersData = parseFile('Commanders');
-  const commanders = {};
+  const organizationData = parseFile('Organization');
+  const commanderByOrg = {};
+  const parentOrgByOrg = {};
 
-  // Build commander map: ORGID → commander email (ORGID = col 1, CAPID = col 5)
+  for (let i = 0; i < organizationData.length; i++) {
+    const orgid = String(organizationData[i][0] || '').trim();
+    const parentOrgid = String(organizationData[i][4] || '').trim();
+    if (orgid) parentOrgByOrg[orgid] = parentOrgid;
+  }
+
+  // Commanders.txt: ORGID = col 1, commander CAPID = col 5
   for (let i = 0; i < commandersData.length; i++) {
-    const orgid = commandersData[i][0];
-    const commanderCAPID = commandersData[i][4];
-    if (members[commanderCAPID]) {
-      const commander = members[commanderCAPID];
-      const email = `${commander.firstName.toLowerCase()}.${commander.lastName.toLowerCase()}@${CONFIG.DOMAIN}`;
-      commanders[orgid] = email;
+    const orgid = String(commandersData[i][0] || '').trim();
+    const commanderCAPID = String(commandersData[i][4] || '').trim();
+    if (orgid && commanderCAPID && members[commanderCAPID]) {
+      commanderByOrg[orgid] = commanderCAPID;
     }
   }
 
-  // Assign managerEmail for each member in same org
-  for (const capid in members) {
-    const m = members[capid];
-    m.managerEmail = commanders[m.orgid] || '';
+  function getWorkspaceEmailForCapid(capid) {
+    const mappedEmail = workspaceEmailByCapid[String(capid)];
+    if (mappedEmail) return String(mappedEmail).toLowerCase();
+
+    const member = members[capid];
+    if (!member) return '';
+
+    return [
+      String(member.firstName || '').toLowerCase().replace(/\s+/g, ''),
+      '.',
+      String(member.lastName || '').toLowerCase().replace(/\s+/g, ''),
+      CONFIG.EMAIL_DOMAIN
+    ].join('');
   }
 
-  Logger.info('Manager emails assigned', { count: Object.keys(commanders).length });
+  function findManagerCapid(memberCapid, orgid) {
+    let currentOrgid = String(orgid || '').trim();
+    const visitedOrgids = {};
+
+    while (currentOrgid && !visitedOrgids[currentOrgid]) {
+      visitedOrgids[currentOrgid] = true;
+
+      const commanderCAPID = commanderByOrg[currentOrgid];
+      if (commanderCAPID && commanderCAPID !== memberCapid) {
+        return commanderCAPID;
+      }
+
+      currentOrgid = parentOrgByOrg[currentOrgid] || '';
+    }
+
+    return '';
+  }
+
+  let assignedCount = 0;
+  for (const capid in members) {
+    const member = members[capid];
+    const managerCapid = findManagerCapid(String(capid), member.orgid);
+    member.managerEmail = managerCapid ? getWorkspaceEmailForCapid(managerCapid) : '';
+    if (member.managerEmail) assignedCount++;
+  }
+
+  Logger.info('Manager emails assigned', {
+    membersAssigned: assignedCount,
+    commandersLoaded: Object.keys(commanderByOrg).length
+  });
 }
 
 /**
@@ -339,17 +614,30 @@ function assignManagerEmails(members) {
  */
 function addCadetDutyPositions(members, cadetDutyPositionData, squadrons) {
   for (let i = 0; i < cadetDutyPositionData.length; i++) {
-    if (members[cadetDutyPositionData[i][0]]) {
-      members[cadetDutyPositionData[i][0]].dutyPositions.push({
-        value: Utilities.formatString("%s (%s) (%s)",
-          cadetDutyPositionData[i][1],
-          (cadetDutyPositionData[i][4] == '1' ? 'A' : 'P'),
-          squadrons[cadetDutyPositionData[i][7]].charter)
-      });
-      members[cadetDutyPositionData[i][0]].dutyPositionIds.push(
-        cadetDutyPositionData[i][1]
-      );
-    }
+    const capid = cadetDutyPositionData[i][0];
+    if (!members[capid]) continue;
+
+    const dutyId   = (cadetDutyPositionData[i][1] || '').trim(); // e.g. "Cadet IT Officer"
+    const level    = cadetDutyPositionData[i][3] || '';          // e.g. "UNIT", "WING"
+    const isAsst   = cadetDutyPositionData[i][4] == '1';         // "1" = assistant
+    const orgid    = cadetDutyPositionData[i][7];                // org key for charter lookup
+    const squadron = squadrons[orgid];
+    const charter  = squadron ? squadron.charter : 'Unknown';
+
+    // Build the same style "value" string as seniors
+    const indicator = isAsst ? ' (A)' : ' (P)';
+    const value = dutyId + indicator + ' (' + charter + ')';
+
+    members[capid].dutyPositions.push({
+      value: value,
+      id: dutyId,
+      level: level,
+      assistant: isAsst
+    });
+
+    // Keep these in sync with seniors too
+    members[capid].dutyPositionIds.push(dutyId);
+    members[capid].dutyPositionIdsAndLevel.push(dutyId + '_' + level);
   }
 }
 
@@ -414,9 +702,10 @@ function saveCurrentMemberData(currentMembers) {
   }
 }
 
+// Modified by Lt Col Noel Luneau on 2025-11-22 – added secondaryEmail and mobilePhone tracking
 /**
  * Checks if a member's data has changed since last update
- * Compares rank, charter, duty positions, status, and email
+ * Compares rank, charter, duty positions, status, email, phone, and manager email
  *
  * @param {Object} newMember - New member data
  * @param {Object} previousMember - Previously saved member data
@@ -428,7 +717,101 @@ function memberUpdated(newMember, previousMember) {
           newMember.charter !== previousMember.charter ||
           JSON.stringify(newMember.dutyPositions) !== JSON.stringify(previousMember.dutyPositions) ||
           newMember.status !== previousMember.status ||
-          newMember.email !== previousMember.email);
+          newMember.email !== previousMember.email ||
+          newMember.secondaryEmail !== previousMember.secondaryEmail ||
+          newMember.otherEmail !== previousMember.otherEmail ||
+          newMember.parentEmail !== previousMember.parentEmail ||
+          newMember.phone !== previousMember.phone ||
+          newMember.managerEmail !== previousMember.managerEmail);
+}
+
+function getPrimaryOrgForLog_(user) {
+  const organizations = user && user.organizations ? user.organizations : [];
+  return organizations.find(org => org.primary) || organizations[0] || {};
+}
+
+function getRelationForLog_(user, type) {
+  const relations = user && user.relations ? user.relations : [];
+  const relation = relations.find(item => item.type === type);
+  return relation ? String(relation.value || '') : '';
+}
+
+function getPhoneForLog_(user, type) {
+  const phones = user && user.phones ? user.phones : [];
+  const phone = phones.find(item => item.type === type);
+  return phone ? String(phone.value || '') : '';
+}
+
+function getEmailForLog_(user, type) {
+  const emails = user && user.emails ? user.emails : [];
+  const email = emails.find(item => item.type === type);
+  return email ? String(email.address || '') : '';
+}
+
+function getGradeForLog_(user) {
+  return String(
+    user &&
+    user.customSchemas &&
+    user.customSchemas.CAPWATCH &&
+    user.customSchemas.CAPWATCH.Grade
+      ? user.customSchemas.CAPWATCH.Grade
+      : ''
+  );
+}
+
+function addChangeForLog_(changes, field, currentValue, desiredValue) {
+  const current = String(currentValue || '');
+  const desired = String(desiredValue || '');
+  if (current !== desired) {
+    changes.push({
+      field: field,
+      current: current,
+      desired: desired
+    });
+  }
+}
+
+function logWorkspaceUserUpdateDiff_(primaryEmail, member, updates) {
+  let existing;
+  try {
+    existing = AdminDirectory.Users.get(primaryEmail, { projection: 'full' });
+  } catch (e) {
+    Logger.warn('Unable to read current user before update diff logging', {
+      email: primaryEmail,
+      capsn: member.capsn,
+      errorMessage: e.message
+    });
+    return;
+  }
+
+  const existingOrg = getPrimaryOrgForLog_(existing);
+  const desiredOrg = updates.organizations && updates.organizations.length
+    ? updates.organizations[0]
+    : {};
+  const desiredManager = updates.relations && updates.relations.length
+    ? updates.relations[0].value
+    : '';
+
+  const changes = [];
+  addChangeForLog_(changes, 'recoveryEmail', existing.recoveryEmail, updates.recoveryEmail);
+  addChangeForLog_(changes, 'recoveryPhone', existing.recoveryPhone, updates.recoveryPhone);
+  addChangeForLog_(changes, 'mobilePhone', getPhoneForLog_(existing, 'mobile'), member.phone);
+  addChangeForLog_(changes, 'otherEmail', getEmailForLog_(existing, 'other'), member.otherEmail);
+  addChangeForLog_(changes, 'managerEmail', getRelationForLog_(existing, 'manager'), desiredManager);
+  addChangeForLog_(changes, 'orgUnitPath', existing.orgUnitPath, updates.orgUnitPath);
+  addChangeForLog_(changes, 'employeeTitle', existingOrg.title, desiredOrg.title);
+  addChangeForLog_(changes, 'department', existingOrg.department, desiredOrg.department);
+  addChangeForLog_(changes, 'costCenter', existingOrg.costCenter, desiredOrg.costCenter);
+  addChangeForLog_(changes, 'displayName', existing.name && existing.name.displayName, updates.name.displayName);
+  addChangeForLog_(changes, 'suspended', existing.suspended, updates.suspended);
+  addChangeForLog_(changes, 'CAPWATCH.Grade', getGradeForLog_(existing), member.rank);
+
+  Logger.info('Workspace user update diff', {
+    email: primaryEmail,
+    capsn: member.capsn,
+    changeCount: changes.length,
+    changes: changes
+  });
 }
 
 /**
@@ -439,22 +822,46 @@ function memberUpdated(newMember, previousMember) {
  * 2. If not found, creates new user
  * 3. Adds email alias for new users
  * 4. Suspends users in excluded organizations
+ * 5. Fixes existing member accounts with .2, .3, etc
  *
  * @param {Object} member - Member object containing CAP data
  * @returns {void}
  */
+
+
 function addOrUpdateUser(member) {
   const baseEmail = `${member.firstName}.${member.lastName}`.toLowerCase().replace(/\s+/g, '');
-  let primaryEmail = baseEmail + CONFIG.EMAIL_DOMAIN;
+  let primaryEmail =
+    workspaceEmailByCapid[member.capsn] ||
+    (baseEmail + CONFIG.EMAIL_DOMAIN);
+
+  if (workspaceEmailByCapid[member.capsn]) {
+    Logger.info('Preserving existing primary email', {
+      capsn: member.capsn,
+      email: primaryEmail
+    });
+  }
+
   let user;
+
+  // Build Gmail/Directory Send-As display name once
+  const sendAsDisplayName = [
+    member.lastName + (member.suffix ? ' ' + member.suffix : ''),
+    ', ',
+    member.firstName,
+    member.middleName ? ' ' + member.middleName.charAt(0) : '',
+    member.rank ? ' ' + member.rank : ''
+  ].join('').trim();
 
   let updates = {
     employeeId: String(member.capsn),
     externalIds: [{ type: 'organization', value: String(member.capsn) }],
     organizations: [{
       title: member.dutyPositions && member.dutyPositions.length > 0
-        ? member.dutyPositions.filter(d => !d.assistant).map(d => d.id).join(', ')
-        : 'Member',
+        ? member.dutyPositions
+            .map(d => d.assistant ? d.id + ' (A)' : d.id)
+            .join(', ')
+        : 'No Duty Assignment',
       // Squadron / Unit Name (Organization.name)
       department: toTitleCase(member.orgName || member.charter || ''),
       // Charter (PCR-HI-077 etc.)
@@ -464,9 +871,10 @@ function addOrUpdateUser(member) {
       primary: true
     }],
     orgUnitPath: member.orgPath,
-    recoveryEmail: member.email,
+    recoveryEmail: member.secondaryEmail || member.parentEmail || '',
+    recoveryPhone: member.phone || '',
     phones: member.phone ? [{ type: 'mobile', value: member.phone }] : [],
-    emails: member.email ? [{ type: 'other', address: member.email }] : [],
+    emails: member.otherEmail ? [{ type: 'other', address: member.otherEmail }] : [],
     suspended: CONFIG.EXCLUDED_ORG_IDS.includes(String(member.orgid)),
     name: {
       givenName: member.firstName,
@@ -478,27 +886,22 @@ function addOrUpdateUser(member) {
         member.lastName,
         member.suffix || ''
       ].filter(Boolean).join(' '),
-      displayName: [
-        member.lastName + (member.suffix ? ' ' + member.suffix : ''),
-        ', ',
-        member.firstName,
-        member.middleName ? ' ' + member.middleName : '',
-        member.rank ? ' ' + member.rank : ''
-      ].join('').trim()
+      displayName: sendAsDisplayName
     },
     relations: [{
       type: 'manager',
       value: member.managerEmail || ''
     }],
     customSchemas: {
-      CAP: {
-        Rank: member.rank || ''
+      CAPWATCH: {
+        Grade: member.rank || ''
       }
     }
   };
 
   // Try updating existing user
   try {
+    logWorkspaceUserUpdateDiff_(primaryEmail, member, updates);
     user = executeWithRetry(() =>
       AdminDirectory.Users.update(updates, primaryEmail)
     );
@@ -506,24 +909,7 @@ function addOrUpdateUser(member) {
       email: primaryEmail,
       capsn: member.capsn
     });
-    // Build Gmail Send-As display name
-    const sendAsDisplayName = [
-      member.lastName + (member.suffix ? ' ' + member.suffix : ''),
-      ', ',
-      member.firstName,
-      member.middleName ? ' ' + member.middleName : '',
-      member.rank ? ' ' + member.rank : ''
-    ].join('').trim();
 
-    // Update user's Send-As display name
-    try {
-      updateGmailSendAsDisplayName(primaryEmail, sendAsDisplayName);
-    } catch (err) {
-      Logger.error('Send-As update failed', {
-        email: primaryEmail,
-        errorMessage: err.message
-      });
-    }
   } catch (e) {
     if (String(e.message).includes("Resource Not Found")) {
       // Possible archived user — attempt to fetch
@@ -568,13 +954,18 @@ function addOrUpdateUser(member) {
 
   // Create new user if update failed
   if (!user) {
+    // Generate deterministic temp password from the script run date.
+    const seedDate = Utilities.formatDate(new Date(), 'GMT', 'yyyyMMdd');
+    const generatedPassword = `${CONFIG.WING}$${seedDate}$${member.capsn}`;
     user = {
       employeeId: String(member.capsn),
       externalIds: [{ type: 'organization', value: String(member.capsn) }],
       organizations: [{
         title: member.dutyPositions && member.dutyPositions.length > 0
-          ? member.dutyPositions.filter(d => !d.assistant).map(d => d.id).join(', ')
-          : 'Member',
+          ? member.dutyPositions
+              .map(d => d.assistant ? d.id + ' (A)' : d.id)
+              .join(', ')
+          : 'No Duty Assignment',
         // Squadron / Unit Name (Organization.name)
         department: member.orgName || member.charter || '',
         // Charter (PCR-HI-077 etc.)
@@ -594,73 +985,64 @@ function addOrUpdateUser(member) {
           member.lastName,
           member.suffix || ''
         ].filter(Boolean).join(' '),
-        displayName: [
-          member.lastName + (member.suffix ? ' ' + member.suffix : ''),
-          ', ',
-          member.firstName,
-          member.middleName ? ' ' + member.middleName : '',
-          member.rank ? ' ' + member.rank : ''
-        ].join('').trim()
+        displayName: sendAsDisplayName
       },
       suspended: CONFIG.EXCLUDED_ORG_IDS.includes(String(member.orgid)),
       changePasswordAtNextLogin: true,
-      password: Math.random().toString(36),
+      password: generatedPassword,
       orgUnitPath: member.orgPath,
-      recoveryEmail: member.email,
+      recoveryEmail: member.secondaryEmail || member.parentEmail || '',
+      recoveryPhone: member.phone || '',
       phones: member.phone ? [{ type: 'mobile', value: member.phone }] : [],
-      emails: member.email ? [{ type: 'other', address: member.email }] : [],
+      emails: member.otherEmail ? [{ type: 'other', address: member.otherEmail }] : [],
       relations: [{
         type: 'manager',
         value: member.managerEmail || ''
       }],
       customSchemas: {
-        CAP: {
-          Rank: member.rank || ''
+        CAPWATCH: {
+          Grade: member.rank || ''
         }
       }
     };
 
     try {
-      let newUser = executeWithRetry(() =>
-        AdminDirectory.Users.insert(user)
-      );
+      let newUser;
+      try {
+        newUser = executeWithRetry(() =>
+          AdminDirectory.Users.insert(user)
+        );
+      } catch (insertErr) {
+        // If custom schema fails (e.g. Invalid Input), try without it
+        if (insertErr.message && insertErr.message.includes("Invalid Input")) {
+          Logger.warn("Insert failed with custom schemas, retrying without...", {
+            email: primaryEmail,
+            error: insertErr.message
+          });
+          delete user.customSchemas;
+          newUser = executeWithRetry(() =>
+            AdminDirectory.Users.insert(user)
+          );
+          Logger.warn("User created WITHOUT custom schemas (CAPWATCH/Grade skipped)", {
+            email: primaryEmail
+          });
+        } else {
+          throw insertErr;
+        }
+      }
+
       Logger.info('New user created', {
         email: primaryEmail,
         capsn: member.capsn,
         name: member.firstName + ' ' + member.lastName
       });
 
-      if (CONFIG.UPDATE_SIGNATURE_ON_NEW_USERS_ONLY) {
-        try {
-          const signatureHTML = generateEmailSignature(member);
-          updateSignatureForAllAliases(primaryEmail, signatureHTML);
-        } catch (err) {
-          Logger.error('Signature update failed for new user', {
-            email: primaryEmail,
-            error: err.message
-          });
-        }
-      }
+    // Queue for delayed Gmail setup
+    queueForDelayedGmailSetup(primaryEmail, sendAsDisplayName, member);
 
-      // Build Gmail Send-As display name
-      const sendAsDisplayName = [
-        member.lastName + (member.suffix ? ' ' + member.suffix : ''),
-        ', ',
-        member.firstName,
-        member.middleName ? ' ' + member.middleName : '',
-        member.rank ? ' ' + member.rank : ''
-      ].join('').trim();
+    // Send welcome email
+    sendWelcomeEmail(member, primaryEmail, generatedPassword);
 
-      // Update user's Send-As display name
-      try {
-        updateGmailSendAsDisplayName(primaryEmail, sendAsDisplayName);
-      } catch (err) {
-        Logger.error('Send-As update failed', {
-          email: primaryEmail,
-          errorMessage: err.message
-        });
-      }
-      // Alias insertion for CAPID removed.
     } catch (e) {
       Logger.error('Failed to create new user', {
         email: primaryEmail,
@@ -677,17 +1059,21 @@ function addOrUpdateUser(member) {
 }
 
 /**
- * Gets all active members from CAPWATCH data
- * Returns simplified object with just CAPID and join date
+ * Gets all active members from CAPWATCH data who are also an eligible member
+ * type for a Workspace seat (CONFIG.MEMBER_TYPES.ACTIVE). Members with an
+ * ACTIVE CAPWATCH status but an ineligible type (e.g. PATRON) are excluded so
+ * that suspendExpiredMembers()/reactivateRenewedMembers() do not treat them
+ * as eligible for an account and re-suspend/reactivate them accordingly.
  *
- * @returns {Object} Active members indexed by CAPID with join date values
+ * @returns {Object} Active, eligible members indexed by CAPID with join date values
  */
 function getActiveMembers() {
   let activeMembers = {};
   let memberData = parseFile('Member');
+  const eligibleTypes = CONFIG.MEMBER_TYPES.ACTIVE;
 
   for (let i = 0; i < memberData.length; i++) {
-    if (memberData[i][24] === 'ACTIVE') {
+    if (memberData[i][24] === 'ACTIVE' && eligibleTypes.indexOf(memberData[i][21]) > -1) {
       activeMembers[memberData[i][0]] = memberData[i][16];
     }
   }
@@ -723,7 +1109,7 @@ function suspendMember(email) {
 
 /**
  * Retrieves all active (non-suspended) users from Google Workspace
- * Filters to non-admin users in /MI-001 organizational unit
+ * Filters to non-admin users
  *
  * @returns {Array<Object>} Array of user objects with email, capid, and lastUpdated
  */
@@ -735,7 +1121,7 @@ function getActiveUsers() {
     let page = AdminDirectory.Users.list({
       domain: CONFIG.DOMAIN,
       maxResults: 500,
-      query: 'isSuspended=false isAdmin=false orgUnitPath=/MI-001',
+      query: 'isSuspended=false isAdmin=false',
       fields: 'users(primaryEmail,externalIds),nextPageToken',
       pageToken: nextPageToken
     });
@@ -784,7 +1170,14 @@ function updateAllMembers() {
 
   let members = getMembers();
   let currentMembers = getCurrentMemberData();
+
+  const activeUsers = getActiveUsers();
+  workspaceEmailByCapid = {};
+  activeUsers.forEach(u => {
+    workspaceEmailByCapid[String(u.capid)] = u.email;
+  });
   assignManagerEmails(members);
+
   const totalMembers = Object.keys(members).length;
 
   let processed = 0;
@@ -792,10 +1185,13 @@ function updateAllMembers() {
   // Build reduced set of members whose data changed
   let toProcess = {};
   let skipped = 0;
+  let missingWorkspaceUsers = 0;
 
   for (const capsn in members) {
-    if (memberUpdated(members[capsn], currentMembers[capsn])) {
+    const isMissingWorkspaceUser = !workspaceEmailByCapid[String(capsn)];
+    if (memberUpdated(members[capsn], currentMembers[capsn]) || isMissingWorkspaceUser) {
       toProcess[capsn] = members[capsn];
+      if (isMissingWorkspaceUser) missingWorkspaceUsers++;
     } else {
       skipped++;
     }
@@ -803,9 +1199,43 @@ function updateAllMembers() {
 
   Logger.info("Batch update starting", {
     changedMembers: Object.keys(toProcess).length,
+    missingWorkspaceUsers: missingWorkspaceUsers,
     skipped: skipped,
     total: totalMembers
   });
+
+  // Log details about what changed
+  let changeBreakdown = {
+    rankChanged: 0,
+    charterChanged: 0,
+    dutyChanged: 0,
+    statusChanged: 0,
+    emailChanged: 0,
+    secondaryEmailChanged: 0,
+    otherEmailChanged: 0,
+    parentEmailChanged: 0,
+    phoneChanged: 0,
+    managerEmailChanged: 0
+  };
+
+  for (const capsn in toProcess) {
+    const prev = currentMembers[capsn];
+    const curr = members[capsn];
+    if (prev) {
+      if (curr.rank !== prev.rank) changeBreakdown.rankChanged++;
+      if (curr.charter !== prev.charter) changeBreakdown.charterChanged++;
+      if (JSON.stringify(curr.dutyPositions) !== JSON.stringify(prev.dutyPositions)) changeBreakdown.dutyChanged++;
+      if (curr.status !== prev.status) changeBreakdown.statusChanged++;
+      if (curr.email !== prev.email) changeBreakdown.emailChanged++;
+      if (curr.secondaryEmail !== prev.secondaryEmail) changeBreakdown.secondaryEmailChanged++;
+      if (curr.otherEmail !== prev.otherEmail) changeBreakdown.otherEmailChanged++;
+      if (curr.parentEmail !== prev.parentEmail) changeBreakdown.parentEmailChanged++;
+      if (curr.phone !== prev.phone) changeBreakdown.phoneChanged++;
+      if (curr.managerEmail !== prev.managerEmail) changeBreakdown.managerEmailChanged++;
+    }
+  }
+
+  Logger.info("Change breakdown", changeBreakdown);
 
   // 🔥 MAIN CHANGE — batch processing instead of inline updates
   batchUpdateMembers(toProcess);
@@ -813,6 +1243,7 @@ function updateAllMembers() {
   // 👉 Alias updates — from sheet tab Aliases
   //addAliasesFromSheet();
 
+  Logger.info("Saving current member data snapshot");
   saveCurrentMemberData(members);
 
   // Reactivate any members who renewed
@@ -884,12 +1315,40 @@ function suspendExpiredMembers() {
 
   let activeMembers = getActiveMembers();
   let users = getActiveUsers();
+  // Manual members are not present in CAPWATCH Member.txt, so they will not appear in getActiveMembers().
+  // Protect them from suspension by building a CAPID allow-list from the Manual Members sheet.
+  const manualCapids = {};
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
+    const sheet = ss.getSheetByName('Manual Members') || ss.getSheetByName('ManualMembers');
+    if (sheet) {
+      const rows = sheet.getDataRange().getValues();
+      if (rows && rows.length > 1) {
+        const header = rows[0].map(h => String(h || '').trim());
+        const capidIdx = header.indexOf('CAPID');
+        if (capidIdx > -1) {
+          for (let r = 1; r < rows.length; r++) {
+            const capid = String(rows[r][capidIdx] || '').trim();
+            if (capid) manualCapids[capid] = 1;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    Logger.warn('Unable to read Manual Members sheet for suspension bypass', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+  }
   let suspended = 0;
   let pending = 0;
   const suspensionTime = new Date().getTime() - (CONFIG.SUSPENSION_GRACE_DAYS * 86400000);
 
   for(let i = 0; i < users.length; i++) {
     if (users[i].capid && !(users[i].capid in activeMembers)) {
+      // Do not suspend manual members (PCR/NHQ/etc. added via Manual Members tab)
+      if (manualCapids[users[i].capid]) {
+        continue;
+      }
       if (!users[i].lastUpdated || suspensionTime > new Date(users[i].lastUpdated).getTime()) {
         let success = suspendMember(users[i].email);
         if (success) {
@@ -1055,9 +1514,264 @@ function getInactiveUsers() {
 }
 
 /**
+ * Debug helper: lists the inactive users that reactivation logic can see.
+ *
+ * This is useful for confirming which suspended users have the required
+ * CAPID mapping and are therefore eligible for automatic reactivation.
+ *
+ * @returns {Array<Object>} Visible inactive users
+ */
+function debugListInactiveUsersVisibleToReactivation() {
+  const users = getInactiveUsers()
+    .slice()
+    .sort((a, b) => {
+      const emailA = String(a.email || '').toLowerCase();
+      const emailB = String(b.email || '').toLowerCase();
+      return emailA.localeCompare(emailB);
+    });
+
+  Logger.info('Inactive users visible to reactivation', {
+    count: users.length,
+    users: users
+  });
+
+  return users;
+}
+
+/**
+ * Debug helper: finds active Workspace users who appear to be CAP accounts
+ * but are invisible to suspendExpiredMembers() because they do not have the
+ * externalIds.organization mapping used by getActiveUsers().
+ *
+ * This is the main class of "users like Abigail":
+ * - active in Workspace
+ * - have an Employee ID / CAPWATCH footprint
+ * - not active in current CAPWATCH Member.txt
+ * - missing externalIds.organization, so suspension logic never sees them
+ *
+ * @returns {Array<Object>} Candidate users that suspension will skip
+ */
+function debugFindExpiredUsersMissingExternalIds() {
+  const activeMembers = getActiveMembers();
+  const candidates = [];
+  let nextPageToken = '';
+
+  do {
+    const page = AdminDirectory.Users.list({
+      domain: CONFIG.DOMAIN,
+      maxResults: 500,
+      query: 'isSuspended=false isAdmin=false',
+      projection: 'full',
+      pageToken: nextPageToken
+    });
+
+    nextPageToken = page.nextPageToken;
+
+    if (!page.users) continue;
+
+    for (let i = 0; i < page.users.length; i++) {
+      const user = page.users[i];
+      const employeeId = String(user.employeeId || '').trim();
+      const ids = user.externalIds || [];
+      const capidExt = ids.find(id => id.type === 'organization');
+      const externalCapid = capidExt ? String(capidExt.value || '').trim() : '';
+      const schemaCapwatch = user.customSchemas && user.customSchemas.CAPWATCH
+        ? user.customSchemas.CAPWATCH
+        : null;
+
+      // Ignore users that already have the mapping suspension relies on.
+      if (externalCapid) continue;
+
+      // We only care about accounts that still look like managed CAP accounts.
+      const fallbackCapid = employeeId ||
+        (schemaCapwatch && String(schemaCapwatch.CAPID || '').trim()) ||
+        '';
+      if (!fallbackCapid) continue;
+
+      // These are the ones that are expired but invisible to suspension.
+      if (fallbackCapid in activeMembers) continue;
+
+      candidates.push({
+        email: user.primaryEmail,
+        employeeId: employeeId || '',
+        fallbackCapid: fallbackCapid,
+        displayName: user.name && user.name.fullName ? user.name.fullName : '',
+        hasCapwatchSchema: !!schemaCapwatch,
+        visibleToSuspension: false
+      });
+    }
+  } while (nextPageToken);
+
+  candidates.sort((a, b) => {
+    const emailA = String(a.email || '').toLowerCase();
+    const emailB = String(b.email || '').toLowerCase();
+    return emailA.localeCompare(emailB);
+  });
+
+  Logger.info('Expired active users missing externalIds.organization', {
+    count: candidates.length,
+    users: candidates
+  });
+
+  return candidates;
+}
+
+/**
+ * Debug helper: lists active Workspace users that do not have
+ * externalIds.type === 'organization'.
+ *
+ * This is useful for finding legacy or malformed accounts that the
+ * current suspension/reactivation logic cannot map back to a CAPID.
+ *
+ * @returns {Array<Object>} Active users missing organization externalIds
+ */
+function debugListUsersMissingOrganizationExternalId() {
+  const candidates = [];
+  let nextPageToken = '';
+
+  do {
+    const page = AdminDirectory.Users.list({
+      domain: CONFIG.DOMAIN,
+      maxResults: 500,
+      query: 'isSuspended=false isAdmin=false',
+      projection: 'full',
+      pageToken: nextPageToken
+    });
+
+    nextPageToken = page.nextPageToken;
+
+    if (!page.users) continue;
+
+    for (let i = 0; i < page.users.length; i++) {
+      const user = page.users[i];
+      const ids = user.externalIds || [];
+      const capidExt = ids.find(id => id.type === 'organization');
+      if (capidExt) continue;
+
+      candidates.push({
+        email: user.primaryEmail,
+        employeeId: String(user.employeeId || '').trim(),
+        displayName: user.name && user.name.fullName ? user.name.fullName : '',
+        orgUnitPath: String(user.orgUnitPath || ''),
+        hasExternalIds: ids.length > 0,
+        externalIds: ids,
+        hasCapwatchSchema: !!(user.customSchemas && user.customSchemas.CAPWATCH)
+      });
+    }
+  } while (nextPageToken);
+
+  candidates.sort((a, b) => {
+    const emailA = String(a.email || '').toLowerCase();
+    const emailB = String(b.email || '').toLowerCase();
+    return emailA.localeCompare(emailB);
+  });
+
+  Logger.info('Active users missing externalIds.organization', {
+    count: candidates.length,
+    users: candidates
+  });
+
+  return candidates;
+}
+
+/**
+ * Debug helper: reconciles active CAPWATCH members with active Workspace CAPID mappings.
+ *
+ * This answers two practical questions:
+ * 1) Which CAPWATCH-active CAPIDs are not currently visible in active Workspace users?
+ * 2) Which active Workspace CAPIDs are not active in CAPWATCH?
+ *
+ * @returns {Object} Reconciliation payload with both mismatch lists
+ */
+function debugReconcileActiveCapidMappings() {
+  const activeMembers = getActiveMembers();   // CAPID -> joinDate
+  const activeUsers = getActiveUsers();       // [{ email, capid, ... }]
+
+  const workspaceByCapid = {};
+  for (let i = 0; i < activeUsers.length; i++) {
+    const capid = String(activeUsers[i].capid || '').trim();
+    if (!capid) continue;
+    workspaceByCapid[capid] = activeUsers[i].email;
+  }
+
+  const capwatchMissingFromWorkspace = [];
+  const workspaceMissingFromCapwatch = [];
+
+  // CAPWATCH active but not represented in active Workspace mapping
+  for (const capid in activeMembers) {
+    if (!workspaceByCapid[capid]) {
+      capwatchMissingFromWorkspace.push({
+        capid: capid,
+        joined: activeMembers[capid] || ''
+      });
+    }
+  }
+
+  // Active Workspace CAPIDs not active in CAPWATCH
+  for (const capid in workspaceByCapid) {
+    if (!(capid in activeMembers)) {
+      workspaceMissingFromCapwatch.push({
+        capid: capid,
+        email: workspaceByCapid[capid]
+      });
+    }
+  }
+
+  capwatchMissingFromWorkspace.sort((a, b) =>
+    String(a.capid).localeCompare(String(b.capid))
+  );
+  workspaceMissingFromCapwatch.sort((a, b) =>
+    String(a.capid).localeCompare(String(b.capid))
+  );
+
+  const result = {
+    capwatchActiveCount: Object.keys(activeMembers).length,
+    workspaceActiveMappedCount: Object.keys(workspaceByCapid).length,
+    capwatchMissingFromWorkspaceCount: capwatchMissingFromWorkspace.length,
+    workspaceMissingFromCapwatchCount: workspaceMissingFromCapwatch.length,
+    capwatchMissingFromWorkspace: capwatchMissingFromWorkspace,
+    workspaceMissingFromCapwatch: workspaceMissingFromCapwatch
+  };
+
+  Logger.info('Active CAPID reconciliation', result);
+  return result;
+}
+
+/**
+ * Debug helper: lists Workspace custom schema API names and field names.
+ *
+ * Use this to verify the exact schemaName and fieldName required by
+ * customSchemas payloads, which can differ from Admin Console display labels.
+ *
+ * @returns {Array<Object>} Custom schema summary
+ */
+function debugListCustomSchemas() {
+  const response = AdminDirectory.Schemas.list('my_customer');
+  const schemas = response && response.schemas ? response.schemas : [];
+
+  const result = schemas.map(schema => ({
+    schemaName: schema.schemaName || '',
+    displayName: schema.displayName || '',
+    fields: (schema.fields || []).map(field => ({
+      fieldName: field.fieldName || '',
+      displayName: field.displayName || '',
+      fieldType: field.fieldType || '',
+      multiValued: !!field.multiValued,
+      readAccessType: field.readAccessType || ''
+    }))
+  }));
+
+  Logger.info('Workspace custom schemas', {
+    count: result.length,
+    schemas: result
+  });
+  return result;
+}
+
+/**
  * Adds an email alias to a user account with retry logic for conflicts
  *
- * Tries firstname.lastname first, then firstname.lastname1, firstname.lastname2, etc.
+ * Tries firstname.lastname first, then firstname.lastname.1, firstname.lastname.2, etc.
  * up to 5 attempts if alias already exists
  *
  * @param {Object} user - User object with name properties
@@ -1102,7 +1816,7 @@ function addAlias(user) {
   for (let index = 1; index <= maxRetry; index++) {
     try {
       aliasEmail = user.name.givenName.replace(/\s/g, '') + '.' +
-                   user.name.familyName.replace(/\s/g, '') + index + CONFIG.EMAIL_DOMAIN;
+                   user.name.familyName.replace(/\s/g, '') + '.' + index + CONFIG.EMAIL_DOMAIN;
       alias = AdminDirectory.Users.Aliases.insert({alias: aliasEmail}, user.primaryEmail);
       if (alias) {
         Logger.info('Alias added with suffix', {
@@ -1134,56 +1848,6 @@ function addAlias(user) {
 }
 
 /**
- * Finds and updates users who are missing email aliases
- * Processes all non-admin, non-suspended users in /MI-001
- *
- * @returns {void}
- */
-function updateMissingAliases() {
-  const start = new Date();
-  let nextPageToken = '';
-  let totalUpdated = 0;
-  let totalFailed = 0;
-  let totalProcessed = 0;
-
-  Logger.info('Starting missing alias update');
-
-  do {
-    let page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
-      maxResults: 500,
-      query: 'orgUnitPath=/MI-001 isSuspended=false isAdmin=false',
-      fields: 'users(name/givenName,name/familyName,primaryEmail,aliases),nextPageToken',
-      pageToken: nextPageToken
-    });
-
-    nextPageToken = page.nextPageToken;
-
-    if (page.users) {
-      for (let i = 0; i < page.users.length; i++) {
-        totalProcessed++;
-
-        if (!page.users[i].aliases || page.users[i].aliases.length === 0) {
-          let alias = addAlias(page.users[i]);
-          if (alias) {
-            totalUpdated++;
-          } else {
-            totalFailed++;
-          }
-        }
-      }
-    }
-  } while(nextPageToken);
-
-  Logger.info('Missing alias update completed', {
-    duration: new Date() - start + 'ms',
-    processed: totalProcessed,
-    updated: totalUpdated,
-    failed: totalFailed
-  });
-}
-
-/**
  * Generates an OAuth2 token for a service account to impersonate a user.
  * This is required for APIs like Gmail settings that have strict delegation rules.
  * @param {string} userToImpersonate The email address of the user to impersonate.
@@ -1191,20 +1855,33 @@ function updateMissingAliases() {
  * @returns {string} The access token.
  */
 function getImpersonatedToken_(userToImpersonate, scope) {
-  // TODO: Fill in these values from your GCP Service Account JSON key file.
+  const props = PropertiesService.getScriptProperties();
+
+  const SERVICE_ACCOUNT_EMAIL = props.getProperty('SA_IMPERSONATION_EMAIL');
+  let PRIVATE_KEY = props.getProperty('SA_PRIVATE_KEY');
+
+  if (!SERVICE_ACCOUNT_EMAIL || !PRIVATE_KEY) {
+    throw new Error('Missing service account credentials in Script Properties (SA_IMPERSONATION_EMAIL / SA_PRIVATE_KEY).');
+  }
+
+  // If the key was stored with literal "\n", convert to real newlines
+  PRIVATE_KEY = PRIVATE_KEY.replace(/\\n/g, '\n');
+
   const now = Math.floor(Date.now() / 1000);
 
-    const claimSet = {
-      iss: SERVICE_ACCOUNT_EMAIL,
-      sub: userToImpersonate,
-      aud: 'https://oauth2.googleapis.com/token',
-      exp: now + 3600,
-      iat: now,
-      scope: scope
-    };
+  const claimSet = {
+    iss: SERVICE_ACCOUNT_EMAIL,
+    sub: userToImpersonate,
+    aud: 'https://oauth2.googleapis.com/token',
+    exp: now + 3600,
+    iat: now,
+    scope: scope
+  };
 
   const header = { alg: 'RS256', typ: 'JWT' };
-  const toSign = `${Utilities.base64EncodeWebSafe(JSON.stringify(header))}.${Utilities.base64EncodeWebSafe(JSON.stringify(claimSet))}`;
+  const toSign =
+    `${Utilities.base64EncodeWebSafe(JSON.stringify(header))}.` +
+    `${Utilities.base64EncodeWebSafe(JSON.stringify(claimSet))}`;
 
   const signature = Utilities.computeRsaSha256Signature(toSign, PRIVATE_KEY);
   const jwt = `${toSign}.${Utilities.base64EncodeWebSafe(signature)}`;
@@ -1215,10 +1892,17 @@ function getImpersonatedToken_(userToImpersonate, scope) {
     payload: {
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
       assertion: jwt
-    }
+    },
+    muteHttpExceptions: true
   });
 
-  const token = JSON.parse(response.getContentText());
+  const code = response.getResponseCode();
+  const body = response.getContentText();
+  if (code < 200 || code >= 300) {
+    throw new Error(`Token exchange failed (${code}): ${body}`);
+  }
+
+  const token = JSON.parse(body);
   return token.access_token;
 }
 
@@ -1245,7 +1929,11 @@ function updateGmailSendAsDisplayName(primaryEmail, displayName) {
     return;
   }
 
-  // ---- NEW: Add alias from Aliases sheet if applicable ----
+  //
+  // ---------------------------------------------------------
+  //  STEP 1 — OPTIONAL ALIAS CREATION FROM "Aliases" SHEET
+  // ---------------------------------------------------------
+  //
   try {
     const sheet = SpreadsheetApp
       .openById(CONFIG.AUTOMATION_SPREADSHEET_ID)
@@ -1253,10 +1941,11 @@ function updateGmailSendAsDisplayName(primaryEmail, displayName) {
 
     if (sheet) {
       const rows = sheet.getDataRange().getValues();
-      const header = rows.shift(); // remove header row
+      rows.shift(); // remove header row
 
-      // Find matching row for this primaryEmail
-      const row = rows.find(r => String(r[0]).trim().toLowerCase() === primaryEmail.toLowerCase());
+      const row = rows.find(r =>
+        String(r[0]).trim().toLowerCase() === primaryEmail.toLowerCase()
+      );
 
       if (row) {
         const aliasEmail = String(row[1] || '').trim();
@@ -1271,7 +1960,8 @@ function updateGmailSendAsDisplayName(primaryEmail, displayName) {
             treatAsAlias: true
           };
 
-          const aliasUrl = "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs";
+          const aliasUrl =
+            'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs';
 
           const aliasResp = UrlFetchApp.fetch(aliasUrl, {
             method: 'post',
@@ -1281,71 +1971,64 @@ function updateGmailSendAsDisplayName(primaryEmail, displayName) {
             muteHttpExceptions: true
           });
 
-          const aCode = aliasResp.getResponseCode();
-          if (aCode >= 200 && aCode < 300) {
-            Logger.info('Alias added inside updateGmailSendAsDisplayName', {
-              primary: primaryEmail,
-              alias: aliasEmail
-            });
-          } else {
-            Logger.warn('Alias add failed inside updateGmailSendAsDisplayName', {
-              primary: primaryEmail,
-              alias: aliasEmail,
-              code: aCode,
-              response: aliasResp.getContentText()
-            });
+          const code = aliasResp.getResponseCode();
+          if (code < 200 || code >= 300) {
+            // Only log non-409 failures
+            if (code !== 409) {
+              Logger.warn('Alias add failed', {
+                primary: primaryEmail,
+                alias: aliasEmail,
+                code: code,
+                response: aliasResp.getContentText()
+              });
+            }
           }
         }
       }
     }
   } catch (aliasErr) {
-    Logger.error('Alias-add attempt inside updateGmailSendAsDisplayName failed', {
+    Logger.error('Alias-add attempt failed', {
       primary: primaryEmail,
       error: aliasErr.message
     });
   }
-  // ---- END NEW ----
 
-  // Send-As API call
-
+  //
+  // ---------------------------------------------------------
+  //  STEP 2 — PATCH PRIMARY SEND-AS IDENTITY
+  // ---------------------------------------------------------
+  //
   try {
     const apiUrl =
-      `https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs/${encodeURIComponent(primaryEmail)}`;
+      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(primaryEmail)}/settings/sendAs/${encodeURIComponent(primaryEmail)}`;
 
-    const sendAs = {
-      sendAsEmail: primaryEmail,
-      displayName: displayName,
-      treatAsAlias: true
+    const sendAsBody = {
+      displayName: displayName
     };
-
-    const payload = JSON.stringify(sendAs);
 
     const response = UrlFetchApp.fetch(apiUrl, {
       method: 'patch',
       contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + accessToken },
-      payload: payload,
+      payload: JSON.stringify(sendAsBody),
       muteHttpExceptions: true
     });
 
     const code = response.getResponseCode();
 
-    if (code >= 200 && code < 300) {
-      Logger.info('Updated Send As display name', {
-        email: primaryEmail,
-        displayName: displayName
-      });
-    } else {
-      Logger.warn('Failed to update Send As display name', {
+    // Quiet mode — only log failures
+    if (code < 200 || code >= 300) {
+      Logger.warn('Primary Send-As display name update failed', {
         email: primaryEmail,
         code: code,
         response: response.getContentText()
       });
     }
-  } catch (err) {
-    Logger.error('Error updating Gmail Send As', {
+
+  } catch (e) {
+    Logger.error('Primary Send-As patch threw exception', {
       email: primaryEmail,
-      errorMessage: err.message
+      error: e.message
     });
   }
 }
@@ -1454,9 +2137,8 @@ function getPublicRank(rank) {
   return MAP[rank] || rank || '';
 }
 
-function getWingCode(member) {
-  const prefix = (member.charter || '').split('-')[0]; // PCR, HIWG, CAWG, etc.
-  return prefix.toLowerCase();
+function getWingCode() {
+  return CONFIG.WING.toLowerCase() + "wg";
 }
 
 function getDutyBlock(member) {
@@ -1552,6 +2234,88 @@ function generateEmailSignature(member) {
   `;
 }
 
+// -----------------------------------------
+// NEW — Welcome Email Sender
+// -----------------------------------------
+function sendWelcomeEmail(member, email, tempPassword) {
+  const html = HtmlService
+    .createTemplateFromFile('WelcomeEmail')
+    .getRawContent();
+
+  const mergedHtml = html
+    .replace(/{{WING}}/g, CONFIG.WING)
+    .replace(/{{firstName}}/g, member.firstName)
+    .replace(/{{lastName}}/g, member.lastName)
+    .replace(/{{email}}/g, email)
+    .replace(/{{password}}/g, tempPassword)
+    .replace(/{{ITSUPPORT_EMAIL}}/g, ITSUPPORT_EMAIL)
+    .replace(/{{DOMAIN}}/g, CONFIG.DOMAIN)
+    .replace(/{{rank}}/g, member.rank || '')
+    .replace(/{{primaryEmail}}/g, member.email || '')
+    .replace(/{{secondaryEmail}}/g, member.secondaryEmail || '');
+
+  MailApp.sendEmail({
+    to: [member.email, member.secondaryEmail].filter(Boolean).join(','),
+    cc: ITSUPPORT_EMAIL,
+    subject: `New Workspace Account – ${member.rank ? member.rank + ' ' : ''}${member.firstName} ${member.lastName}`,
+    htmlBody: mergedHtml
+  });
+
+  Logger.info("Welcome email sent to IT", {
+    user: email,
+    support: ITSUPPORT_EMAIL
+  });
+}
+
+function queueForDelayedGmailSetup(email, displayName, member) {
+  const script = ScriptApp.newTrigger('runDelayedGmailSetup')
+    .timeBased()
+    .after(5 * 60 * 1000)  // 5 minutes
+    .create();
+
+  PropertiesService.getScriptProperties().setProperty(
+    'gmailsetup_' + script.getUniqueId(),
+    JSON.stringify({ email: email, displayName: displayName, capsn: member.capsn })
+  );
+}
+
+function runDelayedGmailSetup(e) {
+  const triggers = ScriptApp.getProjectTriggers();
+  const props = PropertiesService.getScriptProperties();
+
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'runDelayedGmailSetup') {
+
+      const emailKey = 'gmailsetup_' + trigger.getUniqueId();
+      const record = props.getProperty(emailKey);
+
+      if (record) {
+        const data = JSON.parse(record);
+
+        try {
+          updateGmailSendAsDisplayName(data.email, data.displayName);
+
+          const member = { capsn: data.capsn };
+          const signature = generateEmailSignature(member);
+          updateSignatureForAllAliases(data.email, signature);
+
+          Logger.info("Delayed Gmail setup completed", data);
+
+        } catch (err) {
+          Logger.error("Delayed Gmail setup failed", {
+            email: data.email,
+            error: err.message
+          });
+        }
+
+        props.deleteProperty(emailKey);
+      }
+
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+}
+
 /**
  * Processes members in batches to manage API rate limits
  *
@@ -1569,19 +2333,47 @@ function batchUpdateMembers(members, batchSize = CONFIG.BATCH_SIZE) {
     totalBatches: totalBatches
   });
 
+  let successCount = 0;
+  let errorCount = 0;
+  const batchStart = new Date();
+
   for (let i = 0; i < memberArray.length; i += batchSize) {
     const batch = memberArray.slice(i, i + batchSize);
     const batchNumber = Math.floor(i / batchSize) + 1;
+    const batchIterationStart = new Date();
 
     Logger.info('Processing batch', {
       batch: batchNumber,
       totalBatches: totalBatches,
-      batchSize: batch.length
+      batchSize: batch.length,
+      progress: `${i + batch.length}/${memberArray.length}`,
+      percentComplete: Math.round(((i + batch.length) / memberArray.length) * 100) + '%'
     });
 
     // Process batch
-    batch.forEach(member => {
-      addOrUpdateUser(member);
+    batch.forEach((member, idx) => {
+      try {
+        addOrUpdateUser(member);
+        successCount++;
+      } catch (e) {
+        errorCount++;
+        Logger.error('Batch member update failed', {
+          capsn: member.capsn,
+          email: member.firstName + '.' + member.lastName + CONFIG.EMAIL_DOMAIN,
+          batchNumber: batchNumber,
+          batchIndex: idx,
+          errorMessage: e.message
+        });
+      }
+    });
+
+    const batchIterationDuration = new Date() - batchIterationStart;
+    Logger.info('Batch completed', {
+      batch: batchNumber,
+      duration: batchIterationDuration + 'ms',
+      successInBatch: batch.length - errorCount,
+      totalSuccess: successCount,
+      totalErrors: errorCount
     });
 
     // Add delay between batches to avoid rate limits
@@ -1590,9 +2382,14 @@ function batchUpdateMembers(members, batchSize = CONFIG.BATCH_SIZE) {
     }
   }
 
+  const totalDuration = new Date() - batchStart;
   Logger.info('Batch update completed', {
     totalMembers: memberArray.length,
-    batches: totalBatches
+    batches: totalBatches,
+    successCount: successCount,
+    errorCount: errorCount,
+    duration: totalDuration + 'ms',
+    avgTimePerMember: Math.round(totalDuration / memberArray.length) + 'ms'
   });
 }
 
@@ -1836,10 +2633,9 @@ function updateSignatureForAllAliases(primaryEmail, signatureHTML) {
       });
 
       const code = resp.getResponseCode();
-      if (code >= 200 && code < 300) {
-        Logger.info('Updated signature for alias', { primary: primaryEmail, alias: aliasEmail });
-      } else {
+      if (code < 200 || code >= 300) {
         Logger.error('Failed to update signature for alias', {
+          primary: primaryEmail,
           alias: aliasEmail,
           code: code,
           response: resp.getContentText()
@@ -2041,13 +2837,6 @@ function addAliasesFromSheet() {
   });
 }
 
-function testUpdateSendAs() {
-  const email = "william.adam@pcrcap.org";
-  const display = "Adam, William Lt Col";
-
-  updateGmailSendAsDisplayName(email, display);
-}
-
 function updateAllSendAsNames() {
   Logger.info('Starting updateAllSendAsNames');
 
@@ -2090,13 +2879,165 @@ function updateAllSendAsNames() {
       member.lastName + (member.suffix ? ' ' + member.suffix : ''),
       ', ',
       member.firstName,
-      member.middleName ? ' ' + member.middleName : '',
+      member.middleName ? ' ' + member.middleName.charAt(0) : '',
       member.rank ? ' ' + member.rank : ''
     ].join('').trim();
 
+    // Sync Directory displayName everywhere
+    try {
+      AdminDirectory.Users.update(
+        { name: { displayName: displayName } },
+        user.primaryEmail
+      );
+      Logger.info('Directory displayName synced', {
+        email: user.primaryEmail,
+        displayName: displayName
+      });
+    } catch (e) {
+      Logger.error('Failed to sync Directory displayName', {
+        email: user.primaryEmail,
+        error: e.message
+      });
+    }
     updateGmailSendAsDisplayName(user.primaryEmail, displayName);
     Utilities.sleep(200);
   });
 
   Logger.info('Completed updateAllSendAsNames for all Workspace users');
+}
+
+/**
+ * FORCE UPDATE ALL MEMBERS
+ * Forces an update of all members regardless of whether they've changed.
+ * Bypasses the memberUpdated() check and processes every member.
+ * Useful for ensuring all users have the latest field updates applied.
+ */
+function forceUpdateAllMembers() {
+  clearCache();
+  const start = new Date();
+
+  Logger.info('Starting FORCE update of all members (bypassing change detection)');
+
+  let members = getMembers();
+
+  const activeUsers = getActiveUsers();
+  workspaceEmailByCapid = {};
+  activeUsers.forEach(u => {
+    workspaceEmailByCapid[String(u.capid)] = u.email;
+  });
+  assignManagerEmails(members);
+
+  const totalMembers = Object.keys(members).length;
+
+  Logger.info("Force update starting", {
+    totalMembers: totalMembers
+  });
+
+  // Process ALL members without change detection
+  batchUpdateMembers(members);
+
+  saveCurrentMemberData(members);
+
+  Logger.info('Force member update completed', {
+    duration: new Date() - start + 'ms',
+    totalProcessed: totalMembers
+  });
+}
+
+/**
+ * TEST FUNCTION — Force update of Directory duty titles
+ * for all users with no duty assignments.
+ *
+ * This runs independently of updateAllMembers() and does NOT
+ * alter any previous data comparison logic.
+ */
+function forceDutyTitleRebuild() {
+  Logger.info("Starting forceDutyTitleRebuild()");
+
+  const members = getMembers();
+  const memberIndex = {};
+  for (const capid in members) {
+    memberIndex[String(capid)] = members[capid];
+  }
+
+  // Fetch all Workspace users
+  let pageToken = null;
+  const workspaceUsers = [];
+
+  do {
+    const page = AdminDirectory.Users.list({
+      customer: "my_customer",
+      maxResults: 200,
+      projection: "full",
+      pageToken: pageToken
+    });
+
+    if (page.users) workspaceUsers.push(...page.users);
+    pageToken = page.nextPageToken;
+
+  } while (pageToken);
+
+  let updated = 0;
+  let skipped = 0;
+
+  workspaceUsers.forEach(user => {
+    const capid = user.externalIds?.[0]?.value;
+    const member = memberIndex[capid];
+
+    if (!member) {
+      skipped++;
+      return;
+    }
+
+    // Only users WITH NO duty positions
+    if (member.dutyPositions.length > 0) {
+      skipped++;
+      return;
+    }
+
+    // Build the updated org title
+    const orgTitle = "No Duty Assignment";
+
+    try {
+      AdminDirectory.Users.update({
+        organizations: [{
+          title: orgTitle,
+          department: toTitleCase(member.orgName || member.charter || ''),
+          costCenter: member.charter || '',
+          description: member.type || '',
+          type: 'work',
+          primary: true
+        }]
+      }, user.primaryEmail);
+
+      Logger.info("Forced duty-title update", {
+        email: user.primaryEmail,
+        title: orgTitle
+      });
+
+      updated++;
+
+    } catch (e) {
+      Logger.error("Failed duty-title force update", {
+        email: user.primaryEmail,
+        error: e.message
+      });
+    }
+
+    Utilities.sleep(150); // rate limit protection
+  });
+
+  Logger.info("forceDutyTitleRebuild() completed", {
+    updated: updated,
+    skipped: skipped,
+    totalUsers: workspaceUsers.length
+  });
+}
+
+function testImpersonationToken() {
+  const t = getImpersonatedToken_(
+    Session.getActiveUser().getEmail(),
+    'https://www.googleapis.com/auth/gmail.settings.basic'
+  );
+  Logger.log('Token length: ' + (t ? t.length : 0));
 }
