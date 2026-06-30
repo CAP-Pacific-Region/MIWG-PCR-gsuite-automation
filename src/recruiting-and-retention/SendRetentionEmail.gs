@@ -933,7 +933,7 @@ function sendRetentionSummaryEmail(summary) {
     htmlBody += `
           <hr>
           <p style="font-size: 12px; color: #666;">
-            This is an automated report from the MIWG CAPWATCH Retention Email system.
+            This is an automated report from the CAWG CAPWATCH Retention Email system.
             For questions or issues, please contact ${ITSUPPORT_EMAIL}.
           </p>
         </body>

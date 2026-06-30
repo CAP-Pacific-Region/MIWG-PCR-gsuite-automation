@@ -41,18 +41,29 @@ function manageLicenseLifecycle() {
   const summary = {
     archived: [],
     deleted: [],
+    deletedIneligible: [],
     errors: [],
     startTime: start.toISOString()
   };
-  
+
   try {
-    // Step 1: Archive long-suspended users not active in CAPWATCH
+    // Step 1: Archive long-suspended users not active in CAPWATCH.
+    // NOTE: archiving is unavailable on this Workspace for Nonprofits edition
+    // (no Archived User licenses provisioned). This step is effectively a
+    // no-op until/unless Archived User licenses are added to the domain.
     summary.archived = archiveLongSuspendedUsers(activeCapsns);
-    
-    // Step 2: Delete long-archived users not active in CAPWATCH
-    // COMMENTED OUT WHILE TESTING TO PREVENT ACCIDENTAL DELETION
-    //summary.deleted = deleteLongArchivedUsers(activeCapsns);
-    
+
+    // Step 2: Delete long-archived users not active in CAPWATCH.
+    // Kept commented out since archiving is unavailable (step above no-ops).
+    // summary.deleted = deleteLongArchivedUsers(activeCapsns);
+
+    // Step 3: Delete suspended ineligible users after 30-day grace period.
+    // Ineligible = suspended in Workspace AND not an eligible active CAPWATCH
+    // member (PATRON, lapsed, no record, etc.). Accounts become eligible
+    // again before deletion if the member's CAPWATCH type or status changes
+    // — reactivateRenewedMembers() handles that path and prevents deletion.
+    summary.deletedIneligible = deleteIneligibleSuspendedUsers();
+
   } catch (err) {
     Logger.error('License lifecycle management failed', err);
     summary.errors.push({
@@ -381,8 +392,145 @@ function deleteLongArchivedUsers(activeCapsns) {
 }
 
 /**
+ * Deletes suspended Workspace accounts that are ineligible for a seat and
+ * have been suspended for at least LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE
+ * days (default 30).
+ *
+ * Ineligible = not an eligible active CAPWATCH member (not in
+ * CONFIG.MEMBER_TYPES.ACTIVE with ACTIVE status) AND not a Manual Member.
+ * This mirrors the criteria used by suspendExpiredMembers() /
+ * auditWorkspaceUsersForRemoval() — the same population that gets suspended
+ * immediately on determination of ineligibility.
+ *
+ * If a member becomes eligible again BEFORE this threshold (e.g. a PATRON
+ * upgrades to SENIOR), reactivateRenewedMembers() unsuspends them and they
+ * never reach the delete threshold.
+ *
+ * Uses lastLoginTime as a proxy for when the account became inactive
+ * (same approach as archiveLongSuspendedUsers). Accounts that never logged
+ * in use creationTime as the fallback — these have no usage data to preserve
+ * so immediate eligibility for deletion is acceptable.
+ *
+ * @returns {Array<Object>} Accounts that were deleted
+ */
+function deleteIneligibleSuspendedUsers() {
+  Logger.info('Starting deletion of ineligible suspended users');
+
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE);
+
+  // Build eligibility lookup: CAPID -> {status, type}
+  const memberData = parseFile('Member');
+  const memberInfoByCapid = {};
+  for (let i = 0; i < memberData.length; i++) {
+    const capid = String(memberData[i][0] || '').trim();
+    if (capid) memberInfoByCapid[capid] = { status: memberData[i][24], type: memberData[i][21] };
+  }
+
+  // Manual Members allow-list — never delete these
+  const manualCapids = {};
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
+    const sheet = ss.getSheetByName('Manual Members') || ss.getSheetByName('ManualMembers');
+    if (sheet) {
+      const rows = sheet.getDataRange().getValues();
+      if (rows && rows.length > 1) {
+        const header = rows[0].map(h => String(h || '').trim());
+        const capidIdx = header.indexOf('CAPID');
+        if (capidIdx > -1) {
+          for (let r = 1; r < rows.length; r++) {
+            const capid = String(rows[r][capidIdx] || '').trim();
+            if (capid) manualCapids[capid] = 1;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    Logger.warn('Unable to read Manual Members sheet for deletion allow-list', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+  }
+
+  const eligibleTypes = CONFIG.MEMBER_TYPES.ACTIVE;
+  const deleted = [];
+  let nextPageToken = '';
+
+  do {
+    const page = AdminDirectory.Users.list({
+      domain: CONFIG.DOMAIN,
+      maxResults: 500,
+      query: 'isSuspended=true isAdmin=false',
+      fields: 'users(primaryEmail,name,orgUnitPath,suspended,externalIds,employeeId,creationTime,lastLoginTime),nextPageToken',
+      pageToken: nextPageToken
+    });
+
+    nextPageToken = page.nextPageToken;
+    if (!page.users) continue;
+
+    for (const user of page.users) {
+      const ids = user.externalIds || [];
+      const capidExt = ids.find(id => id.type === 'organization');
+      const capid = capidExt ? String(capidExt.value || '').trim() :
+        String(user.employeeId || '').trim();
+
+      if (!capid) continue;
+      if (manualCapids[capid]) continue;
+
+      // Skip if eligible — means they should be reactivated, not deleted
+      const info = memberInfoByCapid[capid];
+      if (info && info.status === 'ACTIVE' && eligibleTypes.indexOf(info.type) > -1) continue;
+      if (info && info.type === 'CADET') continue;
+
+      // Check suspension duration proxy
+      const lastActivity = user.lastLoginTime ?
+        new Date(user.lastLoginTime) : new Date(user.creationTime);
+      if (lastActivity >= cutoff) continue;
+
+      try {
+        executeWithRetry(() => AdminDirectory.Users.remove(user.primaryEmail));
+
+        const name = user.name && user.name.fullName ? user.name.fullName :
+          `${user.name.givenName} ${user.name.familyName}`;
+        deleted.push({
+          email: user.primaryEmail,
+          capsn: capid,
+          name: name,
+          orgUnitPath: user.orgUnitPath || '/',
+          lastActivity: lastActivity.toISOString(),
+          daysSinceActivity: Math.floor((new Date() - lastActivity) / (1000 * 60 * 60 * 24)),
+          deletedAt: new Date().toISOString()
+        });
+
+        Logger.info('Ineligible suspended user deleted', {
+          email: user.primaryEmail,
+          capsn: capid,
+          daysSinceActivity: Math.floor((new Date() - lastActivity) / (1000 * 60 * 60 * 24))
+        });
+
+        Utilities.sleep(100);
+
+      } catch (e) {
+        Logger.error('Failed to delete ineligible suspended user', {
+          email: user.primaryEmail,
+          capsn: capid,
+          errorMessage: e.message,
+          errorCode: e.details?.code
+        });
+      }
+    }
+  } while (nextPageToken);
+
+  Logger.info('Deletion of ineligible suspended users completed', {
+    count: deleted.length,
+    graceDays: LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE
+  });
+
+  return deleted;
+}
+
+/**
  * Sends email report of license management actions
- * 
+ *
  * @param {Object} summary - Summary object with reactivated, archived, and deleted arrays
  * @returns {void}
  */
@@ -410,7 +558,8 @@ function sendLicenseManagementReport(summary) {
           <p><strong>Run Date:</strong> ${new Date(summary.startTime).toLocaleString()}</p>
           <p><strong>Duration:</strong> ${Math.round(summary.duration / 1000)} seconds</p>
           <p><strong>Users Archived:</strong> ${summary.archived.length}</p>
-          <p><strong>Users Deleted:</strong> ${summary.deleted.length}</p>
+          <p><strong>Users Deleted (long-archived):</strong> ${summary.deleted.length}</p>
+          <p><strong>Users Deleted (ineligible, 30-day):</strong> ${summary.deletedIneligible ? summary.deletedIneligible.length : 0}</p>
           <p><strong>Errors:</strong> ${summary.errors.length}</p>
         </div>
   `;
@@ -845,12 +994,404 @@ function testLicenseManagement() {
 
 /**
  * Test function to check license statistics
- * 
+ *
  * @returns {void}
  */
 function testGetLicenseStats() {
   const stats = getLicenseStatistics();
   Logger.info('Current license statistics', stats);
+}
+
+/**
+ * Preview Workspace accounts for members who are ACTIVE in CAPWATCH but whose
+ * member type is not in CONFIG.MEMBER_TYPES.ACTIVE (e.g. PATRON) and are
+ * therefore not eligible for a seat. Cadets are always excluded - they are
+ * provisioned on a separate Workspace domain and out of scope here.
+ *
+ * Makes no changes. Run suspendAndArchiveIneligibleMembers() after reviewing
+ * this list to actually free up the licenses.
+ *
+ * @returns {Array<Object>} Candidates with email, capsn, name, type, orgUnitPath
+ */
+function previewIneligibleMembers() {
+  Logger.info('Starting ineligible-member preview (no changes will be made)');
+
+  clearCache();
+
+  // Build CAPID -> {type, status, name} directly from Member.txt, bypassing
+  // the type allow-list that getMembers()/shouldProcessMember() applies.
+  const memberData = parseFile('Member');
+  const memberInfoByCapid = {};
+  for (let i = 0; i < memberData.length; i++) {
+    const capid = String(memberData[i][0] || '').trim();
+    if (!capid) continue;
+    memberInfoByCapid[capid] = {
+      status: memberData[i][24],
+      type: memberData[i][21],
+      lastName: memberData[i][2],
+      firstName: memberData[i][3]
+    };
+  }
+
+  const eligibleTypes = CONFIG.MEMBER_TYPES.ACTIVE;
+  const activeUsers = getActiveUsers();
+  const candidates = [];
+
+  for (let i = 0; i < activeUsers.length; i++) {
+    const capid = String(activeUsers[i].capid || '').trim();
+    const info = memberInfoByCapid[capid];
+    if (!info) continue;
+
+    if (info.status !== 'ACTIVE') continue;
+    if (info.type === 'CADET') continue;
+    if (eligibleTypes.indexOf(info.type) > -1) continue;
+
+    candidates.push({
+      email: activeUsers[i].email,
+      capsn: capid,
+      name: `${info.firstName} ${info.lastName}`,
+      type: info.type || '(blank)'
+    });
+  }
+
+  candidates.sort((a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
+
+  const byType = {};
+  candidates.forEach(c => { byType[c.type] = (byType[c.type] || 0) + 1; });
+
+  Logger.info('Ineligible-member preview completed', {
+    count: candidates.length,
+    byType: byType
+  });
+
+  console.log('\n=== ACTIVE WORKSPACE ACCOUNTS WITH INELIGIBLE CAPWATCH TYPE ===\n');
+  console.log(`Total: ${candidates.length} accounts\n`);
+  if (candidates.length > 0) {
+    console.log('Name'.padEnd(30) + 'CAPSN'.padEnd(10) + 'Type'.padEnd(16) + 'Email');
+    console.log('-'.repeat(90));
+    candidates.forEach(c => {
+      console.log(c.name.padEnd(30) + c.capsn.padEnd(10) + c.type.padEnd(16) + c.email);
+    });
+  } else {
+    console.log('No ineligible-type accounts found.');
+  }
+
+  return candidates;
+}
+
+/**
+ * Suspends Workspace accounts for members identified by
+ * previewIneligibleMembers(). Run the preview first and review the list -
+ * this directly affects live accounts and is not limited to one batch size
+ * like manageLicenseLifecycle().
+ *
+ * Note: on this Workspace for Nonprofits edition, the 2000-user domain cap
+ * counts ALL user accounts regardless of suspended status (confirmed via the
+ * Admin Console Users export), and Archived User licenses are not
+ * provisioned (confirmed via 412 errors from AdminDirectory.Users.update).
+ * Suspending alone does NOT free a seat against that cap - only deleting the
+ * account does. Use auditWorkspaceUsersForRemoval() / deleteIneligibleMembers()
+ * once you've confirmed deletion is the right call.
+ *
+ * @returns {Array<Object>} Accounts that were suspended
+ */
+function suspendIneligibleMembers() {
+  Logger.info('Starting suspension of ineligible members');
+
+  const candidates = previewIneligibleMembers();
+  const results = [];
+
+  candidates.forEach(c => {
+    try {
+      executeWithRetry(() =>
+        AdminDirectory.Users.update({ suspended: true }, c.email)
+      );
+      results.push(Object.assign({}, c, { success: true }));
+      Logger.info('Ineligible member suspended', c);
+    } catch (e) {
+      results.push(Object.assign({}, c, { success: false, errorMessage: e.message }));
+      Logger.error('Failed to suspend ineligible member', {
+        email: c.email,
+        capsn: c.capsn,
+        errorMessage: e.message,
+        errorCode: e.details?.code
+      });
+    }
+    Utilities.sleep(100);
+  });
+
+  const succeeded = results.filter(r => r.success).length;
+  const failed = results.length - succeeded;
+
+  Logger.info('Suspension of ineligible members completed', {
+    total: results.length,
+    succeeded: succeeded,
+    failed: failed
+  });
+
+  return results;
+}
+
+/**
+ * Audits every non-admin Workspace user (active AND suspended) against
+ * current CAPWATCH data, using CAPID as the join key, to find every account
+ * that could be removed to free seats against the 2000-user domain cap.
+ *
+ * Wider than previewIneligibleMembers() (which only looks at ACTIVE
+ * Workspace users with an ineligible CAPWATCH type). This also catches:
+ * - ineligibleType: ACTIVE in CAPWATCH but type not in CONFIG.MEMBER_TYPES.ACTIVE
+ * - lapsed: has a CAPID match but CAPWATCH status is not ACTIVE
+ * - noCapwatchRecord: no CAPID match in Member.txt at all (and not a Manual
+ *   Member) - e.g. former members fully removed from CAPWATCH
+ *
+ * Manual Members (PCR/NHQ/etc. tracked via the Manual Members sheet) and
+ * cadets are always excluded - cadets are provisioned on a separate
+ * Workspace domain and out of scope here.
+ *
+ * Makes no changes.
+ *
+ * @returns {Object} { ineligibleType, lapsed, noCapwatchRecord, totalCandidates }
+ */
+function auditWorkspaceUsersForRemoval() {
+  Logger.info('Starting full Workspace-vs-CAPWATCH removal audit (no changes will be made)');
+
+  clearCache();
+
+  // CAPID -> {status, type, name} from Member.txt, unfiltered by type.
+  const memberData = parseFile('Member');
+  const memberInfoByCapid = {};
+  for (let i = 0; i < memberData.length; i++) {
+    const capid = String(memberData[i][0] || '').trim();
+    if (!capid) continue;
+    memberInfoByCapid[capid] = {
+      status: memberData[i][24],
+      type: memberData[i][21],
+      lastName: memberData[i][2],
+      firstName: memberData[i][3]
+    };
+  }
+
+  // Manual Members allow-list (PCR/NHQ/etc.) - never flag these.
+  const manualCapids = {};
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
+    const sheet = ss.getSheetByName('Manual Members') || ss.getSheetByName('ManualMembers');
+    if (sheet) {
+      const rows = sheet.getDataRange().getValues();
+      if (rows && rows.length > 1) {
+        const header = rows[0].map(h => String(h || '').trim());
+        const capidIdx = header.indexOf('CAPID');
+        if (capidIdx > -1) {
+          for (let r = 1; r < rows.length; r++) {
+            const capid = String(rows[r][capidIdx] || '').trim();
+            if (capid) manualCapids[capid] = 1;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    Logger.warn('Unable to read Manual Members sheet for audit allow-list', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+  }
+
+  const eligibleTypes = CONFIG.MEMBER_TYPES.ACTIVE;
+  const ineligibleType = [];
+  const lapsed = [];
+  const noCapwatchRecord = [];
+
+  let nextPageToken = '';
+  do {
+    const page = AdminDirectory.Users.list({
+      domain: CONFIG.DOMAIN,
+      maxResults: 500,
+      query: 'isAdmin=false',
+      projection: 'full',
+      pageToken: nextPageToken
+    });
+
+    nextPageToken = page.nextPageToken;
+    if (!page.users) continue;
+
+    for (let i = 0; i < page.users.length; i++) {
+      const user = page.users[i];
+      const ids = user.externalIds || [];
+      const capidExt = ids.find(id => id.type === 'organization');
+      const capid = capidExt ? String(capidExt.value || '').trim() :
+        String(user.employeeId || '').trim();
+
+      if (!capid) continue; // can't map - covered separately by debugListUsersMissingOrganizationExternalId()
+      if (manualCapids[capid]) continue;
+
+      const info = memberInfoByCapid[capid];
+      const record = {
+        email: user.primaryEmail,
+        capsn: capid,
+        suspended: !!user.suspended,
+        orgUnitPath: user.orgUnitPath || '/'
+      };
+
+      if (!info) {
+        record.name = user.name && user.name.fullName ? user.name.fullName : '';
+        noCapwatchRecord.push(record);
+        continue;
+      }
+
+      record.name = `${info.firstName} ${info.lastName}`;
+
+      if (info.type === 'CADET') continue;
+
+      if (info.status !== 'ACTIVE') {
+        record.status = info.status;
+        record.type = info.type || '(blank)';
+        lapsed.push(record);
+        continue;
+      }
+
+      if (eligibleTypes.indexOf(info.type) === -1) {
+        record.type = info.type || '(blank)';
+        ineligibleType.push(record);
+      }
+    }
+  } while (nextPageToken);
+
+  [ineligibleType, lapsed, noCapwatchRecord].forEach(list =>
+    list.sort((a, b) => a.name.localeCompare(b.name))
+  );
+
+  const summary = {
+    ineligibleTypeCount: ineligibleType.length,
+    lapsedCount: lapsed.length,
+    noCapwatchRecordCount: noCapwatchRecord.length,
+    totalCandidates: ineligibleType.length + lapsed.length + noCapwatchRecord.length
+  };
+
+  Logger.info('Workspace-vs-CAPWATCH removal audit completed', summary);
+
+  console.log('\n=== REMOVAL AUDIT (no changes made) ===\n');
+
+  console.log(`\n-- Ineligible type, ACTIVE in CAPWATCH (${ineligibleType.length}) --`);
+  ineligibleType.forEach(r =>
+    console.log(`${r.name.padEnd(28)} ${r.capsn.padEnd(10)} ${r.type.padEnd(14)} ${r.suspended ? 'suspended' : 'ACTIVE WS'.padEnd(9)} ${r.email}`)
+  );
+
+  console.log(`\n-- Lapsed in CAPWATCH (status != ACTIVE) (${lapsed.length}) --`);
+  lapsed.forEach(r =>
+    console.log(`${r.name.padEnd(28)} ${r.capsn.padEnd(10)} ${String(r.status).padEnd(14)} ${r.suspended ? 'suspended' : 'ACTIVE WS'.padEnd(9)} ${r.email}`)
+  );
+
+  console.log(`\n-- No CAPWATCH record at all (${noCapwatchRecord.length}) --`);
+  noCapwatchRecord.forEach(r =>
+    console.log(`${r.name.padEnd(28)} ${r.capsn.padEnd(10)} ${r.suspended ? 'suspended' : 'ACTIVE WS'.padEnd(9)} ${r.email}`)
+  );
+
+  console.log(`\nTotal removal candidates: ${summary.totalCandidates}\n`);
+
+  return { ineligibleType, lapsed, noCapwatchRecord, summary };
+}
+
+/**
+ * Manually-reviewed exceptions for deleteIneligibleWorkspaceUsers(). Emails
+ * here are skipped even if auditWorkspaceUsersForRemoval() flags them.
+ *
+ * (Currently empty - jared.law@cawgcap.org / jared.law.2@cawgcap.org for
+ * CAPID 663829 were initially going to keep the higher-storage account, but
+ * neither appears in the wing registry at all, so both are eligible for
+ * deletion via the normal audit candidate list.)
+ */
+const DELETE_AUDIT_EXCEPTIONS = [];
+
+/**
+ * Deletes Workspace accounts identified by auditWorkspaceUsersForRemoval().
+ * Re-runs the audit fresh on every call (so the Manual Members sheet is
+ * always re-checked live, not from a stale snapshot) and applies two safety
+ * filters on top of the audit:
+ *
+ * 1. Only ever deletes accounts that are currently SUSPENDED in Workspace.
+ *    An account that is still active (not suspended) is left alone even if
+ *    it has no CAPWATCH record - that combination means either a manual
+ *    exception that hasn't been added to the Manual Members sheet yet, or a
+ *    member whose suspension recently lapsed and is eligible again (this is
+ *    what excludes Brigitte Furra automatically, since her suspension
+ *    expired and she shows as active in Workspace).
+ * 2. Skips anything in DELETE_AUDIT_EXCEPTIONS.
+ *
+ * Defaults to a dry run (dryRun=true): logs exactly what WOULD be deleted
+ * without calling AdminDirectory.Users.remove(). Pass dryRun=false to
+ * actually delete. Deletion is not reversible beyond Google's ~20-day
+ * recovery window for deleted users - confirm a Data Export has completed
+ * (Admin Console > Account > Data export) before running with dryRun=false.
+ *
+ * @param {boolean} dryRun - When true (default), no accounts are deleted.
+ * @returns {Array<Object>} Accounts that were (or would be) deleted
+ */
+function deleteIneligibleWorkspaceUsers(dryRun = true) {
+  Logger.info('Starting deleteIneligibleWorkspaceUsers', { dryRun: dryRun });
+
+  const audit = auditWorkspaceUsersForRemoval();
+  const allCandidates = [].concat(audit.ineligibleType, audit.lapsed, audit.noCapwatchRecord);
+
+  const toDelete = allCandidates.filter(c =>
+    c.suspended === true && DELETE_AUDIT_EXCEPTIONS.indexOf(c.email) === -1
+  );
+  const skippedActive = allCandidates.filter(c => c.suspended !== true);
+  const skippedException = allCandidates.filter(c =>
+    c.suspended === true && DELETE_AUDIT_EXCEPTIONS.indexOf(c.email) > -1
+  );
+
+  Logger.info('Delete candidate filtering completed', {
+    totalAuditCandidates: allCandidates.length,
+    toDelete: toDelete.length,
+    skippedActive: skippedActive.length,
+    skippedException: skippedException.length
+  });
+
+  if (skippedActive.length > 0) {
+    Logger.info('Skipped (currently active in Workspace, not suspended)', {
+      accounts: skippedActive.map(c => ({ name: c.name, email: c.email, capsn: c.capsn }))
+    });
+  }
+  if (skippedException.length > 0) {
+    Logger.info('Skipped (manual exception)', {
+      accounts: skippedException.map(c => ({ name: c.name, email: c.email, capsn: c.capsn }))
+    });
+  }
+
+  console.log(`\n=== ${dryRun ? 'DRY RUN - ' : ''}DELETE CANDIDATES (${toDelete.length}) ===\n`);
+  toDelete.forEach(c => console.log(`${c.name.padEnd(28)} ${c.capsn.padEnd(10)} ${c.email}`));
+
+  const results = [];
+
+  if (dryRun) {
+    Logger.info('Dry run complete - no accounts deleted. Call deleteIneligibleWorkspaceUsers(false) to actually delete.');
+    return toDelete.map(c => Object.assign({}, c, { deleted: false, dryRun: true }));
+  }
+
+  toDelete.forEach(c => {
+    try {
+      executeWithRetry(() => AdminDirectory.Users.remove(c.email));
+      results.push(Object.assign({}, c, { deleted: true }));
+      Logger.info('Account deleted', { email: c.email, capsn: c.capsn, name: c.name });
+    } catch (e) {
+      results.push(Object.assign({}, c, { deleted: false, errorMessage: e.message }));
+      Logger.error('Failed to delete account', {
+        email: c.email,
+        capsn: c.capsn,
+        errorMessage: e.message,
+        errorCode: e.details?.code
+      });
+    }
+    Utilities.sleep(100);
+  });
+
+  const deleted = results.filter(r => r.deleted).length;
+  Logger.info('deleteIneligibleWorkspaceUsers completed', {
+    total: results.length,
+    deleted: deleted,
+    failed: results.length - deleted
+  });
+
+  return results;
 }
 
 /**
