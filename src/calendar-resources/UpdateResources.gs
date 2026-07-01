@@ -1297,9 +1297,9 @@ function previewAircraftResources() {
     });
   }
 
-  Logger.info(`Aircraft preview: ${preview.length} aircraft found`);
+  console.log(`\n=== AIRCRAFT PREVIEW: ${preview.length} aircraft found ===\n`);
   if (preview.length > 0) {
-    Logger.info('Sample entry', { entry: preview[0] });
+    console.log('Sample entry:', JSON.stringify(preview[0], null, 2));
   }
 
   Logger.info('Aircraft preview completed', { count: preview.length });
@@ -1331,9 +1331,9 @@ function previewVehicleResources() {
     });
   }
 
-  Logger.info(`Vehicle preview: ${preview.length} vehicles found`);
+  console.log(`\n=== VEHICLE PREVIEW: ${preview.length} vehicles found ===\n`);
   if (preview.length > 0) {
-    Logger.info('Sample entry', { entry: preview[0] });
+    console.log('Sample entry:', JSON.stringify(preview[0], null, 2));
   }
 
   Logger.info('Vehicle preview completed', { count: preview.length });
@@ -1354,8 +1354,8 @@ function testAcCodeResolution() {
     'C206U', 'P210N', 'UNKNOWN'
   ];
 
-  Logger.info('ACCode resolution test');
+  console.log('\n=== ACCODE RESOLUTION TEST ===\n');
   testCodes.forEach(code => {
-    Logger.info(`${code.padEnd(10)} → ${resolveAircraftModel(code)}`);
+    console.log(`${code.padEnd(10)} → ${resolveAircraftModel(code)}`);
   });
 }

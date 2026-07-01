@@ -142,6 +142,8 @@ function getCapwatch() {
       totalFiles: files.length,
       orgid: CONFIG.CAPWATCH_ORGID
     });
+
+    syncOrgPaths();
   } catch (e) {
     Logger.error('Failed to download CAPWATCH data', {
       errorMessage: e.message,

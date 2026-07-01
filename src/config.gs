@@ -1,50 +1,221 @@
-  /**
-   * CAPWATCH organization ID for data download
-   * This should be your Wing ORGID
-   * MI Wing = 223
-   */
-  CAPWATCH_ORGID: '',
+/***********************************************
+ * File: config.gs
+ * Description: Centralized configuration and constants for CAPWATCH automation scripts.
+ * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
+ * Author: Noel Luneau
+ * Date: November 14, 2025
+ ***********************************************/
+
+/**
+ * Builds the Service Account JSON at runtime.
+ *
+ * Secrets MUST NOT be committed to source.
+ * Store these in Script Properties:
+ *   - SA_IMPERSONATION_EMAIL  (service account client_email)
+ *   - SA_PRIVATE_KEY          (private key PEM; may contain literal \n sequences)
+ *
+ * Optional:
+ *   - SA_PRIVATE_KEY_ID
+ */
+function getServiceAccountJson_() {
+  const props = PropertiesService.getScriptProperties();
+  const clientEmail = String(props.getProperty('SA_IMPERSONATION_EMAIL') || '').trim();
+  let privateKey = String(props.getProperty('SA_PRIVATE_KEY') || '');
+  const privateKeyId = String(props.getProperty('SA_PRIVATE_KEY_ID') || '').trim();
+
+  privateKey = privateKey.replace(/\\n/g, '\n');
+
+  if (!clientEmail || !privateKey) {
+    return JSON.stringify({});
+  }
+
+  const sa = {
+    type: 'service_account',
+    project_id: 'pcr-capwatch',
+    private_key_id: privateKeyId || undefined,
+    private_key: privateKey,
+    client_email: clientEmail,
+    client_id: '117582666328715304137',
+    auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+    token_uri: 'https://oauth2.googleapis.com/token',
+    auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+    client_x509_cert_url: clientEmail
+      ? `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(clientEmail)}`
+      : undefined,
+    universe_domain: 'googleapis.com'
+  };
+
+  Object.keys(sa).forEach(k => sa[k] === undefined && delete sa[k]);
+  return JSON.stringify(sa, null, 2);
+}
+
+const CONFIG = {
+/**
+ * Configuration Constants
+ *
+ * Centralized configuration for CAPWATCH automation system.
+ * Update these values to match your organization's settings.
+ */
+
+/**
+ * CAPWATCH organization ID for data download
+ * This should be your Wing ORGID
+ * MI Wing = 223
+ */
+CAPWATCH_ORGID: '188',
+
+/**
+ * Wing abbreviation
+ * Used for building squadron identifiers
+ */
+REGION: "",
+
+/**
+* If unit is a Region, set three letter abbreviation here
+*/
+WING: "CA",
+
+/**
+ * Email domain for CAP accounts
+ * All members get username@miwg.cap.gov
+ */
+EMAIL_DOMAIN: "@cawgcap.org",
+
+/**
+ * Google Workspace domain
+ * Used for API calls
+ */
+DOMAIN: "cawgcap.org",
+
+// ============================================================================
+// ACCOUNTS AND GROUPS
+// ============================================================================
+
+/**
+* Member type definitions
+* Determines which member types are processed in different scenarios
+*/
+MEMBER_TYPES: {
+  /** All active member types */
+  /** ACTIVE: ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE', ''],  */
+  ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR', ''],
+  /** Only Aerospace Education Members */
+  AEM_ONLY: ['AEM']
+},
+
+/**
+ * Cadet-lite mode:
+ * When enabled:
+ *   - Excludes low grades from Workspace account creation
+ *   - CADET, C/Amn, C/A1C, C/SrA will be ignored
+ */
+CADET_LITE: false,   // turn OFF by setting false
+
+/**
+ * Cadet grades that should NOT get Workspace accounts
+ */
+CADET_LITE_EXCLUDED_GRADES: [
+    'CADET',
+    'C/Amn',
+    'C/A1C',
+    'C/SrA'
+],
 
   /**
-   * Wing abbreviation
-   * Used for building squadron identifiers
+   * Number of days to wait before suspending expired members
+   * Members who expire will remain active for this many days before suspension
    */
-    WING: "",
+  SUSPENSION_GRACE_DAYS: 7,
 
   /**
-  * If unit is a Region, set three letter abbreviation here
-  */
-    REGION: "",
+   * Organization IDs that should have users suspended
+   * These typically represent transition or inactive units
+   * MI-000 (744) and MI-999 (1920) are holding units for members in transition
+   */
+  EXCLUDED_ORG_IDS: ['1297', '368'],
 
   /**
-   * Email domain for CAP accounts
-   * All members get username@miwg.cap.gov
+   * Special organization configurations
    */
-  EMAIL_DOMAIN: "@xxwgcap.org",
+  SPECIAL_ORGS: {
+    /**
+     * Artificial org ID for Aerospace Education Members
+     * Uses MIWG (223) as template but with separate identity
+     */
+    AEM_UNIT: ''
+  },
 
   /**
-   * Google Workspace domain
-   * Used for API calls
+   * Number of members to process in each batch
+   * Used by batchUpdateMembers() to group API calls
    */
-  DOMAIN: "xxwgcap.org",
+  BATCH_SIZE: 50,
+
+  /**
+   * Maximum number of users to process in a single execution
+   * Safety limit to prevent runaway processing
+   *
+   * If more users need processing, they'll be handled in the next run.
+   * Set to a reasonable limit based on your user volume and script timeout.
+   */
+  MAX_BATCH_SIZE: 100,
+
+  /**
+   * Maximum number of retry attempts for API calls
+   * Used by executeWithRetry() in utils.gs
+   */
+  /**
+   * Maximum number of retry attempts for API calls
+   * Used by executeWithRetry() in utils.gs
+   */
+  API_RETRY_ATTEMPTS: 3,
+
+  /**
+   * Delay (milliseconds) between each API call to prevent 403 quota errors
+   */
+  API_DELAY_MS: 250,
+
+  /**
+   * Base delay (milliseconds) for exponential backoff after quota errors
+   */
+  API_BACKOFF_BASE_MS: 3000,
+
+  // ------------------------------------------------------
+  // SERVICE ACCOUNT JSON
+  // ------------------------------------------------------
+  SERVICE_ACCOUNT_JSON: getServiceAccountJson_(),
+
+  // ------------------------------------------------------
+  // FOLDER + SHEET IDS
+  // ------------------------------------------------------
 
   /**
    * Google Drive folder ID where CAPWATCH data files are stored
    * Downloaded files (Member.txt, Organization.txt, etc.) go here
    */
-  CAPWATCH_DATA_FOLDER_ID: '',
+  CAPWATCH_DATA_FOLDER_ID: '10T0wBubqzUzHa_7nx__eNfuzhTpFRDs3',
 
   /**
    * Google Drive folder ID for automation files
    * Contains configuration spreadsheets and logs
    */
-  AUTOMATION_FOLDER_ID: '',
+  AUTOMATION_FOLDER_ID: '1lLUs0RsTQXNgRnt_fURsw8B3E8DpsgE2',
 
   /**
    * Google Sheets ID for automation configuration
    * Contains 'Groups', 'User Additions', 'Error Emails' sheets
    */
-  AUTOMATION_SPREADSHEET_ID: ''
+  AUTOMATION_SPREADSHEET_ID: '1UqCc6aRMEYw-Y_bTcTDKXuaYLsQ6bQzkdoVG7rRsV9Q',
+
+  /**
+   * Log level for automation scripts
+   * Options:
+   *   - 'INFO'  → show all logs (default)
+   *   - 'WARN'  → warnings and errors only
+   *   - 'ERROR' → errors only
+   *   - 'NONE'  → suppress all logs
+   */
+  LOG_LEVEL: 'INFO',
 };
 
 /**
@@ -87,26 +258,112 @@ const GROUP_MEMBER_PAGE_SIZE = 200;
  */
 
 /** Google Sheets ID for retention tracking log */
-const RETENTION_LOG_SPREADSHEET_ID = '<id for the spreadsheet here>';
+const RETENTION_LOG_SPREADSHEET_ID = '1ouL6YHtTfpJs32YQ2NyfYxjHSDg39RydHMamGHXM7yA';
 
 /** Email address for retention Google Group */
-const RETENTION_EMAIL = 'it@xxwgcap.org';
+const RETENTION_EMAIL = 'recruiting@cawgcap.org';
 
 /** Email address for Director of Recruiting and Retention */
-const DIRECTOR_RECRUITING_EMAIL = 'it@xxwgcap.org';
+const DIRECTOR_RECRUITING_EMAIL = 'adam.staley@cawgcap.org';
 
 /** Email alias to use as sender for automated emails */
-const AUTOMATION_SENDER_EMAIL = 'automation@xxwgcap.org';
+const AUTOMATION_SENDER_EMAIL = 'automation@cawgcap.org';
 
 /** Display name for automated email sender */
-const SENDER_NAME = 'XXWG Information Technology';
+const SENDER_NAME = 'CAWG Information Technology';
 
 /** Test email address for development/testing */
-const TEST_EMAIL = 'it@xxwgcap.org';
+const TEST_EMAIL = 'it@cawgcap.org';
 
 /** IT support mailbox for notifications */
-const ITSUPPORT_EMAIL = 'it@xxwgcap.org'
+const ITSUPPORT_EMAIL = 'it@cawgcap.org'
 
+/**
+ * Configuration for retention email system
+ * Centralized constants for email subjects and thresholds
+ */
+const RETENTION_CONFIG = {
+  /**
+   * Email subject lines
+   */
+  SUBJECTS: {
+    TURNING_18: 'Important Membership Update - Turning 18',
+    TURNING_21: 'Important Membership Update - Turning 21',
+    EXPIRING: 'Your CAP Membership Expires Soon'
+  },
+
+  /**
+   * Age thresholds for email triggers
+   */
+  AGE_THRESHOLDS: {
+    TRANSITION_TO_SENIOR: 18,
+    CADET_AGE_OUT: 21
+  },
+
+  /**
+   * Email rate limiting (milliseconds between sends)
+   */
+  EMAIL_DELAY_MS: 100,
+
+  /**
+   * Progress logging frequency (log every N emails)
+   */
+  PROGRESS_LOG_INTERVAL: 10
+};
+
+// ============================================================================
+// LICENSE MANAGEMENT
+// ============================================================================
+
+/**
+ * License Management Configuration
+ * Controls the lifecycle management of Google Workspace accounts
+ */
+const LICENSE_CONFIG = {
+  /**
+   * Number of days a user must be suspended before being archived.
+   * NOTE: Archiving requires Archived User licenses which are not provisioned
+   * on this Workspace for Nonprofits edition (confirmed via 412 errors).
+   * archiveLongSuspendedUsers() is effectively a no-op on this domain.
+   */
+  DAYS_BEFORE_ARCHIVE: 365,
+
+  /**
+   * Number of days a user must be archived before being deleted.
+   * Used by deleteLongArchivedUsers() (currently commented out in
+   * manageLicenseLifecycle() since archiving is unavailable).
+   */
+  DAYS_BEFORE_DELETE: 1825, // 5 years
+
+  /**
+   * Number of days a suspended, ineligible user is kept before deletion.
+   * Ineligible means: suspended AND not an eligible active CAPWATCH member
+   * (not in CONFIG.MEMBER_TYPES.ACTIVE with ACTIVE status, and not a Manual
+   * Member). Accounts are suspended immediately on determination of
+   * ineligibility; this timer controls how long before the account is
+   * permanently deleted to free a seat against the 2000-user domain cap.
+   *
+   * If a member becomes eligible again before this deadline (e.g. a PATRON
+   * upgrades to SENIOR), the account is automatically unsuspended by
+   * reactivateRenewedMembers() and the deletion never fires.
+   */
+  DAYS_BEFORE_DELETE_INELIGIBLE: 30,
+
+  /**
+   * Email addresses to receive license management reports
+   * These recipients will get monthly reports of:
+   * - Users reactivated
+   * - Users archived
+   * - Users deleted
+   * - Any errors encountered
+   */
+  NOTIFICATION_EMAILS: [
+    DIRECTOR_RECRUITING_EMAIL,  // Primary contact
+    AUTOMATION_SENDER_EMAIL,     // Backup/monitoring
+    ITSUPPORT_EMAIL   // IT Notification
+  ],
+
+};
 
 // ============================================================================
 // SQUADRON GROUPS CONFIGURATION
@@ -125,7 +382,7 @@ const SQUADRON_GROUP_CONFIG = {
     /**
      * Description template for access groups
      */
-    DESCRIPTION_TEMPLATE: 'Internal access group for {squadron}. MIWG accounts only. Used for shared drive permissions and internal resource access.',
+    DESCRIPTION_TEMPLATE: 'Internal access group for {squadron}. CAWG accounts only. Used for shared drive permissions and internal resource access.',
     
     /**
      * Whether to auto-create access groups for all squadrons
@@ -190,7 +447,7 @@ const SQUADRON_GROUP_CONFIG = {
         suffix: 'allhands',
         name: 'All Hands',
         description: 'All members (cadets and seniors)',
-        includeTypes: ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE']
+        includeTypes: ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR']
       },
       {
         suffix: 'cadets',
@@ -202,7 +459,7 @@ const SQUADRON_GROUP_CONFIG = {
         suffix: 'seniors',
         name: 'Seniors',
         description: 'Senior members only',
-        includeTypes: ['SENIOR', 'FIFTY YEAR', 'LIFE']
+        includeTypes: ['SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR']
       },
       {
         suffix: 'parents',
@@ -229,7 +486,7 @@ const SQUADRON_GROUP_CONFIG = {
    * Google Apps Script has a 6-minute execution limit
    * Set to 5.5 minutes (330 seconds) to allow graceful shutdown
    */
-  MAX_EXECUTION_TIME_MS: 330000,
+  MAX_EXECUTION_TIME_MS: 1750000,
   
   /**
    * Maximum number of groups to process in a single execution
@@ -278,6 +535,6 @@ const SQUADRON_GROUP_CONFIG = {
    */
   EXCLUDED_ORGIDS: [
     '744',   // MI-000 (Holding unit)
-    '1920'   // MI-999 (Legislative unit)
+    '1920'   // MI-999 (Transition unit)
   ]
 };

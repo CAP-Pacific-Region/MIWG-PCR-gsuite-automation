@@ -1,0 +1,18 @@
+{
+  "name": "miwg-pcr-gsuite-automation",
+  "private": true,
+  "scripts": {
+    "status:seniors": "clasp status -P clasp-targets/seniors.clasp.json",
+    "push:seniors": "clasp push -P clasp-targets/seniors.clasp.json",
+    "pull:seniors": "clasp pull -P clasp-targets/seniors.clasp.json",
+    "open:seniors": "clasp open-script -P clasp-targets/seniors.clasp.json",
+    "status:cadets": "clasp status -P clasp-targets/cadets.clasp.json",
+    "push:cadets": "clasp push -P clasp-targets/cadets.clasp.json",
+    "pull:cadets": "clasp pull -P clasp-targets/cadets.clasp.json",
+    "open:cadets": "clasp open-script -P clasp-targets/cadets.clasp.json",
+    "status:pacific": "clasp status -P clasp-targets/pacific.clasp.json",
+    "push:pacific": "clasp push -P clasp-targets/pacific.clasp.json",
+    "pull:pacific": "clasp pull -P clasp-targets/pacific.clasp.json",
+    "open:pacific": "clasp open-script -P clasp-targets/pacific.clasp.json"
+  }
+}
