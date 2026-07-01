@@ -210,6 +210,12 @@ const ADDR_COL = {
  * @returns {Object} Summary of operations performed
  */
 function updateResources() {
+  const manageProp = PropertiesService.getScriptProperties().getProperty('MANAGE_RESOURCES');
+  if (manageProp !== null && manageProp.trim().toLowerCase() === 'false') {
+    Logger.info('Resource management disabled for this script target (MANAGE_RESOURCES=false) — skipping');
+    return;
+  }
+
   clearCache();
   const start = new Date();
   Logger.info('Starting resource sync');

@@ -112,6 +112,15 @@ MEMBER_TYPES: {
 CADET_LITE: false,   // turn OFF by setting false
 
 /**
+ * Per-target resource management (aircraft & vehicles)
+ * Set Script Property MANAGE_RESOURCES=false on any script that should NOT
+ * create or update calendar resources (e.g. the Cadets script — resources
+ * are managed exclusively by the Seniors script).
+ * Omitting the property, or setting it to anything other than "false", enables
+ * resource management (default behaviour).
+ */
+
+/**
  * Cadet grades that should NOT get Workspace accounts
  */
 CADET_LITE_EXCLUDED_GRADES: [
