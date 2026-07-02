@@ -1041,13 +1041,6 @@ function addOrUpdateUser(member) {
         capsn: member.capsn,
         name: member.firstName + ' ' + member.lastName
       });
-
-    // Queue for delayed Gmail setup
-    queueForDelayedGmailSetup(primaryEmail, sendAsDisplayName, member);
-
-    // Send welcome email
-    sendWelcomeEmail(member, primaryEmail, generatedPassword);
-
     } catch (e) {
       Logger.error('Failed to create new user', {
         email: primaryEmail,
@@ -1056,6 +1049,35 @@ function addOrUpdateUser(member) {
         orgid: member.orgid,
         charter: member.charter,
         orgPath: member.orgPath,
+        errorMessage: e.message,
+        errorCode: e.details?.code
+      });
+      return;
+    }
+
+    // Account exists past this point — post-provisioning steps are independent
+    // of each other and of account creation, so a failure here must not be
+    // mislabeled as (or mask) a failed user creation.
+
+    // Queue for delayed Gmail setup
+    try {
+      queueForDelayedGmailSetup(primaryEmail, sendAsDisplayName, member);
+    } catch (e) {
+      Logger.error('User created, but failed to queue delayed Gmail setup', {
+        email: primaryEmail,
+        capsn: member.capsn,
+        errorMessage: e.message,
+        errorCode: e.details?.code
+      });
+    }
+
+    // Send welcome email
+    try {
+      sendWelcomeEmail(member, primaryEmail, generatedPassword);
+    } catch (e) {
+      Logger.error('User created, but failed to send welcome email', {
+        email: primaryEmail,
+        capsn: member.capsn,
         errorMessage: e.message,
         errorCode: e.details?.code
       });
@@ -2285,7 +2307,7 @@ function generateEmailSignature(member) {
 // -----------------------------------------
 function sendWelcomeEmail(member, email, tempPassword) {
   const html = HtmlService
-    .createTemplateFromFile('WelcomeEmail')
+    .createTemplateFromFile('recruiting-and-retention/WelcomeEmail')
     .getRawContent();
 
   const mergedHtml = html

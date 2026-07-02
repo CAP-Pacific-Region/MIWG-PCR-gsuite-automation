@@ -579,7 +579,7 @@ function sendExpiringEmails(members, failedList) {
 function sendTurning18Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
-    const htmlBody = HtmlService.createHtmlOutputFromFile('Turning18Email')
+    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
       .getContent()
       .replace(/{{rank}}/g, member.rank)
       .replace(/{{lastName}}/g, member.lastName);
@@ -635,7 +635,7 @@ function sendTurning18Email(member) {
 function sendTurning21Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
-    const htmlBody = HtmlService.createHtmlOutputFromFile('Turning21Email')
+    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning21Email')
       .getContent()
       .replace(/{{rank}}/g, member.rank)
       .replace(/{{lastName}}/g, member.lastName);
@@ -692,7 +692,7 @@ function sendTurning21Email(member) {
 function sendExpiringEmail(member) {
   try {
     let commander = null;
-    const htmlBody = HtmlService.createHtmlOutputFromFile('ExpiringEmail')
+    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/ExpiringEmail')
       .getContent()
       .replace(/{{rank}}/g, member.rank)
       .replace(/{{lastName}}/g, member.lastName)
@@ -1026,7 +1026,7 @@ function testRetentionEmail() {
 function testSendSingleEmail() {
   Logger.info('Sending single test email', { recipient: TEST_EMAIL });
   
-  const htmlBody = HtmlService.createHtmlOutputFromFile('Turning18Email')
+  const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
     .getContent()
     .replace(/{{rank}}/g, 'C/Amn')
     .replace(/{{lastName}}/g, 'Test Member');
@@ -1083,7 +1083,7 @@ function testAllRetentionEmails() {
     const commander = getCommanderInfo(testMember.orgid);
     console.log('Commander: ' + JSON.stringify(commander, null, 2));
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('Turning18Email')
+    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
       .getContent()
       .replace(/{{rank}}/g, testMember.rank)
       .replace(/{{lastName}}/g, testMember.lastName);
@@ -1114,7 +1114,7 @@ function testAllRetentionEmails() {
     const commander = getCommanderInfo(testMember.orgid);
     console.log('Commander: ' + JSON.stringify(commander, null, 2));
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('Turning21Email')
+    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning21Email')
       .getContent()
       .replace(/{{rank}}/g, testMember.rank)
       .replace(/{{lastName}}/g, testMember.lastName);
@@ -1150,7 +1150,7 @@ function testAllRetentionEmails() {
       console.log('Member is SENIOR - no commander CC');
     }
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('ExpiringEmail')
+    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/ExpiringEmail')
       .getContent()
       .replace(/{{rank}}/g, testMember.rank)
       .replace(/{{lastName}}/g, testMember.lastName)
