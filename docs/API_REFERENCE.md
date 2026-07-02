@@ -1323,7 +1323,7 @@ Main configuration object in `config.gs`.
 - Default: 3
 
 **MEMBER_TYPES** (Object)
-- ACTIVE (string[]): All active types. Default: ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE', 'AEM']
+- ACTIVE (string[]): All active types. Default: ['CADET', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'AEM']
 - AEM_ONLY (string[]): Only AEM. Default: ['AEM']
 
 **CAPWATCH_ORGID** (string)

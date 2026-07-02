@@ -379,6 +379,12 @@ function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = t
 /**
  * Determines if a member should be processed based on status and type
  *
+ * Excludes members in CONFIG.EXCLUDED_ORG_IDS (CA's Unit 000/999 holding
+ * squadrons) by ORGID rather than by raw Unit number, so members are never
+ * eligible for accounts based on which physical org they're parked in —
+ * regardless of member type (including FIFTY YEAR/INDEFINITE, which never
+ * expire but are still excluded if held in one of those orgs).
+ *
  * @param {Array} memberRow - Raw member data row from CSV
  * @param {string[]} types - Valid member types to include
  * @returns {boolean} True if member should be processed
@@ -410,8 +416,7 @@ if (CONFIG.CADET_LITE === true) {
 // ---------------------------------------------
 
   return memberRow[24] === 'ACTIVE' &&
-         memberRow[13] != 0 &&
-         memberRow[13] != 999 &&
+         CONFIG.EXCLUDED_ORG_IDS.indexOf(String(memberRow[11])) === -1 &&
          types.indexOf(memberRow[21]) > -1;
 }
 
@@ -1221,7 +1226,7 @@ function updateAllMembers() {
     let level1Skipped = 0;
     for (const capsn in toProcess) {
       const member = toProcess[capsn];
-      const isSeniorType = ['SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR'].indexOf(member.type) > -1;
+      const isSeniorType = ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'].indexOf(member.type) > -1;
       const isNewAccount = !workspaceEmailByCapid[String(capsn)];
       if (isSeniorType && isNewAccount && !level1Capids.has(String(capsn))) {
         Logger.info('Senior skipped — Level I not complete', {

@@ -605,9 +605,8 @@ Want to exclude certain members? Add filtering logic:
 ```javascript
 // In shouldProcessMember()
 function shouldProcessMember(memberRow, types) {
-  return memberRow[24] === 'ACTIVE' && 
-         memberRow[13] != 0 &&  // Not org 000
-         memberRow[13] != 999 &&  // Not org 999
+  return memberRow[24] === 'ACTIVE' &&
+         CONFIG.EXCLUDED_ORG_IDS.indexOf(String(memberRow[11])) === -1 &&  // Not a holding-unit ORGID (CA-000/CA-999)
          types.indexOf(memberRow[21]) > -1 &&
          // Add your custom filter here
          memberRow[someColumn] !== 'EXCLUDE';

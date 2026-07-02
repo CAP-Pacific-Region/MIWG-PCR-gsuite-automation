@@ -97,8 +97,8 @@ DOMAIN: "cawgcap.org",
 */
 MEMBER_TYPES: {
   /** All active member types */
-  /** ACTIVE: ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE', ''],  */
-  ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR', ''],
+  /** ACTIVE: ['CADET', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', ''],  */
+  ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR', ''],
   /** Only Aerospace Education Members */
   AEM_ONLY: ['AEM']
 },
@@ -137,9 +137,11 @@ CADET_LITE_EXCLUDED_GRADES: [
   SUSPENSION_GRACE_DAYS: 7,
 
   /**
-   * Organization IDs that should have users suspended
-   * These typically represent transition or inactive units
-   * MI-000 (744) and MI-999 (1920) are holding units for members in transition
+   * Organization IDs that should have users suspended, and (via
+   * shouldProcessMember() in UpdateMembers.gs) are never eligible for
+   * accounts or group membership regardless of member type.
+   * 1297 = CALIF WING HQ SQ (CA-000, the holding unit for members not
+   * assigned to a squadron); 368 = CALIFORNIA LEGISLATIVE SQ (CA-999).
    */
   EXCLUDED_ORG_IDS: ['1297', '368'],
 
@@ -463,7 +465,7 @@ const SQUADRON_GROUP_CONFIG = {
         suffix: 'allhands',
         name: 'All Hands',
         description: 'All members (cadets and seniors)',
-        includeTypes: ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR']
+        includeTypes: ['CADET', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR']
       },
       {
         suffix: 'cadets',
@@ -475,7 +477,7 @@ const SQUADRON_GROUP_CONFIG = {
         suffix: 'seniors',
         name: 'Seniors',
         description: 'Senior members only',
-        includeTypes: ['SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR']
+        includeTypes: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR']
       },
       {
         suffix: 'parents',
