@@ -1151,6 +1151,24 @@ function getActiveUsers() {
 }
 
 /**
+ * Returns a Set of CAPIDs whose Level I achievement is marked ACTIVE in
+ * MbrAchievements. Used to gate senior account provisioning.
+ *
+ * @returns {Set<string>}
+ */
+function loadLevel1CompletedCapids() {
+  const completed = new Set();
+  const rows = parseFile('MbrAchievements');
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][1]) === '96' && rows[i][2] === 'ACTIVE') {
+      completed.add(String(rows[i][0]));
+    }
+  }
+  Logger.info('Level I completions loaded', { count: completed.size });
+  return completed;
+}
+
+/**
  * Main function to update all member accounts in Google Workspace
  *
  * Process:
@@ -1194,6 +1212,29 @@ function updateAllMembers() {
       if (isMissingWorkspaceUser) missingWorkspaceUsers++;
     } else {
       skipped++;
+    }
+  }
+
+  // Gate new senior accounts on Level I completion
+  if (CONFIG.REQUIRE_LEVEL_I_FOR_SENIORS) {
+    const level1Capids = loadLevel1CompletedCapids();
+    let level1Skipped = 0;
+    for (const capsn in toProcess) {
+      const member = toProcess[capsn];
+      const isSeniorType = ['SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR'].indexOf(member.type) > -1;
+      const isNewAccount = !workspaceEmailByCapid[String(capsn)];
+      if (isSeniorType && isNewAccount && !level1Capids.has(String(capsn))) {
+        Logger.info('Senior skipped — Level I not complete', {
+          capsn: capsn,
+          name: member.firstName + ' ' + member.lastName,
+          charter: member.charter
+        });
+        delete toProcess[capsn];
+        level1Skipped++;
+      }
+    }
+    if (level1Skipped > 0) {
+      Logger.info('New senior accounts withheld pending Level I', { count: level1Skipped });
     }
   }
 

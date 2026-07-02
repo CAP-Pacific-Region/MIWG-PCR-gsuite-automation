@@ -155,6 +155,13 @@ CADET_LITE_EXCLUDED_GRADES: [
   },
 
   /**
+   * When true, senior members without a completed Level I achievement in
+   * MbrAchievements will not receive a new Workspace account. Existing
+   * accounts are unaffected — only new provisioning is gated.
+   */
+  REQUIRE_LEVEL_I_FOR_SENIORS: true,
+
+  /**
    * Number of members to process in each batch
    * Used by batchUpdateMembers() to group API calls
    */
