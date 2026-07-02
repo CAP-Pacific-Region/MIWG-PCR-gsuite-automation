@@ -90,8 +90,9 @@ function syncOrgPaths() {
     }
   });
 
-  // --- Write auto-added entries to OrgPaths.txt ---
+  // --- Create OUs in Google Workspace and write entries to OrgPaths.txt ---
   if (added.length > 0) {
+    added.forEach(e => { e.ouCreated = createOrgUnit_(e.path, e.name); });
     writeOrgPathEntries_(added.map(e => ({ orgid: e.orgid, path: e.path })));
   }
 
@@ -129,6 +130,38 @@ function writeOrgPathEntries_(entries) {
 }
 
 /**
+ * Creates a Google Workspace Organizational Unit at the given path.
+ * Derives the parent OU path and OU name from the full path.
+ * Returns true if created, false if it already existed or an error occurred.
+ *
+ * @param {string} fullPath  - e.g. "/CA-001/CA-445/CA-404"
+ * @param {string} ouName    - Human-readable name for the OU (e.g. squadron name)
+ * @returns {boolean}
+ */
+function createOrgUnit_(fullPath, ouName) {
+  const lastSlash = fullPath.lastIndexOf('/');
+  const parentPath = lastSlash > 0 ? fullPath.substring(0, lastSlash) : '/';
+  const name = fullPath.substring(lastSlash + 1);
+
+  try {
+    AdminDirectory.Orgunits.insert(
+      { name: name, parentOrgUnitPath: parentPath, description: ouName },
+      'my_customer'
+    );
+    Logger.info('Org unit created', { path: fullPath, name: ouName });
+    return true;
+  } catch (e) {
+    // 409 = already exists — not an error worth alerting on
+    if (e.message && e.message.indexOf('409') !== -1) {
+      Logger.info('Org unit already exists', { path: fullPath });
+    } else {
+      Logger.error('Failed to create org unit', { path: fullPath, errorMessage: e.message });
+    }
+    return false;
+  }
+}
+
+/**
  * Sends an HTML summary email to ORGPATH_SYNC_EMAIL.
  *
  * @param {Array} added       - Entries auto-added to OrgPaths.txt
@@ -144,11 +177,11 @@ function sendOrgPathSyncEmail_(added, needsManual, deactivated) {
   if (added.length > 0) {
     html += `
       <h3 style="color:#1a7a3c">&#x2705; Auto-Added (${added.length})</h3>
-      <p>These entries were written to OrgPaths.txt automatically. No action needed.</p>
+      <p>These entries were written to OrgPaths.txt and provisioned in Google Workspace automatically. No action needed.</p>
       <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:monospace;font-size:13px">
-        <tr style="background:#f0f0f0"><th>ORGID</th><th>Name</th><th>Scope</th><th>OrgUnitPath</th></tr>
+        <tr style="background:#f0f0f0"><th>ORGID</th><th>Name</th><th>Scope</th><th>OrgUnitPath</th><th>OU Created</th></tr>
         ${added.map(e =>
-          `<tr><td>${e.orgid}</td><td>${e.name}</td><td>${e.scope}</td><td>${e.path}</td></tr>`
+          `<tr><td>${e.orgid}</td><td>${e.name}</td><td>${e.scope}</td><td>${e.path}</td><td>${e.ouCreated ? '&#x2705;' : '&#x26A0;&#xFE0F; already existed or error'}</td></tr>`
         ).join('')}
       </table>`;
   }
