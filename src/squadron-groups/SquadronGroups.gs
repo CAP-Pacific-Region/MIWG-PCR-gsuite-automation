@@ -919,7 +919,7 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
     suffix: 'seniors',
     name: 'Seniors',
     description: 'Seniors',
-    filter: (member) => ['SENIOR', 'FIFTY YEAR', 'LIFE'].includes(member.type)
+    filter: (member) => ['SENIOR', 'FIFTY YEAR', 'INDEFINITE'].includes(member.type)
   };
 
   const commanderList = {
@@ -979,7 +979,7 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
       // Flight can be cadet or senior - check membership to determine
       if (squadronMembers && squadronMembers.length > 0) {
         const hasCadets = squadronMembers.some(m => m.type === 'CADET');
-        const hasSeniors = squadronMembers.some(m => ['SENIOR', 'FIFTY YEAR', 'LIFE'].includes(m.type));
+        const hasSeniors = squadronMembers.some(m => ['SENIOR', 'FIFTY YEAR', 'INDEFINITE'].includes(m.type));
 
         if (hasCadets && hasSeniors) {
           // Mixed flight - treat like composite

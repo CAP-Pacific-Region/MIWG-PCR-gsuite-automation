@@ -120,7 +120,7 @@ function getMembersForChatSpaces_(squadrons) {
 
   const types = (CONFIG.MEMBER_TYPES && CONFIG.MEMBER_TYPES.ACTIVE)
     ? CONFIG.MEMBER_TYPES.ACTIVE
-    : ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE', 'AEM'];
+    : ['CADET', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'AEM'];
 
   const rows = parseFile('Member') || [];
   let count = 0;
