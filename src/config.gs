@@ -7,47 +7,17 @@
  ***********************************************/
 
 /**
- * Builds the Service Account JSON at runtime.
- *
- * Secrets MUST NOT be committed to source.
- * Store these in Script Properties:
+ * Service account credentials for per-user impersonation are stored in Script
+ * Properties (never in source) and read directly by getImpersonatedToken_()
+ * in UpdateMembers.gs, which signs the delegation JWT at runtime:
  *   - SA_IMPERSONATION_EMAIL  (service account client_email)
  *   - SA_PRIVATE_KEY          (private key PEM; may contain literal \n sequences)
+ *   - SA_PRIVATE_KEY_ID       (optional)
  *
- * Optional:
- *   - SA_PRIVATE_KEY_ID
+ * Each Workspace tenant uses its own dedicated service account, with
+ * domain-wide delegation limited to the Gmail settings and Calendar scopes the
+ * automation actually needs.
  */
-function getServiceAccountJson_() {
-  const props = PropertiesService.getScriptProperties();
-  const clientEmail = String(props.getProperty('SA_IMPERSONATION_EMAIL') || '').trim();
-  let privateKey = String(props.getProperty('SA_PRIVATE_KEY') || '');
-  const privateKeyId = String(props.getProperty('SA_PRIVATE_KEY_ID') || '').trim();
-
-  privateKey = privateKey.replace(/\\n/g, '\n');
-
-  if (!clientEmail || !privateKey) {
-    return JSON.stringify({});
-  }
-
-  const sa = {
-    type: 'service_account',
-    project_id: 'pcr-capwatch',
-    private_key_id: privateKeyId || undefined,
-    private_key: privateKey,
-    client_email: clientEmail,
-    client_id: '117582666328715304137',
-    auth_uri: 'https://accounts.google.com/o/oauth2/auth',
-    token_uri: 'https://oauth2.googleapis.com/token',
-    auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
-    client_x509_cert_url: clientEmail
-      ? `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(clientEmail)}`
-      : undefined,
-    universe_domain: 'googleapis.com'
-  };
-
-  Object.keys(sa).forEach(k => sa[k] === undefined && delete sa[k]);
-  return JSON.stringify(sa, null, 2);
-}
 
 const CONFIG = {
 /**
@@ -197,11 +167,6 @@ CADET_LITE_EXCLUDED_GRADES: [
    * Base delay (milliseconds) for exponential backoff after quota errors
    */
   API_BACKOFF_BASE_MS: 3000,
-
-  // ------------------------------------------------------
-  // SERVICE ACCOUNT JSON
-  // ------------------------------------------------------
-  SERVICE_ACCOUNT_JSON: getServiceAccountJson_(),
 
   // ------------------------------------------------------
   // FOLDER + SHEET IDS

@@ -959,9 +959,9 @@ function addOrUpdateUser(member) {
 
   // Create new user if update failed
   if (!user) {
-    // Generate deterministic temp password from the script run date.
-    const seedDate = Utilities.formatDate(new Date(), 'GMT', 'yyyyMMdd');
-    const generatedPassword = `${CONFIG.WING}$${seedDate}$${member.capsn}`;
+    // Generate a random temp password. Must not be derivable from public
+    // member data (WING, CAPID, provisioning date) — see generateTempPassword_.
+    const generatedPassword = generateTempPassword_();
     user = {
       employeeId: String(member.capsn),
       externalIds: [{ type: 'organization', value: String(member.capsn) }],
@@ -2300,6 +2300,40 @@ function generateEmailSignature(member) {
 </body>
 </html>
   `;
+}
+
+/**
+ * Generates a random temporary password for a new Workspace account.
+ *
+ * Entropy comes from two type-4 (random) UUIDs — ~244 bits before mapping.
+ * The result is NOT derivable from public member data (CAPID, WING, date),
+ * and every account gets a distinct password. changePasswordAtNextLogin is
+ * still set on the account so this value is only valid until first login.
+ *
+ * Guarantees at least one lowercase letter, one uppercase letter, one digit,
+ * and one special character to satisfy any password-complexity policy.
+ *
+ * @returns {string} A random 14-character password.
+ */
+function generateTempPassword_() {
+  const hex = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+  const letters = 'abcdefghijkmnpqrstuvwxyz'; // no ambiguous l/o
+  let body = '';
+  for (let i = 0; i < 20; i += 2) {
+    const byte = parseInt(hex.substr(i, 2), 16);
+    const ch = letters.charAt(byte % letters.length);
+    // Upper-case roughly every other character for mixed case.
+    body += (i % 4 === 0) ? ch.toUpperCase() : ch;
+  }
+
+  // Explicitly guarantee one char from each required class so the result
+  // always satisfies a complexity policy regardless of the letters drawn above.
+  const specials = '!@#$%^&*';
+  const lower = letters.charAt(parseInt(hex.substr(20, 2), 16) % letters.length);
+  const upper = letters.charAt(parseInt(hex.substr(22, 2), 16) % letters.length).toUpperCase();
+  const digit = String(parseInt(hex.substr(24, 2), 16) % 10);
+  const special = specials.charAt(parseInt(hex.substr(26, 2), 16) % specials.length);
+  return body + lower + upper + digit + special;
 }
 
 // -----------------------------------------
