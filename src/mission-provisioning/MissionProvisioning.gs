@@ -7,8 +7,8 @@
  * FileMaker can POST JSON to the deployed Apps Script web app using
  * Insert from URL + cURL. Apps Script web app requests do not expose
  * custom HTTP headers reliably in `doPost(e)`, so this webhook expects
- * the shared secret in the JSON body as `secret` or in the query string
- * as `?key=...`.
+ * the shared secret in the JSON body as `secret`. The secret must NOT be
+ * passed in the query string, since URLs are logged by servers/proxies.
  *
  * Required payload fields:
  *   - missionId
@@ -39,6 +39,9 @@ const MISSION_WEBHOOK_SECRET_PROPERTY = 'MISSION_WEBHOOK_SECRET';
 
 
 function doGet(e) {
+  // Anonymous, unauthenticated endpoint: expose only a static usage hint.
+  // Do not reflect request parameters or disclose server-side configuration
+  // state (whether the secret/parent folder are set), which would aid probing.
   const output = {
     ok: true,
     message: 'Mission provisioning web app is deployed. Send a POST request with JSON to provision a mission workspace.',
@@ -46,15 +49,8 @@ function doGet(e) {
       method: 'POST',
       contentType: 'application/json',
       requiredFields: ['missionId'],
-      secretLocations: ['json.secret', 'querystring key', 'querystring secret']
-    },
-    hasSecretConfigured: !!String(
-      PropertiesService.getScriptProperties().getProperty(MISSION_WEBHOOK_SECRET_PROPERTY) || ''
-    ).trim(),
-    hasParentFolderConfigured: !!String(
-      PropertiesService.getScriptProperties().getProperty(MISSION_PARENT_FOLDER_PROPERTY) || ''
-    ).trim(),
-    query: (e && e.parameter) ? e.parameter : {}
+      secretLocation: 'json.secret'
+    }
   };
 
   return missionProvisioningJsonResponse_(200, output);
@@ -183,15 +179,34 @@ function validateMissionProvisioningSecret_(payload, e) {
     );
   }
 
-  const provided = String(
-    (payload && payload.secret) ||
-    (e && e.parameter && (e.parameter.key || e.parameter.secret)) ||
-    ''
-  ).trim();
+  // Secret must be supplied in the JSON body only. Accepting it in the query
+  // string ('?key=' / '?secret=') would leak it into web-server, proxy, and
+  // browser-history logs, so that path is intentionally not supported.
+  const provided = String((payload && payload.secret) || '').trim();
 
-  if (!provided || provided !== expected) {
+  if (!provided || !constantTimeEquals_(provided, expected)) {
     throw new Error('Unauthorized');
   }
+}
+
+/**
+ * Compares two strings in constant time to avoid leaking the secret's length
+ * or content through timing differences.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean} True if the strings are equal.
+ */
+function constantTimeEquals_(a, b) {
+  a = String(a);
+  b = String(b);
+  // Fold the length difference into the comparison so mismatched lengths still
+  // run the full loop and always return false.
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i % b.length);
+  }
+  return diff === 0;
 }
 
 function buildMissionProvisioningSpec_(payload) {
