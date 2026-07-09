@@ -24,9 +24,9 @@ Pacific** — deployment is on hold pending 2SV for `automation@pcr.cap.gov`.
 ### Added
 
 - **`pacific` profile** in `TENANT_PROFILES_` (`config.gs`) — single-unit region
-  HQ (PCR-PCR-001): mirrors the live "PCR Automation" behavior (member types incl.
-  AEM, holding unit 1345, AEM unit 182), disables org-path sync and squadron-group
-  auto-create. Selected with `TENANT_PROFILE=pacific`.
+  HQ (PCR-PCR-001): senior member types (`SENIOR`/`FIFTY YEAR`/`INDEFINITE`/`CADET`;
+  region confirmed no AEM and all `INDEFINITE`), holding unit 1345, org-path sync
+  and squadron-group auto-create disabled. Selected with `TENANT_PROFILE=pacific`.
 
 ### Changed
 

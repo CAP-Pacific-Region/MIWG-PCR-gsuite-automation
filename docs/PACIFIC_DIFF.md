@@ -44,20 +44,23 @@ Automaton" — out of scope here.)
 These non-secret values are now recorded in `config-tenants/pacific.json` (previously an
 all-blank stub) so they can be loaded into Script Properties during migration.
 
-Pacific-specific behavioral values found in its live `config.gs` that the shared model
-does **not** yet cover:
+Pacific-specific behavioral values found in its live `config.gs`, and how the shared model
+now covers them (see `pacific` profile in `config.gs`, §5):
 
-- `MEMBER_TYPES.ACTIVE = ['CADET','SENIOR','FIFTY YEAR','LIFE','AEM']` — still uses legacy
-  `LIFE` (repo standardized on `INDEFINITE`) and includes `AEM` (Aerospace Education
-  Members) and `CADET`.
-- `EXCLUDED_ORG_IDS = ['1345','']` — a different holding-unit ORGID than seniors/cadets.
-- `SPECIAL_ORGS.AEM_UNIT = '182'` — AEM handling not present in the shared code.
+- `MEMBER_TYPES.ACTIVE = ['CADET','SENIOR','FIFTY YEAR','LIFE','AEM']` — live used legacy
+  `LIFE` and `AEM`. **Region confirmed (2026-07-09): no AEM automation, and all senior
+  members are typed `INDEFINITE`.** The `pacific` profile therefore uses
+  `['SENIOR','FIFTY YEAR','INDEFINITE','CADET']` — no `LIFE`, no `AEM`.
+- `EXCLUDED_ORG_IDS = ['1345','']` — different holding unit than seniors/cadets; now the
+  `pacific` profile's `EXCLUDED_ORG_IDS: ['1345']`.
+- `SPECIAL_ORGS.AEM_UNIT = '182'` — dropped (no AEM); `pacific` profile `AEM_UNIT: ''`.
 - `REGION_CAPWATCH_DATA_FOLDER_ID = '1lU9yWHPf1Eij3AEQPmMR8ki7EpgslV9z'` — a region-level
-  CAPWATCH folder with no equivalent in the shared config.
+  CAPWATCH folder with no equivalent in the shared config. Confirm whether it's still used;
+  not currently modeled.
 
-**Implication:** a straight `TENANT_PROFILE=seniors` is not an exact fit. Pacific likely
-needs a dedicated **`pacific` profile** (member types incl. AEM, its own excluded-org
-list). See §5.
+**Resolved:** Pacific runs on the shared code via a dedicated **`pacific` profile**
+(`TENANT_PROFILE=pacific`) — single-unit, no AEM, INDEFINITE, org-path sync + squadron
+groups off. See §5.
 
 ---
 
@@ -149,17 +152,16 @@ and a profile — never into forked code.
 `setupTenantConfig()`, then `validateTenantConfig()`. Secrets (`SA_PRIVATE_KEY`,
 `CAPWATCH_AUTHORIZATION`) stay in Script Properties only, never committed.
 
-**New `pacific` profile in `TENANT_PROFILES_` (src/config.gs)** to carry region behavior
-the `seniors` profile doesn't:
-- `MEMBER_TYPES_ACTIVE` including `AEM` (and dropping legacy `LIFE` in favor of the current
-  standard — confirm with region whether any live members are still typed `LIFE`).
+**`pacific` profile in `TENANT_PROFILES_` (src/config.gs)** — added (PR #10) to carry the
+region behavior the `seniors` profile doesn't:
+- `MEMBER_TYPES_ACTIVE = ['SENIOR','FIFTY YEAR','INDEFINITE','CADET']` — no `LIFE`, no
+  `AEM` (region confirmed).
 - `SYNC_ORG_PATHS: false` and squadron-group auto-create `false` (single-unit).
-- Region excluded-org list (`1345`) — decide whether this stays a profile constant or
-  becomes a `TENANT_EXCLUDED_ORG_IDS` Script Property (preferred, mirrors the identity
-  pattern).
-- AEM handling (`SPECIAL_ORGS.AEM_UNIT`, `REGION_CAPWATCH_DATA_FOLDER_ID`): decide whether
-  the region still uses AEM automation. If yes, model it in the profile/properties; if no,
-  drop it.
+- `EXCLUDED_ORG_IDS: ['1345']` and `AEM_UNIT: ''` — implemented as **profile-driven**
+  (`PROFILE_.*`) rather than new Script Properties, since Pacific is its own profile and
+  the values stay version-controlled. `EXCLUDED_ORG_IDS`/`AEM_UNIT` are now profile-driven
+  for all three tenants (seniors/cadets keep `['1297','368']` / `''`).
+- `REGION_CAPWATCH_DATA_FOLDER_ID`: not modeled; confirm whether it's still used.
 
 **Triggers on Pacific (lean set):** getCapwatch, updateAllMembers, updateEmailGroups,
 license lifecycle, retention email. **Not** squadron groups, **not** org-path sync,
@@ -173,8 +175,9 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
    diverged copy and its four unique files are recoverable.
 2. **Relocate** any Pacific-only script worth keeping (`UnitVisitReport.js`; region chat if
    still wanted) into its own standalone project.
-3. **Add the `pacific` profile** to `src/config.gs` and any profile flags §4/§5 require;
-   PR + review; merge to `master`.
+3. ~~**Add the `pacific` profile** to `src/config.gs` and the profile flags §4/§5 require.~~
+   **Done — PR #10** (`reconcile/pacific-profile`): `pacific` profile + profile-driven
+   `EXCLUDED_ORG_IDS`/`AEM_UNIT` + `SYNC_ORG_PATHS` gate on `getCapwatch()`.
 4. **Set Script Properties** on "PCR Automation" from `config-tenants/pacific.json`
    (`setupTenantConfig()` → `validateTenantConfig()`), plus `TENANT_PROFILE=pacific` and
    the SA secrets.
@@ -190,9 +193,10 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 
 ## 7. Open items to confirm with the region
 
-- Does Pacific still run **AEM** automation? (drives whether AEM stays in the profile)
-- Any live members still typed **`LIFE`** rather than `INDEFINITE`?
-- Is `UpdateResources` used by the region?
+- ~~Does Pacific still run **AEM** automation?~~ **Resolved (2026-07-09): no.** AEM dropped
+  from the `pacific` profile.
+- ~~Any live members still typed **`LIFE`**?~~ **Resolved: no — all `INDEFINITE`.**
+- Is `UpdateResources` used by the region? (also `REGION_CAPWATCH_DATA_FOLDER_ID`)
 - Keep `UnitVisitReport` (relocate) or retire it?
 - Confirm region chat (`updateRegionGroupChats` / larger `UpdateChatSpaces`) is truly
   droppable before overwriting.

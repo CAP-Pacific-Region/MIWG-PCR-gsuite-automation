@@ -118,16 +118,14 @@ const TENANT_PROFILES_ = {
       { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
     ]
   },
-  // Pacific Region — single-unit region HQ (PCR-PCR-001). Mirrors the live
-  // "PCR Automation" behavior so folding it onto the shared code is
-  // behavior-preserving. Open items (does the region still run AEM? any members
-  // still typed legacy LIFE?) are flagged in docs/PACIFIC_DIFF.md and can be
-  // trimmed here once the region confirms.
+  // Pacific Region — single-unit region HQ (PCR-PCR-001). Runs the shared code,
+  // differentiated only by config. Region confirmed: no AEM automation, and all
+  // senior members are typed INDEFINITE (legacy LIFE dropped). See docs/PACIFIC_DIFF.md.
   pacific: {
-    MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'LIFE', 'CADET', 'AEM', ''],
+    MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET', ''],
     CADET_LITE: false,
     EXCLUDED_ORG_IDS: ['1345'],   // PCR holding unit
-    AEM_UNIT: '182',              // region Aerospace Education Member unit
+    AEM_UNIT: '',                 // region does not run AEM automation
     SYNC_ORG_PATHS: false,        // single unit: no subordinate orgs to auto-map
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
@@ -297,9 +295,10 @@ CADET_LITE_EXCLUDED_GRADES: [
   SPECIAL_ORGS: {
     /**
      * Artificial org ID for Aerospace Education Members (per-tenant, via
-     * TENANT_PROFILE). Empty on wings that don't run AEM automation
-     * (seniors/cadets); '182' on Pacific. When empty, an inert squadron keyed
-     * by '' is created and matches no member — the existing seniors behavior.
+     * TENANT_PROFILE). Currently empty on every tenant — none run AEM
+     * automation. When empty, an inert squadron keyed by '' is created and
+     * matches no member (the existing behavior). Set it in a profile only if a
+     * tenant starts running AEM automation.
      */
     AEM_UNIT: PROFILE_.AEM_UNIT
   },
