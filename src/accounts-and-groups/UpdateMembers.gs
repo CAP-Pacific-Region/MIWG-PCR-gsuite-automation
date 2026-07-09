@@ -3137,9 +3137,14 @@ function forceDutyTitleRebuild() {
 }
 
 function testImpersonationToken() {
-  const t = getImpersonatedToken_(
-    Session.getActiveUser().getEmail(),
-    'https://www.googleapis.com/auth/gmail.settings.basic'
-  );
-  Logger.log('Token length: ' + (t ? t.length : 0));
+  try {
+    const who = Session.getEffectiveUser().getEmail();
+    const t = getImpersonatedToken_(
+      who,
+      'https://www.googleapis.com/auth/gmail.settings.basic'
+    );
+    console.log('Impersonation OK for ' + who + ' — token length: ' + (t ? t.length : 0));
+  } catch (e) {
+    console.log('Impersonation FAILED: ' + (e && e.message ? e.message : e));
+  }
 }
