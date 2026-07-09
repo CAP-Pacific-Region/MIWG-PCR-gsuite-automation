@@ -3,11 +3,20 @@
  * Description: Detects activated and deactivated CA Wing orgs after each
  *   CAPWATCH download by comparing Organization.txt against OrgPaths.txt.
  *   Auto-adds new entries where the parent path is already mapped, and emails
- *   it@cawgcap.org with a full summary of changes and items needing attention.
- *   Called automatically at the end of getCapwatch().
+ *   this tenant's IT mailbox with a full summary of changes and items needing
+ *   attention. Called automatically at the end of getCapwatch().
  ***********************************************/
 
-const ORGPATH_SYNC_EMAIL = 'it@cawgcap.org';
+/**
+ * Recipient for the OrgPath sync summary — this tenant's IT mailbox.
+ * Resolved at call time (not as a top-level const) so it reads the per-tenant
+ * ITSUPPORT_EMAIL from config.gs regardless of cross-file load order.
+ * @returns {string}
+ */
+function getOrgPathSyncEmail_() {
+  return (typeof ITSUPPORT_EMAIL !== 'undefined' && ITSUPPORT_EMAIL) ||
+         (typeof TEST_EMAIL !== 'undefined' && TEST_EMAIL) || '';
+}
 
 /**
  * Syncs OrgPaths.txt with active orgs in Organization.txt.
@@ -162,7 +171,7 @@ function createOrgUnit_(fullPath, ouName) {
 }
 
 /**
- * Sends an HTML summary email to ORGPATH_SYNC_EMAIL.
+ * Sends an HTML summary email to this tenant's IT mailbox (getOrgPathSyncEmail_()).
  *
  * @param {Array} added       - Entries auto-added to OrgPaths.txt
  * @param {Array} needsManual - New orgs whose parent isn't mapped
@@ -215,6 +224,7 @@ function sendOrgPathSyncEmail_(added, needsManual, deactivated) {
 
   html += `<p style="color:#888;font-size:11px;margin-top:24px">Sent by CAWG Automation — OrgPath Sync</p>`;
 
-  MailApp.sendEmail({ to: ORGPATH_SYNC_EMAIL, subject: subject, htmlBody: html });
-  Logger.info('OrgPath sync email sent', { to: ORGPATH_SYNC_EMAIL });
+  const syncEmail = getOrgPathSyncEmail_();
+  MailApp.sendEmail({ to: syncEmail, subject: subject, htmlBody: html });
+  Logger.info('OrgPath sync email sent', { to: syncEmail });
 }

@@ -184,7 +184,7 @@ function buildWorkspaceCapidMaps(members) {
   try {
     do {
       const resp = AdminDirectory.Users.list({
-        domain: CONFIG.DOMAIN,
+        customer: "my_customer",
         maxResults: 500,
         projection: 'full',
         fields: 'users(id,primaryEmail,externalIds),nextPageToken',

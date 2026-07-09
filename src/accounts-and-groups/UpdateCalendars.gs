@@ -998,7 +998,7 @@ const WriterBuilder = (() => {
 
     do {
       const page = AdminDirectory.Users.list({
-        domain: CONFIG.DOMAIN,
+        customer: "my_customer",
         maxResults: 500,
         pageToken: token,
         fields: "users(primaryEmail,externalIds),nextPageToken"

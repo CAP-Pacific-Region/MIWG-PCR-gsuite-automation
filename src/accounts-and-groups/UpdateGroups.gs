@@ -611,7 +611,7 @@ for (let r = 1; r < groupsConfig.length; r++) {
   try {
     do {
       const page = AdminDirectory.Users.list({
-        domain: CONFIG.DOMAIN,
+        customer: "my_customer",
         maxResults: 500,
         projection: 'full',
         fields: 'users(primaryEmail,externalIds),nextPageToken',
@@ -639,7 +639,7 @@ for (let r = 1; r < groupsConfig.length; r++) {
   try {
     do {
       const res = AdminDirectory.Users.list({
-        domain: CONFIG.DOMAIN,
+        customer: "my_customer",
         maxResults: 500,
         projection: 'basic',
         fields: 'users(primaryEmail),nextPageToken',

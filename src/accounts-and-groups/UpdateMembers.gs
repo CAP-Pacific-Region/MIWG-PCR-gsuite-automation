@@ -1146,7 +1146,7 @@ function getActiveUsers() {
 
   do {
     let page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=false isAdmin=false',
       fields: 'users(primaryEmail,externalIds),nextPageToken',
@@ -1550,7 +1550,7 @@ function getInactiveUsers() {
 
   do {
     let page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=true isAdmin=false',
       fields: 'users(primaryEmail,suspended,archived,externalIds),nextPageToken',
@@ -1626,7 +1626,7 @@ function debugFindExpiredUsersMissingExternalIds() {
 
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=false isAdmin=false',
       projection: 'full',
@@ -1699,7 +1699,7 @@ function debugListUsersMissingOrganizationExternalId() {
 
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=false isAdmin=false',
       projection: 'full',
@@ -3137,9 +3137,14 @@ function forceDutyTitleRebuild() {
 }
 
 function testImpersonationToken() {
-  const t = getImpersonatedToken_(
-    Session.getActiveUser().getEmail(),
-    'https://www.googleapis.com/auth/gmail.settings.basic'
-  );
-  Logger.log('Token length: ' + (t ? t.length : 0));
+  try {
+    const who = Session.getEffectiveUser().getEmail();
+    const t = getImpersonatedToken_(
+      who,
+      'https://www.googleapis.com/auth/gmail.settings.basic'
+    );
+    console.log('Impersonation OK for ' + who + ' — token length: ' + (t ? t.length : 0));
+  } catch (e) {
+    console.log('Impersonation FAILED: ' + (e && e.message ? e.message : e));
+  }
 }
