@@ -96,22 +96,31 @@ region still wants (see §3, chat decision).
 
 ## 3. Pacific-only files — disposition
 
-These exist only in the Pacific project. Per director direction, **none are folded into
-the shared `src/`.**
+These exist only in the Pacific project — **none are folded into the shared wing `src/`.**
+Two of them the region actively uses (the wing does not), so they must be **preserved by
+relocating them to a separate region-local project**, not dropped. Verified 2026-07-09 by
+diffing the live project against the repo.
 
-| File | Decision | Rationale (director) |
+| File | Decision | Rationale |
 |---|---|---|
+| `UnitVisitReport.js` | **Relocate (region-local)** | Region uses it (`buildRegionUnitVisitReport()` — region-wide unit-visit spreadsheet). Not used by the wing tenants. |
+| `updateRegionGroupChats.js` | **Relocate (region-local)** | Region uses it (`updateRegionGroupChats()` — region duty groups + duty chat spaces). Not used by the wing tenants. |
 | `SharedContacts.js` | **Drop from repo scope** | Shared-contacts already handled by a separate project. |
-| `PCRCAP.ORG.js` | **Drop** | Region uses `cawgcap.org`, not `pcrcap.org`; not relevant. |
-| `updateRegionGroupChats.js` | **Drop** | "We don't care about region group chats." |
-| `UnitVisitReport.js` | **Park (region-local)** | "A region thing already; might be useful to the wing" — not part of the shared codebase now; revisit if the wing wants it. |
+| `PCRCAP.ORG.js` | **Drop** | Region uses `pcr.cap.gov`; `pcrcap.org` handling not relevant. |
 
 > ⚠️ **Push caveat.** `clasp push` is a full sync: pushing the shared `src/` to the Pacific
-> project will **delete** any file not in `src/`, including the four above. Before the
-> first reconciling push, anything worth keeping (e.g. `UnitVisitReport.js`, and confirm
-> region chat behavior in `updateRegionGroupChats` / the larger `UpdateChatSpaces`) must be
-> **moved to a separate standalone project** — the same pattern already used for shared
-> contacts and mission provisioning. Do not rely on it surviving in "PCR Automation".
+> project will **delete** any file not in `src/`. Before the first reconciling push, the two
+> **region-local** files above must be **moved into their own standalone Apps Script
+> project** (same pattern already used for shared contacts and mission provisioning) so the
+> region keeps that functionality. The two **drop** files can simply be let go.
+
+> ℹ️ **`UpdateChatSpaces` is not region-only — it's a divergence.** It exists in both, but
+> Pacific's copy is a **superset** of the wing's: same committee/unit chat-space sync **plus**
+> `syncAutomationGroupChatSpaces()`, `syncUserAdditionsChatSpaces_()` and a dry-run switch.
+> Overwriting it with the wing version would drop those extras. Decide before pushing whether
+> the superset features are (a) region-only → keep them in the relocated region project, or
+> (b) improvements the wing wants → converge the shared `src/` up to Pacific's version. This
+> is separate from `updateRegionGroupChats` and needs an explicit call (see §7).
 
 ---
 
@@ -125,7 +134,7 @@ a wing with many subordinate squadrons and are **not needed** for Pacific:
 | `SyncOrgPaths.gs` | **No** | Auto-maps new/deactivated *squadrons*. Pacific has one fixed unit — nothing to sync. |
 | `squadron-groups/SquadronGroups.gs` | **No** | Per-squadron groups; Pacific has no subordinate squadrons. |
 | `UpdateCAWGCadetGroups.gs` | **No** | CAWG cadet-tenant crossover; N/A to a region. |
-| `UpdateResources.gs` | **Likely no** | Confirm the region doesn't manage shared drives/resources via this. |
+| `UpdateResources.gs` | **No** (confirmed) | Region does not manage aircraft/vehicle resources; the file was never even present in the live Pacific project. |
 | `groupAdministration.gs` | Optional | Ad-hoc admin utility; harmless if shipped, unused otherwise. |
 | `MissionProvisioning.gs` | **No** | Region mission handled by the separate "PCR Mission Automaton". |
 
@@ -173,8 +182,10 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 
 1. **Back up** the live "PCR Automation" project (versioned clasp pull, archived) so the
    diverged copy and its four unique files are recoverable.
-2. **Relocate** any Pacific-only script worth keeping (`UnitVisitReport.js`; region chat if
-   still wanted) into its own standalone project.
+2. **Relocate** the region-local scripts into their own standalone Apps Script project:
+   `UnitVisitReport.js` and `updateRegionGroupChats.js` (both confirmed in region use). Also
+   resolve the `UpdateChatSpaces` superset question (§3/§7) and, if its extras are
+   region-only, carry them into that project too.
 3. ~~**Add the `pacific` profile** to `src/config.gs` and the profile flags §4/§5 require.~~
    **Done — PR #10** (`reconcile/pacific-profile`): `pacific` profile + profile-driven
    `EXCLUDED_ORG_IDS`/`AEM_UNIT` + `SYNC_ORG_PATHS` gate on `getCapwatch()`.
@@ -196,10 +207,14 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 - ~~Does Pacific still run **AEM** automation?~~ **Resolved (2026-07-09): no.** AEM dropped
   from the `pacific` profile.
 - ~~Any live members still typed **`LIFE`**?~~ **Resolved: no — all `INDEFINITE`.**
-- Is `UpdateResources` used by the region? (also `REGION_CAPWATCH_DATA_FOLDER_ID`)
-- Keep `UnitVisitReport` (relocate) or retire it?
-- Confirm region chat (`updateRegionGroupChats` / larger `UpdateChatSpaces`) is truly
-  droppable before overwriting.
+- ~~Is `UpdateResources` used by the region?~~ **Resolved: no** — Pacific won't schedule it.
+- ~~Keep `UnitVisitReport`?~~ **Resolved: region uses it → relocate to a region project.**
+- ~~Is `updateRegionGroupChats` droppable?~~ **Resolved: region uses it → relocate.**
+- **`UpdateChatSpaces` superset** — are Pacific's extra chat-space features
+  (`syncAutomationGroupChatSpaces`, `syncUserAdditionsChatSpaces_`) region-only (keep in the
+  relocated region project) or wanted by the wing (converge shared `src/` up to them)? Decide
+  before the reconciling push.
+- `REGION_CAPWATCH_DATA_FOLDER_ID` — still used? (only referenced by region-local code)
 
 ---
 
