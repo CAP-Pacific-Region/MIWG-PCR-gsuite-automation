@@ -6,6 +6,11 @@
 [![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?logo=google&logoColor=white)](https://www.google.com/script/start/)
 [![Status: Production](https://img.shields.io/badge/Status-Production-green)](https://github.com)
 
+> **📖 New administrator taking this over?** Start with the
+> **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the PCR-specific "hit by a bus"
+> runbook covering the three-tenant deployment, access checklist, secrets, schedule, and
+> disaster recovery. This README below is the inherited upstream single-wing documentation.
+
 ## Overview
 
 This project provides a complete automation solution for Civil Air Patrol (CAP) wings to synchronize their Google Workspace environment with CAPWATCH membership data. It eliminates manual account management, ensures data accuracy, and optimizes license utilization.
