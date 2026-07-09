@@ -19,6 +19,163 @@
  * automation actually needs.
  */
 
+// ============================================================================
+// PER-TENANT IDENTITY (Script Properties — NOT literals in this file)
+// ============================================================================
+/**
+ * Loads this project's per-tenant identity from Script Properties.
+ *
+ * WHY THIS EXISTS: config.gs is shared by all three tenants and is OVERWRITTEN on
+ * every `clasp push` (all targets use rootDir: ../src, and .claspignore ships all
+ * of src/). Tenant-specific values therefore CANNOT live as literals here — a push
+ * would clobber them (this is what happened to the cadets project). They must live
+ * in Script Properties, which `clasp push` never touches.
+ *
+ * Populate them once per project with setupTenantConfig() (or by hand in
+ * Project Settings > Script Properties). Canonical non-secret values for each
+ * tenant are version-controlled in config-tenants/<tenant>.json.
+ *
+ * There is intentionally NO fallback to another tenant's values: an unconfigured
+ * project yields empty identity fields and fails loudly, rather than silently
+ * operating on the wrong domain.
+ */
+function getTenantConfig_() {
+  const p = PropertiesService.getScriptProperties();
+  const get = function (key, fallback) {
+    const v = p.getProperty(key);
+    return (v === null || String(v).trim() === '') ? (fallback || '') : String(v).trim();
+  };
+  return {
+    DOMAIN: get('TENANT_DOMAIN'),
+    EMAIL_DOMAIN: get('TENANT_EMAIL_DOMAIN'),
+    CAPWATCH_ORGID: get('TENANT_CAPWATCH_ORGID'),
+    WING: get('TENANT_WING'),
+    REGION: get('TENANT_REGION'),
+    CAPWATCH_DATA_FOLDER_ID: get('TENANT_CAPWATCH_DATA_FOLDER_ID'),
+    AUTOMATION_FOLDER_ID: get('TENANT_AUTOMATION_FOLDER_ID'),
+    AUTOMATION_SPREADSHEET_ID: get('TENANT_AUTOMATION_SPREADSHEET_ID'),
+    RETENTION_LOG_SPREADSHEET_ID: get('TENANT_RETENTION_LOG_SPREADSHEET_ID'),
+    RETENTION_EMAIL: get('TENANT_RETENTION_EMAIL'),
+    DIRECTOR_RECRUITING_EMAIL: get('TENANT_DIRECTOR_RECRUITING_EMAIL'),
+    AUTOMATION_SENDER_EMAIL: get('TENANT_AUTOMATION_SENDER_EMAIL'),
+    SENDER_NAME: get('TENANT_SENDER_NAME', 'CAP Information Technology'),
+    TEST_EMAIL: get('TENANT_TEST_EMAIL'),
+    ITSUPPORT_EMAIL: get('TENANT_ITSUPPORT_EMAIL')
+  };
+}
+
+const TENANT = getTenantConfig_();
+
+// ============================================================================
+// PER-TENANT BEHAVIORAL PROFILE (also Script-Property driven)
+// ============================================================================
+/**
+ * Some config is not just different *identity* per tenant, it is different
+ * *behavior*: the cadets tenant processes only CADET members, runs cadet-lite,
+ * and creates a smaller set of squadron groups. Those values live here as coded
+ * profiles (so the structure stays version-controlled) and are selected by the
+ * `TENANT_PROFILE` Script Property ('seniors' | 'cadets'; defaults to 'seniors').
+ *
+ * Like TENANT_*, the selector is a Script Property, so a shared-config `clasp
+ * push` cannot clobber a tenant's behavior — set `TENANT_PROFILE=cadets` on the
+ * cadets project and it keeps cadet behavior across every push.
+ */
+const TENANT_PROFILE = String(
+  PropertiesService.getScriptProperties().getProperty('TENANT_PROFILE') || 'seniors'
+).trim().toLowerCase();
+
+const TENANT_PROFILES_ = {
+  seniors: {
+    MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR', ''],
+    CADET_LITE: false,
+    SQUADRON_ACCESS_GROUP_AUTO_CREATE: true,
+    SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: true,
+    SQUADRON_DISTRIBUTION_TYPES: [
+      { suffix: 'allhands', name: 'All Hands', description: 'All members (cadets and seniors)', includeTypes: ['CADET', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'] },
+      { suffix: 'cadets', name: 'Cadets', description: 'Cadet members only', includeTypes: ['CADET'] },
+      { suffix: 'seniors', name: 'Seniors', description: 'Senior members only', includeTypes: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'] },
+      { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
+    ]
+  },
+  cadets: {
+    MEMBER_TYPES_ACTIVE: ['', 'CADET', ''],
+    CADET_LITE: true,
+    SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
+    SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
+    SQUADRON_DISTRIBUTION_TYPES: [
+      { suffix: 'cadets', name: 'Cadets', description: 'Cadet members only', includeTypes: ['CADET'] },
+      { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
+    ]
+  }
+};
+
+const PROFILE_ = TENANT_PROFILES_[TENANT_PROFILE] || TENANT_PROFILES_.seniors;
+
+/**
+ * ONE-TIME per project: fill in THIS tenant's values below, run once, done.
+ * These are written to Script Properties, which survive every `clasp push`.
+ * Blank fields are skipped (never overwrite an existing property), so it is safe
+ * to re-run. See config-tenants/<tenant>.json for the canonical values to paste.
+ */
+function setupTenantConfig() {
+  const values = {
+    TENANT_DOMAIN: '',                     // e.g. cawgcap.org  (cadets: cawgcadets.org)
+    TENANT_EMAIL_DOMAIN: '',               // e.g. @cawgcap.org
+    TENANT_CAPWATCH_ORGID: '',             // e.g. 188
+    TENANT_WING: '',                       // e.g. CA
+    TENANT_REGION: '',                     // '' unless this project is a Region-level pull
+    TENANT_CAPWATCH_DATA_FOLDER_ID: '',
+    TENANT_AUTOMATION_FOLDER_ID: '',
+    TENANT_AUTOMATION_SPREADSHEET_ID: '',
+    TENANT_RETENTION_LOG_SPREADSHEET_ID: '',
+    TENANT_RETENTION_EMAIL: '',
+    TENANT_DIRECTOR_RECRUITING_EMAIL: '',
+    TENANT_AUTOMATION_SENDER_EMAIL: '',
+    TENANT_SENDER_NAME: '',
+    TENANT_TEST_EMAIL: '',
+    TENANT_ITSUPPORT_EMAIL: ''
+  };
+
+  const props = PropertiesService.getScriptProperties();
+  const applied = [];
+  Object.keys(values).forEach(function (k) {
+    const v = String(values[k] == null ? '' : values[k]).trim();
+    if (v !== '') { props.setProperty(k, v); applied.push(k); }
+  });
+
+  console.log('✅ Applied tenant properties: ' + JSON.stringify(applied));
+  console.log('ℹ️  Blank fields were skipped (existing values untouched).');
+  console.log('➡️  Now run validateTenantConfig() to confirm.');
+  return applied;
+}
+
+/**
+ * Reports whether this project's required tenant properties are set.
+ * Run after setupTenantConfig() (or after entering properties by hand), and
+ * ALWAYS before pushing the shared config to a freshly-created project.
+ */
+function validateTenantConfig() {
+  const required = [
+    'TENANT_DOMAIN', 'TENANT_EMAIL_DOMAIN', 'TENANT_CAPWATCH_ORGID', 'TENANT_WING',
+    'TENANT_CAPWATCH_DATA_FOLDER_ID', 'TENANT_AUTOMATION_FOLDER_ID', 'TENANT_AUTOMATION_SPREADSHEET_ID'
+  ];
+  const p = PropertiesService.getScriptProperties();
+  const missing = required.filter(function (k) {
+    const v = p.getProperty(k);
+    return v === null || String(v).trim() === '';
+  });
+
+  if (missing.length) {
+    console.error('❌ Missing required tenant properties: ' + missing.join(', '));
+    console.error('   Set them in Project Settings > Script Properties, or run setupTenantConfig().');
+  } else {
+    console.log('✅ Tenant config OK — DOMAIN=' + p.getProperty('TENANT_DOMAIN') +
+                ', ORGID=' + p.getProperty('TENANT_CAPWATCH_ORGID') +
+                ', WING=' + p.getProperty('TENANT_WING'));
+  }
+  return { ok: missing.length === 0, missing: missing };
+}
+
 const CONFIG = {
 /**
  * Configuration Constants
@@ -28,34 +185,25 @@ const CONFIG = {
  */
 
 /**
- * CAPWATCH organization ID for data download
- * This should be your Wing ORGID
- * MI Wing = 223
+ * Per-tenant identity — sourced from Script Properties via getTenantConfig_().
+ * Do NOT hard-code tenant values here; a `clasp push` overwrites this file.
+ * Set them per project with setupTenantConfig(). See config-tenants/<tenant>.json.
  */
-CAPWATCH_ORGID: '188',
 
-/**
- * Wing abbreviation
- * Used for building squadron identifiers
- */
-REGION: "",
+/** CAPWATCH organization ID for data download (this project's Wing/Region ORGID). */
+CAPWATCH_ORGID: TENANT.CAPWATCH_ORGID,
 
-/**
-* If unit is a Region, set three letter abbreviation here
-*/
-WING: "CA",
+/** Region three-letter abbreviation; '' for a Wing-level project. */
+REGION: TENANT.REGION,
 
-/**
- * Email domain for CAP accounts
- * All members get username@miwg.cap.gov
- */
-EMAIL_DOMAIN: "@cawgcap.org",
+/** Wing abbreviation, used for building squadron identifiers. */
+WING: TENANT.WING,
 
-/**
- * Google Workspace domain
- * Used for API calls
- */
-DOMAIN: "cawgcap.org",
+/** Email domain for CAP accounts (members get username + this). */
+EMAIL_DOMAIN: TENANT.EMAIL_DOMAIN,
+
+/** Google Workspace domain used for API calls. */
+DOMAIN: TENANT.DOMAIN,
 
 // ============================================================================
 // ACCOUNTS AND GROUPS
@@ -66,20 +214,22 @@ DOMAIN: "cawgcap.org",
 * Determines which member types are processed in different scenarios
 */
 MEMBER_TYPES: {
-  /** All active member types */
-  /** ACTIVE: ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE', ''],  */
-  ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR', ''],
+  /**
+   * Active member types processed for this tenant — selected by TENANT_PROFILE.
+   * Seniors: SENIOR/FIFTY YEAR/INDEFINITE/CADET SPONSOR. Cadets: CADET only.
+   * NOTE: 'INDEFINITE' (not 'LIFE') is the correct current CAPWATCH type.
+   */
+  ACTIVE: PROFILE_.MEMBER_TYPES_ACTIVE,
   /** Only Aerospace Education Members */
   AEM_ONLY: ['AEM']
 },
 
 /**
- * Cadet-lite mode:
- * When enabled:
- *   - Excludes low grades from Workspace account creation
- *   - CADET, C/Amn, C/A1C, C/SrA will be ignored
+ * Cadet-lite mode (selected by TENANT_PROFILE):
+ * When enabled, low grades (CADET, C/Amn, C/A1C, C/SrA) are excluded from
+ * Workspace account creation. On for the cadets tenant, off for seniors.
  */
-CADET_LITE: false,   // turn OFF by setting false
+CADET_LITE: PROFILE_.CADET_LITE,
 
 /**
  * Per-target resource management (aircraft & vehicles)
@@ -107,9 +257,11 @@ CADET_LITE_EXCLUDED_GRADES: [
   SUSPENSION_GRACE_DAYS: 7,
 
   /**
-   * Organization IDs that should have users suspended
-   * These typically represent transition or inactive units
-   * MI-000 (744) and MI-999 (1920) are holding units for members in transition
+   * Organization IDs that should have users suspended, and (via
+   * shouldProcessMember() in UpdateMembers.gs) are never eligible for
+   * accounts or group membership regardless of member type.
+   * 1297 = CALIF WING HQ SQ (CA-000, the holding unit for members not
+   * assigned to a squadron); 368 = CALIFORNIA LEGISLATIVE SQ (CA-999).
    */
   EXCLUDED_ORG_IDS: ['1297', '368'],
 
@@ -171,22 +323,22 @@ CADET_LITE_EXCLUDED_GRADES: [
   // ------------------------------------------------------
 
   /**
-   * Google Drive folder ID where CAPWATCH data files are stored
-   * Downloaded files (Member.txt, Organization.txt, etc.) go here
+   * Google Drive folder ID where CAPWATCH data files are stored (per tenant).
+   * Downloaded files (Member.txt, Organization.txt, etc.) go here.
    */
-  CAPWATCH_DATA_FOLDER_ID: '10T0wBubqzUzHa_7nx__eNfuzhTpFRDs3',
+  CAPWATCH_DATA_FOLDER_ID: TENANT.CAPWATCH_DATA_FOLDER_ID,
 
   /**
-   * Google Drive folder ID for automation files
-   * Contains configuration spreadsheets and logs
+   * Google Drive folder ID for automation files (per tenant).
+   * Contains configuration spreadsheets and logs.
    */
-  AUTOMATION_FOLDER_ID: '1lLUs0RsTQXNgRnt_fURsw8B3E8DpsgE2',
+  AUTOMATION_FOLDER_ID: TENANT.AUTOMATION_FOLDER_ID,
 
   /**
-   * Google Sheets ID for automation configuration
-   * Contains 'Groups', 'User Additions', 'Error Emails' sheets
+   * Google Sheets ID for automation configuration (per tenant).
+   * Contains 'Groups', 'User Additions', 'Error Emails' sheets.
    */
-  AUTOMATION_SPREADSHEET_ID: '1UqCc6aRMEYw-Y_bTcTDKXuaYLsQ6bQzkdoVG7rRsV9Q',
+  AUTOMATION_SPREADSHEET_ID: TENANT.AUTOMATION_SPREADSHEET_ID,
 
   /**
    * Log level for automation scripts
@@ -238,26 +390,29 @@ const GROUP_MEMBER_PAGE_SIZE = 200;
  * These values are used by retention email scripts (if implemented)
  */
 
+/* Per-tenant recruiting/retention values — sourced from Script Properties
+ * via TENANT (see getTenantConfig_()). Do NOT hard-code tenant values here. */
+
 /** Google Sheets ID for retention tracking log */
-const RETENTION_LOG_SPREADSHEET_ID = '1ouL6YHtTfpJs32YQ2NyfYxjHSDg39RydHMamGHXM7yA';
+const RETENTION_LOG_SPREADSHEET_ID = TENANT.RETENTION_LOG_SPREADSHEET_ID;
 
 /** Email address for retention Google Group */
-const RETENTION_EMAIL = 'recruiting@cawgcap.org';
+const RETENTION_EMAIL = TENANT.RETENTION_EMAIL;
 
 /** Email address for Director of Recruiting and Retention */
-const DIRECTOR_RECRUITING_EMAIL = 'adam.staley@cawgcap.org';
+const DIRECTOR_RECRUITING_EMAIL = TENANT.DIRECTOR_RECRUITING_EMAIL;
 
 /** Email alias to use as sender for automated emails */
-const AUTOMATION_SENDER_EMAIL = 'automation@cawgcap.org';
+const AUTOMATION_SENDER_EMAIL = TENANT.AUTOMATION_SENDER_EMAIL;
 
 /** Display name for automated email sender */
-const SENDER_NAME = 'CAWG Information Technology';
+const SENDER_NAME = TENANT.SENDER_NAME;
 
 /** Test email address for development/testing */
-const TEST_EMAIL = 'it@cawgcap.org';
+const TEST_EMAIL = TENANT.TEST_EMAIL;
 
 /** IT support mailbox for notifications */
-const ITSUPPORT_EMAIL = 'it@cawgcap.org'
+const ITSUPPORT_EMAIL = TENANT.ITSUPPORT_EMAIL;
 
 /**
  * Configuration for retention email system
@@ -366,10 +521,11 @@ const SQUADRON_GROUP_CONFIG = {
     DESCRIPTION_TEMPLATE: 'Internal access group for {squadron}. CAWG accounts only. Used for shared drive permissions and internal resource access.',
     
     /**
-     * Whether to auto-create access groups for all squadrons
+     * Whether to auto-create access groups for all squadrons (per TENANT_PROFILE:
+     * on for seniors, off for cadets).
      */
-    AUTO_CREATE: true,
-    
+    AUTO_CREATE: PROFILE_.SQUADRON_ACCESS_GROUP_AUTO_CREATE,
+
     /**
      * Whether to include access groups in Global Address List
      * Set to false to keep internal access groups less visible
@@ -409,9 +565,10 @@ const SQUADRON_GROUP_CONFIG = {
     DESCRIPTION_TEMPLATE: 'Public contact email for {squadron}. For external inquiries, website contact forms, and business cards.',
     
     /**
-     * Whether to auto-create public contact groups for all squadrons
+     * Whether to auto-create public contact groups for all squadrons (per
+     * TENANT_PROFILE: on for seniors, off for cadets).
      */
-    AUTO_CREATE: true
+    AUTO_CREATE: PROFILE_.SQUADRON_PUBLIC_CONTACT_AUTO_CREATE
   },
   
   /**
@@ -420,36 +577,12 @@ const SQUADRON_GROUP_CONFIG = {
    */
   DISTRIBUTION_LIST: {
     /**
-     * Distribution list types to create
-     * Each squadron gets all of these automatically
+     * Distribution list types to create per squadron — selected by TENANT_PROFILE.
+     * Seniors: all-hands / cadets / seniors / parents. Cadets: cadets / parents only.
+     * (Member-type lists use 'INDEFINITE', not 'LIFE' — see TENANT_PROFILES_.)
      */
-    TYPES: [
-      {
-        suffix: 'allhands',
-        name: 'All Hands',
-        description: 'All members (cadets and seniors)',
-        includeTypes: ['CADET', 'SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR']
-      },
-      {
-        suffix: 'cadets',
-        name: 'Cadets',
-        description: 'Cadet members only',
-        includeTypes: ['CADET']
-      },
-      {
-        suffix: 'seniors',
-        name: 'Seniors',
-        description: 'Senior members only',
-        includeTypes: ['SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR']
-      },
-      {
-        suffix: 'parents',
-        name: 'Parents & Guardians',
-        description: 'Parent and guardian contacts for cadet members',
-        isParentList: true
-      }
-    ],
-    
+    TYPES: PROFILE_.SQUADRON_DISTRIBUTION_TYPES,
+
     /**
      * Whether to auto-create distribution lists for all squadrons
      */

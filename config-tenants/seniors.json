@@ -1,0 +1,19 @@
+{
+  "_note": "Canonical NON-SECRET tenant identity for the SENIORS (cawgcap.org) Apps Script project. These map 1:1 to Script Properties consumed by getTenantConfig_() in src/config.gs. Secrets (SA_PRIVATE_KEY, MISSION_WEBHOOK_SECRET, CAPWATCH_AUTHORIZATION) are NOT stored here — see docs/ADMIN_GUIDE.md. This file is repo-only; .claspignore keeps config-tenants/ out of every clasp push.",
+  "TENANT_PROFILE": "seniors",
+  "TENANT_DOMAIN": "cawgcap.org",
+  "TENANT_EMAIL_DOMAIN": "@cawgcap.org",
+  "TENANT_CAPWATCH_ORGID": "188",
+  "TENANT_WING": "CA",
+  "TENANT_REGION": "",
+  "TENANT_CAPWATCH_DATA_FOLDER_ID": "10T0wBubqzUzHa_7nx__eNfuzhTpFRDs3",
+  "TENANT_AUTOMATION_FOLDER_ID": "1lLUs0RsTQXNgRnt_fURsw8B3E8DpsgE2",
+  "TENANT_AUTOMATION_SPREADSHEET_ID": "1UqCc6aRMEYw-Y_bTcTDKXuaYLsQ6bQzkdoVG7rRsV9Q",
+  "TENANT_RETENTION_LOG_SPREADSHEET_ID": "1ouL6YHtTfpJs32YQ2NyfYxjHSDg39RydHMamGHXM7yA",
+  "TENANT_RETENTION_EMAIL": "recruiting@cawgcap.org",
+  "TENANT_DIRECTOR_RECRUITING_EMAIL": "adam.staley@cawgcap.org",
+  "TENANT_AUTOMATION_SENDER_EMAIL": "automation@cawgcap.org",
+  "TENANT_SENDER_NAME": "CAWG Information Technology",
+  "TENANT_TEST_EMAIL": "it@cawgcap.org",
+  "TENANT_ITSUPPORT_EMAIL": "it@cawgcap.org"
+}

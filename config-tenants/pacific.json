@@ -1,0 +1,19 @@
+{
+  "_note": "Canonical NON-SECRET tenant identity for the PACIFIC REGION Apps Script project (scriptId 1Y_7HIPo...). ALL VALUES UNVERIFIED — the project is owned by it@pcr.cap.gov and clasp pull is currently blocked, so its live domain/config could not be read. Fill these in once access is restored (reset it@pcr.cap.gov, add a named editor, then clasp pull + read config). Do NOT put these in config.gs — a clasp push overwrites it.",
+  "_todo": "Verify domain and fill every field once the Pacific project is readable.",
+  "TENANT_DOMAIN": "",
+  "TENANT_EMAIL_DOMAIN": "",
+  "TENANT_CAPWATCH_ORGID": "",
+  "TENANT_WING": "",
+  "TENANT_REGION": "",
+  "TENANT_CAPWATCH_DATA_FOLDER_ID": "",
+  "TENANT_AUTOMATION_FOLDER_ID": "",
+  "TENANT_AUTOMATION_SPREADSHEET_ID": "",
+  "TENANT_RETENTION_LOG_SPREADSHEET_ID": "",
+  "TENANT_RETENTION_EMAIL": "",
+  "TENANT_DIRECTOR_RECRUITING_EMAIL": "",
+  "TENANT_AUTOMATION_SENDER_EMAIL": "",
+  "TENANT_SENDER_NAME": "",
+  "TENANT_TEST_EMAIL": "",
+  "TENANT_ITSUPPORT_EMAIL": ""
+}

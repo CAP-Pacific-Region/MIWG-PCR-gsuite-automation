@@ -379,6 +379,12 @@ function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = t
 /**
  * Determines if a member should be processed based on status and type
  *
+ * Excludes members in CONFIG.EXCLUDED_ORG_IDS (CA's Unit 000/999 holding
+ * squadrons) by ORGID rather than by raw Unit number, so members are never
+ * eligible for accounts based on which physical org they're parked in —
+ * regardless of member type (including FIFTY YEAR/INDEFINITE, which never
+ * expire but are still excluded if held in one of those orgs).
+ *
  * @param {Array} memberRow - Raw member data row from CSV
  * @param {string[]} types - Valid member types to include
  * @returns {boolean} True if member should be processed
@@ -410,8 +416,7 @@ if (CONFIG.CADET_LITE === true) {
 // ---------------------------------------------
 
   return memberRow[24] === 'ACTIVE' &&
-         memberRow[13] != 0 &&
-         memberRow[13] != 999 &&
+         CONFIG.EXCLUDED_ORG_IDS.indexOf(String(memberRow[11])) === -1 &&
          types.indexOf(memberRow[21]) > -1;
 }
 
@@ -1036,13 +1041,6 @@ function addOrUpdateUser(member) {
         capsn: member.capsn,
         name: member.firstName + ' ' + member.lastName
       });
-
-    // Queue for delayed Gmail setup
-    queueForDelayedGmailSetup(primaryEmail, sendAsDisplayName, member);
-
-    // Send welcome email
-    sendWelcomeEmail(member, primaryEmail, generatedPassword);
-
     } catch (e) {
       Logger.error('Failed to create new user', {
         email: primaryEmail,
@@ -1051,6 +1049,35 @@ function addOrUpdateUser(member) {
         orgid: member.orgid,
         charter: member.charter,
         orgPath: member.orgPath,
+        errorMessage: e.message,
+        errorCode: e.details?.code
+      });
+      return;
+    }
+
+    // Account exists past this point — post-provisioning steps are independent
+    // of each other and of account creation, so a failure here must not be
+    // mislabeled as (or mask) a failed user creation.
+
+    // Queue for delayed Gmail setup
+    try {
+      queueForDelayedGmailSetup(primaryEmail, sendAsDisplayName, member);
+    } catch (e) {
+      Logger.error('User created, but failed to queue delayed Gmail setup', {
+        email: primaryEmail,
+        capsn: member.capsn,
+        errorMessage: e.message,
+        errorCode: e.details?.code
+      });
+    }
+
+    // Send welcome email
+    try {
+      sendWelcomeEmail(member, primaryEmail, generatedPassword);
+    } catch (e) {
+      Logger.error('User created, but failed to send welcome email', {
+        email: primaryEmail,
+        capsn: member.capsn,
         errorMessage: e.message,
         errorCode: e.details?.code
       });
@@ -1221,7 +1248,7 @@ function updateAllMembers() {
     let level1Skipped = 0;
     for (const capsn in toProcess) {
       const member = toProcess[capsn];
-      const isSeniorType = ['SENIOR', 'FIFTY YEAR', 'LIFE', 'CADET SPONSOR'].indexOf(member.type) > -1;
+      const isSeniorType = ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'].indexOf(member.type) > -1;
       const isNewAccount = !workspaceEmailByCapid[String(capsn)];
       if (isSeniorType && isNewAccount && !level1Capids.has(String(capsn))) {
         Logger.info('Senior skipped — Level I not complete', {
@@ -2314,7 +2341,7 @@ function generateTempPassword_() {
 // -----------------------------------------
 function sendWelcomeEmail(member, email, tempPassword) {
   const html = HtmlService
-    .createTemplateFromFile('WelcomeEmail')
+    .createTemplateFromFile('recruiting-and-retention/WelcomeEmail')
     .getRawContent();
 
   const mergedHtml = html
