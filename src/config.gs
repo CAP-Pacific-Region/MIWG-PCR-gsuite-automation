@@ -3,11 +3,12 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Version: 1.0.0
+ * Version: 1.1.0
  * Date: 2026-07-09
- * Changes: Per-tenant identity/behavior moved to Script Properties (getTenantConfig_,
- *   TENANT_PROFILE + profiles); MEMBER_TYPES.ACTIVE uses INDEFINITE, not LIFE.
- *   See PCR_CHANGELOG.md.
+ * Changes: Added 'pacific' tenant profile (single-unit region); made
+ *   EXCLUDED_ORG_IDS, SPECIAL_ORGS.AEM_UNIT, and org-path sync profile-driven.
+ *   (1.0.0: per-tenant identity/behavior moved to Script Properties;
+ *   MEMBER_TYPES.ACTIVE uses INDEFINITE, not LIFE.) See PCR_CHANGELOG.md.
  ***********************************************/
 
 /**
@@ -92,6 +93,9 @@ const TENANT_PROFILES_ = {
   seniors: {
     MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR', ''],
     CADET_LITE: false,
+    EXCLUDED_ORG_IDS: ['1297', '368'], // CA-000 (1297) + CA-999 (368) holding units
+    AEM_UNIT: '',                      // no Aerospace Education Member unit
+    SYNC_ORG_PATHS: true,              // multi-unit wing: auto-map new squadrons
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: true,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: true,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -104,12 +108,30 @@ const TENANT_PROFILES_ = {
   cadets: {
     MEMBER_TYPES_ACTIVE: ['', 'CADET', ''],
     CADET_LITE: true,
+    EXCLUDED_ORG_IDS: ['1297', '368'], // same CA holding units as seniors
+    AEM_UNIT: '',
+    SYNC_ORG_PATHS: true,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [
       { suffix: 'cadets', name: 'Cadets', description: 'Cadet members only', includeTypes: ['CADET'] },
       { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
     ]
+  },
+  // Pacific Region — single-unit region HQ (PCR-PCR-001). Mirrors the live
+  // "PCR Automation" behavior so folding it onto the shared code is
+  // behavior-preserving. Open items (does the region still run AEM? any members
+  // still typed legacy LIFE?) are flagged in docs/PACIFIC_DIFF.md and can be
+  // trimmed here once the region confirms.
+  pacific: {
+    MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'LIFE', 'CADET', 'AEM', ''],
+    CADET_LITE: false,
+    EXCLUDED_ORG_IDS: ['1345'],   // PCR holding unit
+    AEM_UNIT: '182',              // region Aerospace Education Member unit
+    SYNC_ORG_PATHS: false,        // single unit: no subordinate orgs to auto-map
+    SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
+    SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
+    SQUADRON_DISTRIBUTION_TYPES: [] // no subordinate squadrons
   }
 };
 
@@ -261,23 +283,25 @@ CADET_LITE_EXCLUDED_GRADES: [
   SUSPENSION_GRACE_DAYS: 7,
 
   /**
-   * Organization IDs that should have users suspended, and (via
-   * shouldProcessMember() in UpdateMembers.gs) are never eligible for
-   * accounts or group membership regardless of member type.
-   * 1297 = CALIF WING HQ SQ (CA-000, the holding unit for members not
-   * assigned to a squadron); 368 = CALIFORNIA LEGISLATIVE SQ (CA-999).
+   * Organization IDs whose members are suspended and (via shouldProcessMember()
+   * in UpdateMembers.gs) never eligible for accounts or group membership,
+   * regardless of member type. Holding units differ by wing/region, so this is
+   * per-tenant via TENANT_PROFILE. Seniors/cadets: 1297 = CALIF WING HQ SQ
+   * (CA-000) + 368 = CALIF LEGISLATIVE SQ (CA-999). Pacific: 1345.
    */
-  EXCLUDED_ORG_IDS: ['1297', '368'],
+  EXCLUDED_ORG_IDS: PROFILE_.EXCLUDED_ORG_IDS,
 
   /**
    * Special organization configurations
    */
   SPECIAL_ORGS: {
     /**
-     * Artificial org ID for Aerospace Education Members
-     * Uses MIWG (223) as template but with separate identity
+     * Artificial org ID for Aerospace Education Members (per-tenant, via
+     * TENANT_PROFILE). Empty on wings that don't run AEM automation
+     * (seniors/cadets); '182' on Pacific. When empty, an inert squadron keyed
+     * by '' is created and matches no member — the existing seniors behavior.
      */
-    AEM_UNIT: ''
+    AEM_UNIT: PROFILE_.AEM_UNIT
   },
 
   /**

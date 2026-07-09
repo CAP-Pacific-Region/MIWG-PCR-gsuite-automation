@@ -7,6 +7,11 @@
  * Authors: Jeremy Ginnard, jginnard@a2cap.org
  *          Luke Bunge, luke.bunge@miwg.cap.gov
  *
+ * Version: 1.0.0
+ * Date: 2026-07-09
+ * Changes: Gate syncOrgPaths() behind PROFILE_.SYNC_ORG_PATHS so single-unit
+ *   region tenants skip org-path auto-mapping. See PCR_CHANGELOG.md.
+ *
  * Setup Instructions:
  * Step 1: Temporarily set username and password variables, then run setAuthorization()
  * Step 2: The authorization token is stored securely in User Properties
@@ -143,7 +148,14 @@ function getCapwatch() {
       orgid: CONFIG.CAPWATCH_ORGID
     });
 
-    syncOrgPaths();
+    // Org-path auto-mapping only applies to multi-unit wings. Single-unit
+    // region tenants (PROFILE_.SYNC_ORG_PATHS = false) have no subordinate
+    // orgs to sync, so skip it.
+    if (PROFILE_.SYNC_ORG_PATHS) {
+      syncOrgPaths();
+    } else {
+      Logger.info('OrgPath sync skipped (SYNC_ORG_PATHS=false for this tenant profile)');
+    }
   } catch (e) {
     Logger.error('Failed to download CAPWATCH data', {
       errorMessage: e.message,

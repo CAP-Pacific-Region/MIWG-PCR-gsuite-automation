@@ -14,6 +14,32 @@ next to each entry below.
 
 _Nothing yet._
 
+## [2026-07-09] — Pacific tenant profile + profile-driven per-tenant orgs
+
+Code-side reconciliation so the Pacific Region project can run the shared `src/`,
+differentiated only by configuration (see [docs/PACIFIC_DIFF.md](docs/PACIFIC_DIFF.md)).
+Behavior-preserving for the seniors and cadets tenants. **Not yet deployed to
+Pacific** — deployment is on hold pending 2SV for `automation@pcr.cap.gov`.
+
+### Added
+
+- **`pacific` profile** in `TENANT_PROFILES_` (`config.gs`) — single-unit region
+  HQ (PCR-PCR-001): mirrors the live "PCR Automation" behavior (member types incl.
+  AEM, holding unit 1345, AEM unit 182), disables org-path sync and squadron-group
+  auto-create. Selected with `TENANT_PROFILE=pacific`.
+
+### Changed
+
+- **`config.gs` (v1.1.0)** — `EXCLUDED_ORG_IDS` and `SPECIAL_ORGS.AEM_UNIT` are now
+  profile-driven (`PROFILE_.*`) instead of hard-coded CA-wing values, so holding
+  units and AEM handling vary per tenant. Seniors/cadets values unchanged
+  (`['1297','368']`, AEM_UNIT `''`).
+- **`GetCapwatch.gs` (v1.0.0)** — `getCapwatch()` now calls `syncOrgPaths()` only
+  when `PROFILE_.SYNC_ORG_PATHS` is true, so single-unit region tenants skip
+  org-path auto-mapping (and its IT summary email) entirely.
+- **`config-tenants/pacific.json`** — populated with the live non-secret identity
+  read via clasp (was an all-blank stub); scriptId note corrected. (PR #9)
+
 ## [2026-07-09] — Reconcile live tenants + per-tenant config hardening
 
 Merged via PR #7 (`reconcile-live-hardening`). Reconciles the repository with the
