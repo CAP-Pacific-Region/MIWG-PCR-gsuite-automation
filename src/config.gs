@@ -3,7 +3,11 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Date: November 14, 2025
+ * Version: 1.0.0
+ * Date: 2026-07-09
+ * Changes: Per-tenant identity/behavior moved to Script Properties (getTenantConfig_,
+ *   TENANT_PROFILE + profiles); MEMBER_TYPES.ACTIVE uses INDEFINITE, not LIFE.
+ *   See PCR_CHANGELOG.md.
  ***********************************************/
 
 /**

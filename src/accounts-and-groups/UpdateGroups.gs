@@ -1,9 +1,11 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.3.7
+ * Version: 1.3.8
  * Filename: UpdateGroups.gs
- * Saved: 2026-04-06 16:17 PDT
+ * Saved: 2026-07-09
+ * Changes: AdminDirectory.Users.list standardized to customer:"my_customer".
+ *   See PCR_CHANGELOG.md.
  *
  * Manages Google Groups memberships based on CAPWATCH data and configuration:
  * - Reads group configuration from automation spreadsheet

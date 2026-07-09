@@ -1,9 +1,11 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.2.6
+ * Version: 1.2.7
  * Filename: SquadronGroups.gs
- * Saved: 2026-03-30 15:42 PDT
+ * Saved: 2026-07-09
+ * Changes: Reconciled with live tenant code; AdminDirectory.Users.list
+ *   standardized to customer:"my_customer". See PCR_CHANGELOG.md.
  *
  * Manages squadron-specific Google Groups for unit collaboration and communication:
  * - Public Contact (mixxx@miwg.cap.gov) - External-facing email for public inquiries

@@ -1,6 +1,11 @@
 /**
  * Retention Email Automation Module
- * 
+ *
+ * Version: 1.0.0
+ * Date: 2026-07-09
+ * Changes: Reconciled with live tenant code (INDEFINITE senior type; profile-driven
+ *   config references). See PCR_CHANGELOG.md.
+ *
  * Automates sending retention-focused emails to CAP members based on lifecycle events:
  * - Cadets turning 18 (transition to senior member opportunities)
  * - Cadets turning 21 (aging out of cadet program)

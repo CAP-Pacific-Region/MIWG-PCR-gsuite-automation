@@ -1,6 +1,11 @@
 /**
  * License Lifecycle Management Module
- * 
+ *
+ * Version: 1.0.0
+ * Date: 2026-07-09
+ * Changes: AdminDirectory.Users.list standardized to customer:"my_customer"
+ *   (was domain — 400 Bad Request on the cadets tenant). See PCR_CHANGELOG.md.
+ *
  * Manages Google Workspace license optimization and user account lifecycle:
  * - Auto-reactivates users who renewed their membership
  * - Archives users suspended for 1+ year who are inactive in CAPWATCH

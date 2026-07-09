@@ -1,8 +1,10 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.4.4
- * Date: 2026-6-6
+ * Version: 1.4.5
+ * Date: 2026-07-09
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
+ * Changes: AdminDirectory.Users.list standardized to customer:"my_customer";
+ *   testImpersonationToken uses console.log (Logger is overridden). See PCR_CHANGELOG.md.
  *
  * Description:
  * - Added CADET_LITE filtering logic and configuration controls.
