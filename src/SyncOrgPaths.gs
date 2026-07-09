@@ -5,6 +5,10 @@
  *   Auto-adds new entries where the parent path is already mapped, and emails
  *   this tenant's IT mailbox with a full summary of changes and items needing
  *   attention. Called automatically at the end of getCapwatch().
+ * Version: 1.0.0
+ * Date: 2026-07-09
+ * Changes: Sync recipient is now tenant-aware via getOrgPathSyncEmail_()
+ *   (was hardcoded it@cawgcap.org). See PCR_CHANGELOG.md.
  ***********************************************/
 
 /**

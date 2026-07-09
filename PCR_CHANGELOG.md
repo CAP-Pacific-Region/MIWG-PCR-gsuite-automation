@@ -1,0 +1,87 @@
+# PCR Changelog
+
+Pacific Region (PCR) fork-specific changes to the CAPWATCH / Google Workspace
+automation, layered on top of the upstream `cap-miwg/gsuite-automation` project.
+Upstream changes are tracked in [CHANGELOG.md](CHANGELOG.md); **this file records
+only what the Pacific Region deployment adds or diverges on.**
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+Individual source files carry their own SemVer version in their header
+(see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
+next to each entry below.
+
+## [Unreleased]
+
+_Nothing yet._
+
+## [2026-07-09] — Reconcile live tenants + per-tenant config hardening
+
+Merged via PR #7 (`reconcile-live-hardening`). Reconciles the repository with the
+code actually deployed across the **seniors** (`cawgcap.org`) and **cadets**
+(`cawgcadets.org`) Workspace tenants, and removes the shared-config clobber
+footgun (a `clasp push` overwriting a tenant's `config.gs`).
+
+### Added
+
+- `docs/ADMIN_GUIDE.md` — successor / "hit by a bus" runbook: three-tenant
+  deployment, access checklist, Apps Script + clasp workflow, secrets and
+  Script-Properties inventory, automation schedule, entry-point reference,
+  disaster recovery.
+- `config-tenants/{seniors,cadets,pacific}.json` — canonical **non-secret**
+  per-tenant identity templates (kept out of every `clasp push` by `.claspignore`).
+- `getTenantConfig_()`, `setupTenantConfig()`, `validateTenantConfig()` in
+  `config.gs`; `TENANT_PROFILE` + `TENANT_PROFILES_` (`seniors` | `cadets`)
+  selecting per-tenant behavior (member types, Cadet-Lite, squadron-group set).
+
+### Changed
+
+- **`config.gs` (v1.0.0)** — Per-tenant identity (domain, ORGID, folder/sheet IDs,
+  contact emails) now read from `TENANT_*` **Script Properties**, not literals, so
+  a `clasp push` no longer clobbers a tenant's config. No cross-tenant fallback:
+  an unconfigured project yields empty identity and fails loudly rather than acting
+  on the wrong domain.
+- **`SyncOrgPaths.gs` (v1.0.0)** — OrgPath sync recipient resolved per-tenant via
+  `getOrgPathSyncEmail_()` (was hardcoded `it@cawgcap.org`).
+- **`UpdateMembers.gs` (v1.4.5)** — `testImpersonationToken` uses `console.log`
+  (the codebase overrides the global `Logger`, which has no `.log`).
+
+### Fixed
+
+- **`AdminDirectory.Users.list` domain → customer** — standardized all call sites
+  to `customer: "my_customer"` (the `{domain: ...}` form returned 400 Bad Request
+  on the cadets tenant; identical result on a single-domain customer). Affects
+  `ManageLicenses.gs` (v1.0.0), `UpdateMembers.gs` (v1.4.5), `UpdateGroups.gs`
+  (v1.3.8), `UpdateChatSpaces.gs` (v1.0.0), `UpdateCalendars.gs` (v1.2.4), and
+  `SquadronGroups.gs` (v1.2.7).
+- Correct CAPWATCH senior member type is **`INDEFINITE`, not `LIFE`**
+  (`config.gs`, `SendRetentionEmail.gs` v1.0.0, and squadron distribution lists).
+
+### Operational
+
+- **Cadets tenant re-enabled end-to-end**: config resolved, license/group previews
+  clean (0 destructive actions), watched `updateAllMembers()` applied 22 benign
+  org/duty/grade changes + 3 new accounts with 0 errors; time-driven triggers
+  recreated under `automation@cawgcadets.org`.
+- Both **seniors** and **cadets** projects deployed to this code
+  (`npm run push:seniors` / `push:cadets`).
+
+### Known / carried forward
+
+- **Pacific** (`pcr.cap.gov`) tenant not yet reconciled or verified.
+- Leaked service-account private key in git history still needs **GCP key rotation**.
+- `CONFIG.CUSTOMER_ID` is referenced by a few calls but undefined (latent cleanup).
+
+---
+
+## Earlier PCR-fork changes (pre-2026-07-09)
+
+Reconstructed from git history for continuity; predates this changelog file.
+
+- **Security hardening** (PR #6, `c6b3099`) — randomized temporary Workspace
+  passwords (~244-bit entropy, not derivable from public data) and mission-webhook
+  hardening.
+- **Member eligibility** (PR #5) — corrected `LIFE` → `INDEFINITE` member type and
+  switched holding-unit exclusion to ORGID-based (`63301be`); fixed broken email
+  templates and mislabeled post-creation errors (`9688c88`).
+- **Level I gating** (`c425948`) — senior account provisioning gated on Level I
+  completion.

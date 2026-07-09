@@ -2,6 +2,11 @@
 /**
  * PCR-GW-SCRIPTS: ChatSpaces Module (Apps Script Version)
  *
+ * Version: 1.0.0
+ * Date: 2026-07-09
+ * Changes: AdminDirectory.Users.list standardized to customer:"my_customer".
+ *   See PCR_CHANGELOG.md.
+ *
  * Creates and manages Google Chat Spaces for:
  *  - CAP Committee spaces (from MbrCommittee)
  *  - Unit spaces (Region, Wing, Group, Squadron, Flight, Senior)

@@ -1,8 +1,10 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.2.3
- * Date: 2026-2-11
+ * Version: 1.2.4
+ * Date: 2026-07-09
  * Author: Lt Col Noel Luneau, Pacific Region
+ * Changes: AdminDirectory.Users.list standardized to customer:"my_customer".
+ *   See PCR_CHANGELOG.md.
  *
  * Description:
  * - Provides two distinct entry points:
