@@ -1114,7 +1114,7 @@ function buildSquadronWorkspaceEmailByCapidMap_() {
 
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       projection: 'full',
       fields: 'users(primaryEmail,externalIds),nextPageToken',

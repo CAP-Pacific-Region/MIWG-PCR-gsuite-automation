@@ -98,7 +98,7 @@ function reactivateSuspendedActiveUsers(activeCapsns) {
   
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=true',
       fields: 'users(primaryEmail,name,orgUnitPath,suspended,customSchemas),nextPageToken',
@@ -182,7 +182,7 @@ function archiveLongSuspendedUsers(activeCapsns) {
   
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=true isArchived=false',
       fields: 'users(primaryEmail,name,orgUnitPath,creationTime,lastLoginTime,customSchemas),nextPageToken',
@@ -294,7 +294,7 @@ function deleteLongArchivedUsers(activeCapsns) {
   
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isArchived=true',
       fields: 'users(primaryEmail,name,orgUnitPath,creationTime,lastLoginTime,customSchemas),nextPageToken',
@@ -457,7 +457,7 @@ function deleteIneligibleSuspendedUsers() {
 
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=true isAdmin=false',
       fields: 'users(primaryEmail,name,orgUnitPath,suspended,externalIds,employeeId,creationTime,lastLoginTime),nextPageToken',
@@ -723,7 +723,7 @@ function getLicenseStatistics() {
   
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       fields: 'users(suspended,archived),nextPageToken',
       pageToken: nextPageToken
@@ -773,7 +773,7 @@ function previewArchival() {
   
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=true isArchived=false',
       fields: 'users(primaryEmail,name,orgUnitPath,creationTime,lastLoginTime,customSchemas),nextPageToken',
@@ -859,7 +859,7 @@ function previewDeletion() {
   
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isArchived=true',
       fields: 'users(primaryEmail,name,orgUnitPath,creationTime,lastLoginTime,customSchemas),nextPageToken',
@@ -1203,7 +1203,7 @@ function auditWorkspaceUsersForRemoval() {
   let nextPageToken = '';
   do {
     const page = AdminDirectory.Users.list({
-      domain: CONFIG.DOMAIN,
+      customer: "my_customer",
       maxResults: 500,
       query: 'isAdmin=false',
       projection: 'full',
