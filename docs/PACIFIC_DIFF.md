@@ -118,12 +118,22 @@ guards on its flag (`if (!PROFILE_.RUN_… ) return;`) so it no-ops on tenants w
 even if run manually. Wing profiles (`seniors`/`cadets`) set them `false`; `pacific` `true`.
 Triggers are only scheduled where the feature is on.
 
-> ℹ️ **`UpdateChatSpaces` is a divergence, not a Pacific-only file.** It exists in both, but
-> Pacific's copy is a **superset** of the wing's: same committee/unit chat-space sync **plus**
-> `syncAutomationGroupChatSpaces()`, `syncUserAdditionsChatSpaces_()` and a dry-run switch.
-> Under "identical `src/`" there can be only one version, so this must **converge**: adopt the
-> superset (Pacific's) into the shared code if the wing wants those features, or confirm they
-> are safe/inert for the wing. Needs a line-by-line diff + explicit call before the push (§7).
+> ℹ️ **`UpdateChatSpaces` convergence — analyzed 2026-07-09 (function-level diff).** Pacific's
+> file is a strict **superset**: +9 functions (automation-group chat spaces, user-additions
+> chat spaces, their loaders, a dry-run switch); nothing exists only in the wing. Of the
+> shared functions: 6 identical; the rest are either inert (`getMembersForChatSpaces_` dead
+> fallback), **PCR-gated** (`WING==='PCR'` committee legacy-rename + "skip unit spaces" — inert
+> for the wing), or **benign improvements** (empty-vs-null cache-safety **bugfix**, committee
+> description/guidelines, `createChatSpace` history/external-user support).
+>
+> **Plan — adopt Pacific's version as the single shared file, with three corrections:**
+> 1. **Flag-gate the two new features OFF for the wing.** They do **not** self-gate: their
+>    loaders fall back to the `Groups` / `User Additions` tabs the wing already has, so they
+>    would create unwanted spaces. Guard both calls behind a profile flag (wing off, pacific on).
+> 2. **Keep `customer:"my_customer"`** in `buildWorkspaceCapidMaps` — Pacific reintroduced the
+>    `domain: CONFIG.DOMAIN` 400 bug we fixed repo-wide; take its `emailToUserId` addition only.
+> 3. **Keep the wing's `INDEFINITE` fallback** in `getMembersForChatSpaces_` (Pacific has stale
+>    `LIFE`; it's a dead fallback either way).
 
 ---
 
@@ -225,10 +235,10 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
   Contacts → Domain Shared Contacts sync). Fold in; enable for Pacific, off for the wing.
 - ~~`PCRCAP.ORG.js`?~~ **Resolved: drop** — one-off read-only `@pcrcap.org` audit, not
   automation.
-- **`UpdateChatSpaces` superset (still open)** — under identical `src/` there is one version.
-  Adopt Pacific's superset (`syncAutomationGroupChatSpaces`, `syncUserAdditionsChatSpaces_`)
-  into the shared code, or confirm those extras are inert/safe for the wing. Line-by-line
-  diff needed before the push.
+- ~~**`UpdateChatSpaces` superset**~~ **Resolved (diff done 2026-07-09): converge to Pacific's
+  version** as the single shared file, flag-gating the two new features OFF for the wing (their
+  loaders fall back to the wing's `Groups`/`User Additions` tabs, so they don't self-gate) and
+  keeping `customer:"my_customer"` + the wing's `INDEFINITE` fallback (§3 note).
 - **`REGION_CAPWATCH_DATA_FOLDER_ID` (still open)** — used by the folded region code? Must be
   modeled (Script Property or profile) if so.
 
