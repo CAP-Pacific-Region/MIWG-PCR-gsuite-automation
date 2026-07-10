@@ -3,12 +3,15 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Version: 1.1.0
+ * Version: 1.2.0
  * Date: 2026-07-09
- * Changes: Added 'pacific' tenant profile (single-unit region); made
- *   EXCLUDED_ORG_IDS, SPECIAL_ORGS.AEM_UNIT, and org-path sync profile-driven.
- *   (1.0.0: per-tenant identity/behavior moved to Script Properties;
- *   MEMBER_TYPES.ACTIVE uses INDEFINITE, not LIFE.) See PCR_CHANGELOG.md.
+ * Changes: Added per-feature region flags (RUN_REGION_GROUP_CHATS,
+ *   RUN_UNIT_VISIT_REPORT, RUN_SHARED_CONTACTS, RUN_AUTOMATION_CHAT_SPACES) to
+ *   the profiles, and REGION_CAPWATCH_DATA_FOLDER_ID identity. Supports folding
+ *   the region modules into the shared src/, gated off for the wing.
+ *   (1.1.0: 'pacific' profile + profile-driven EXCLUDED_ORG_IDS/AEM_UNIT/org
+ *   sync. 1.0.0: per-tenant config to Script Properties; INDEFINITE not LIFE.)
+ *   See PCR_CHANGELOG.md.
  ***********************************************/
 
 /**
@@ -57,6 +60,7 @@ function getTenantConfig_() {
     WING: get('TENANT_WING'),
     REGION: get('TENANT_REGION'),
     CAPWATCH_DATA_FOLDER_ID: get('TENANT_CAPWATCH_DATA_FOLDER_ID'),
+    REGION_CAPWATCH_DATA_FOLDER_ID: get('TENANT_REGION_CAPWATCH_DATA_FOLDER_ID'),
     AUTOMATION_FOLDER_ID: get('TENANT_AUTOMATION_FOLDER_ID'),
     AUTOMATION_SPREADSHEET_ID: get('TENANT_AUTOMATION_SPREADSHEET_ID'),
     RETENTION_LOG_SPREADSHEET_ID: get('TENANT_RETENTION_LOG_SPREADSHEET_ID'),
@@ -96,6 +100,10 @@ const TENANT_PROFILES_ = {
     EXCLUDED_ORG_IDS: ['1297', '368'], // CA-000 (1297) + CA-999 (368) holding units
     AEM_UNIT: '',                      // no Aerospace Education Member unit
     SYNC_ORG_PATHS: true,              // multi-unit wing: auto-map new squadrons
+    RUN_REGION_GROUP_CHATS: false,     // region-only feature (updateRegionGroupChats)
+    RUN_UNIT_VISIT_REPORT: false,      // region-only feature (buildRegionUnitVisitReport)
+    RUN_SHARED_CONTACTS: false,        // wing handles shared contacts in a separate project
+    RUN_AUTOMATION_CHAT_SPACES: false, // automation + user-additions chat spaces (region)
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: true,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: true,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -111,6 +119,10 @@ const TENANT_PROFILES_ = {
     EXCLUDED_ORG_IDS: ['1297', '368'], // same CA holding units as seniors
     AEM_UNIT: '',
     SYNC_ORG_PATHS: true,
+    RUN_REGION_GROUP_CHATS: false,
+    RUN_UNIT_VISIT_REPORT: false,
+    RUN_SHARED_CONTACTS: false,
+    RUN_AUTOMATION_CHAT_SPACES: false,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -127,6 +139,10 @@ const TENANT_PROFILES_ = {
     EXCLUDED_ORG_IDS: ['1345'],   // PCR holding unit
     AEM_UNIT: '',                 // region does not run AEM automation
     SYNC_ORG_PATHS: false,        // single unit: no subordinate orgs to auto-map
+    RUN_REGION_GROUP_CHATS: true,      // region duty groups + duty chat spaces
+    RUN_UNIT_VISIT_REPORT: true,       // region-wide unit visit report
+    RUN_SHARED_CONTACTS: true,         // External Contacts sheet -> Domain Shared Contacts
+    RUN_AUTOMATION_CHAT_SPACES: true,  // automation + user-additions chat spaces
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [] // no subordinate squadrons
@@ -149,6 +165,7 @@ function setupTenantConfig() {
     TENANT_WING: '',                       // e.g. CA
     TENANT_REGION: '',                     // '' unless this project is a Region-level pull
     TENANT_CAPWATCH_DATA_FOLDER_ID: '',
+    TENANT_REGION_CAPWATCH_DATA_FOLDER_ID: '', // Region-level all-members CAPWATCH folder (region tenants only)
     TENANT_AUTOMATION_FOLDER_ID: '',
     TENANT_AUTOMATION_SPREADSHEET_ID: '',
     TENANT_RETENTION_LOG_SPREADSHEET_ID: '',
@@ -354,6 +371,12 @@ CADET_LITE_EXCLUDED_GRADES: [
    * Downloaded files (Member.txt, Organization.txt, etc.) go here.
    */
   CAPWATCH_DATA_FOLDER_ID: TENANT.CAPWATCH_DATA_FOLDER_ID,
+
+  /**
+   * Region-level all-members CAPWATCH data folder (region tenants only).
+   * Used by updateRegionGroupChats(); empty on wing tenants.
+   */
+  REGION_CAPWATCH_DATA_FOLDER_ID: TENANT.REGION_CAPWATCH_DATA_FOLDER_ID,
 
   /**
    * Google Drive folder ID for automation files (per tenant).

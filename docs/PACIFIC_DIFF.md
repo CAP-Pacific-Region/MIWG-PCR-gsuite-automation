@@ -197,29 +197,35 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 
 1. ~~**Add the `pacific` profile.**~~ **Done — PR #10** (`reconcile/pacific-profile`):
    `pacific` profile + profile-driven `EXCLUDED_ORG_IDS`/`AEM_UNIT` + `SYNC_ORG_PATHS` gate.
-2. **Fold the region modules into `src/`** with per-feature profile flags (§3):
-   `updateRegionGroupChats`, `UnitVisitReport`, `SharedContacts` — each guarded by
-   `RUN_*` flags (wing `false`, pacific `true`). Drop `PCRCAP.ORG`. Requires modeling
-   `REGION_CAPWATCH_DATA_FOLDER_ID` if the folded region code needs it.
-3. **Converge `UpdateChatSpaces`** to a single shared version (adopt Pacific's superset, or
-   confirm its extras are inert for the wing) — line-by-line diff first (§3/§7).
+2. ~~**Fold the region modules into `src/`** with per-feature profile flags.~~ **Done —
+   PR #10.** `src/region/UpdateRegionGroupChats.gs`, `src/region/UnitVisitReport.gs`,
+   `src/accounts-and-groups/SharedContacts.gs`, each guarded by a `RUN_*` flag (wing off,
+   pacific on). `REGION_CAPWATCH_DATA_FOLDER_ID` + `TENANT_UNIT_VISIT_*` modeled as config;
+   `contacts` scope added to the manifest. `PCRCAP.ORG` not folded.
+3. ~~**Converge `UpdateChatSpaces`.**~~ **Done — PR #10.** Adopted Pacific's superset as the
+   single shared module with the three corrections from the §3 note (flag-gate new features,
+   keep `customer:"my_customer"`, keep `INDEFINITE` fallback).
 
 **Deploy-side (execute once 2SV clears — do NOT run while on hold):**
 
 4. **Back up** the live "PCR Automation" project (versioned clasp pull, archived).
 5. **Set Script Properties** on "PCR Automation" from `config-tenants/pacific.json`
    (`setupTenantConfig()` → `validateTenantConfig()`), plus `TENANT_PROFILE=pacific` and
-   the SA secrets.
-6. **Dry run:** with the shared code loaded, preview member/group/license/chat actions and
+   the SA secrets. Includes the new region keys: `TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`,
+   `TENANT_UNIT_VISIT_SPREADSHEET_ID`, `TENANT_UNIT_VISIT_CALENDAR_ID`.
+6. **Re-authorize** — the added `contacts` scope forces re-consent at the first push/run on
+   **all three** projects. Confirm the scope covers the M8 Domain Shared Contacts feed during
+   the dry run.
+7. **Dry run:** with the shared code loaded, preview member/group/license/chat actions and
    diff against current behavior before any write.
-7. **Push shared `src/`** to Pacific (`npm run push:pacific`). With everything folded in,
+8. **Push shared `src/`** to Pacific (`npm run push:pacific`). With everything folded in,
    the only files removed are the deliberately-dropped `PCRCAP.ORG` — no region
    functionality is lost.
-8. **Recreate the trigger set** under `automation@pcr.cap.gov` — the lean member/group/
+9. **Recreate the trigger set** under `automation@pcr.cap.gov` — the lean member/group/
    license/retention set **plus** the region features now enabled (`updateRegionGroupChats`,
    `buildRegionUnitVisitReport`, shared-contacts sync).
-9. **Verify** a full watched run (0 unexpected changes) and confirm all three tenants run
-   byte-identical `src/`.
+10. **Verify** a full watched run (0 unexpected changes) and confirm all three tenants run
+    byte-identical `src/`.
 
 ---
 
