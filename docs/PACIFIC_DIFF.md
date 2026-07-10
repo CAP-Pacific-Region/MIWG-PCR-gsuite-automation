@@ -96,31 +96,34 @@ region still wants (see §3, chat decision).
 
 ## 3. Pacific-only files — disposition
 
-These exist only in the Pacific project — **none are folded into the shared wing `src/`.**
-Two of them the region actively uses (the wing does not), so they must be **preserved by
-relocating them to a separate region-local project**, not dropped. Verified 2026-07-09 by
-diffing the live project against the repo.
+**Architecture (director direction, 2026-07-09): the shared `src/` is identical for all
+three tenants.** A module a tenant doesn't use is **disabled by configuration**, not removed
+— the code is present everywhere, gated by a profile flag (and by which triggers a tenant
+schedules). This replaces the earlier "relocate region files to a separate project" idea:
+folding them in means the reconciling push no longer deletes any region functionality.
 
-| File | Decision | Rationale |
+So the region-used modules are **folded into `src/` and gated off for the wing**. Verified
+2026-07-09 by diffing the live project against the repo.
+
+| File | Decision | Detail |
 |---|---|---|
-| `UnitVisitReport.js` | **Relocate (region-local)** | Region uses it (`buildRegionUnitVisitReport()` — region-wide unit-visit spreadsheet). Not used by the wing tenants. |
-| `updateRegionGroupChats.js` | **Relocate (region-local)** | Region uses it (`updateRegionGroupChats()` — region duty groups + duty chat spaces). Not used by the wing tenants. |
-| `SharedContacts.js` | **Drop from repo scope** | Shared-contacts already handled by a separate project. |
-| `PCRCAP.ORG.js` | **Drop** | Region uses `pcr.cap.gov`; `pcrcap.org` handling not relevant. |
+| `updateRegionGroupChats.js` | **Fold into `src/`; gate OFF for wing** | `updateRegionGroupChats()` — region duty groups + duty chat spaces. Present in shared code; enabled only for `pacific`. |
+| `UnitVisitReport.js` | **Fold into `src/`; gate OFF for wing** | `buildRegionUnitVisitReport()` — region-wide unit-visit spreadsheet. Present in shared code; enabled only for `pacific`. |
+| `SharedContacts.js` | **Fold into `src/`; enable for Pacific** | `runExternalContactsToDomainSharedContacts()` — syncs the "External Contacts" sheet tab into Domain Shared Contacts. Already CONFIG-driven (`AUTOMATION_SPREADSHEET_ID`/`DOMAIN`/`WING`) + uses shared `sanitizeEmail()`. Region uses it; wing handles shared contacts in a separate project, so wing keeps it disabled. |
+| `PCRCAP.ORG.js` | **Drop (not automation)** | One-off, read-only audit that lists every `@pcrcap.org` user/group/alias/resource. Hardcoded domain; declares top-level `DOMAIN_TO_FIND` / `CUSTOMER_ID` globals (collision risk). Not part of the shared codebase — re-paste into the editor if the audit is ever needed again. |
 
-> ⚠️ **Push caveat.** `clasp push` is a full sync: pushing the shared `src/` to the Pacific
-> project will **delete** any file not in `src/`. Before the first reconciling push, the two
-> **region-local** files above must be **moved into their own standalone Apps Script
-> project** (same pattern already used for shared contacts and mission provisioning) so the
-> region keeps that functionality. The two **drop** files can simply be let go.
+**Gating mechanism:** add per-feature profile flags (e.g. `RUN_REGION_GROUP_CHATS`,
+`RUN_UNIT_VISIT_REPORT`, `RUN_SHARED_CONTACTS`) to `TENANT_PROFILES_`. Each entry point
+guards on its flag (`if (!PROFILE_.RUN_… ) return;`) so it no-ops on tenants where it's off,
+even if run manually. Wing profiles (`seniors`/`cadets`) set them `false`; `pacific` `true`.
+Triggers are only scheduled where the feature is on.
 
-> ℹ️ **`UpdateChatSpaces` is not region-only — it's a divergence.** It exists in both, but
+> ℹ️ **`UpdateChatSpaces` is a divergence, not a Pacific-only file.** It exists in both, but
 > Pacific's copy is a **superset** of the wing's: same committee/unit chat-space sync **plus**
 > `syncAutomationGroupChatSpaces()`, `syncUserAdditionsChatSpaces_()` and a dry-run switch.
-> Overwriting it with the wing version would drop those extras. Decide before pushing whether
-> the superset features are (a) region-only → keep them in the relocated region project, or
-> (b) improvements the wing wants → converge the shared `src/` up to Pacific's version. This
-> is separate from `updateRegionGroupChats` and needs an explicit call (see §7).
+> Under "identical `src/`" there can be only one version, so this must **converge**: adopt the
+> superset (Pacific's) into the shared code if the wing wants those features, or confirm they
+> are safe/inert for the wing. Needs a line-by-line diff + explicit call before the push (§7).
 
 ---
 
@@ -180,25 +183,33 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 
 ## 6. Migration checklist (execute once 2SV clears — do NOT run while on hold)
 
-1. **Back up** the live "PCR Automation" project (versioned clasp pull, archived) so the
-   diverged copy and its four unique files are recoverable.
-2. **Relocate** the region-local scripts into their own standalone Apps Script project:
-   `UnitVisitReport.js` and `updateRegionGroupChats.js` (both confirmed in region use). Also
-   resolve the `UpdateChatSpaces` superset question (§3/§7) and, if its extras are
-   region-only, carry them into that project too.
-3. ~~**Add the `pacific` profile** to `src/config.gs` and the profile flags §4/§5 require.~~
-   **Done — PR #10** (`reconcile/pacific-profile`): `pacific` profile + profile-driven
-   `EXCLUDED_ORG_IDS`/`AEM_UNIT` + `SYNC_ORG_PATHS` gate on `getCapwatch()`.
-4. **Set Script Properties** on "PCR Automation" from `config-tenants/pacific.json`
+**Code-side (can land before 2SV, in PRs):**
+
+1. ~~**Add the `pacific` profile.**~~ **Done — PR #10** (`reconcile/pacific-profile`):
+   `pacific` profile + profile-driven `EXCLUDED_ORG_IDS`/`AEM_UNIT` + `SYNC_ORG_PATHS` gate.
+2. **Fold the region modules into `src/`** with per-feature profile flags (§3):
+   `updateRegionGroupChats`, `UnitVisitReport`, `SharedContacts` — each guarded by
+   `RUN_*` flags (wing `false`, pacific `true`). Drop `PCRCAP.ORG`. Requires modeling
+   `REGION_CAPWATCH_DATA_FOLDER_ID` if the folded region code needs it.
+3. **Converge `UpdateChatSpaces`** to a single shared version (adopt Pacific's superset, or
+   confirm its extras are inert for the wing) — line-by-line diff first (§3/§7).
+
+**Deploy-side (execute once 2SV clears — do NOT run while on hold):**
+
+4. **Back up** the live "PCR Automation" project (versioned clasp pull, archived).
+5. **Set Script Properties** on "PCR Automation" from `config-tenants/pacific.json`
    (`setupTenantConfig()` → `validateTenantConfig()`), plus `TENANT_PROFILE=pacific` and
    the SA secrets.
-5. **Dry run:** with the shared code loaded, preview member/group/license actions and diff
-   against current behavior before any write.
-6. **Push shared `src/`** to Pacific (`npm run push:pacific`) — this replaces the diverged
-   code and removes the dropped files (they must already be relocated, step 2).
-7. **Recreate the lean trigger set** under `automation@pcr.cap.gov`.
-8. **Verify** a full watched run (0 unexpected changes) and confirm all three tenants now
-   run byte-identical `src/`.
+6. **Dry run:** with the shared code loaded, preview member/group/license/chat actions and
+   diff against current behavior before any write.
+7. **Push shared `src/`** to Pacific (`npm run push:pacific`). With everything folded in,
+   the only files removed are the deliberately-dropped `PCRCAP.ORG` — no region
+   functionality is lost.
+8. **Recreate the trigger set** under `automation@pcr.cap.gov` — the lean member/group/
+   license/retention set **plus** the region features now enabled (`updateRegionGroupChats`,
+   `buildRegionUnitVisitReport`, shared-contacts sync).
+9. **Verify** a full watched run (0 unexpected changes) and confirm all three tenants run
+   byte-identical `src/`.
 
 ---
 
@@ -208,13 +219,18 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
   from the `pacific` profile.
 - ~~Any live members still typed **`LIFE`**?~~ **Resolved: no — all `INDEFINITE`.**
 - ~~Is `UpdateResources` used by the region?~~ **Resolved: no** — Pacific won't schedule it.
-- ~~Keep `UnitVisitReport`?~~ **Resolved: region uses it → relocate to a region project.**
-- ~~Is `updateRegionGroupChats` droppable?~~ **Resolved: region uses it → relocate.**
-- **`UpdateChatSpaces` superset** — are Pacific's extra chat-space features
-  (`syncAutomationGroupChatSpaces`, `syncUserAdditionsChatSpaces_`) region-only (keep in the
-  relocated region project) or wanted by the wing (converge shared `src/` up to them)? Decide
-  before the reconciling push.
-- `REGION_CAPWATCH_DATA_FOLDER_ID` — still used? (only referenced by region-local code)
+- ~~Keep `UnitVisitReport` / `updateRegionGroupChats`?~~ **Resolved: region uses both →
+  fold into shared `src/`, gated OFF for the wing** (identical-code model, §3).
+- ~~Is `SharedContacts` region-used?~~ **Resolved: yes** (verified — CONFIG-driven External
+  Contacts → Domain Shared Contacts sync). Fold in; enable for Pacific, off for the wing.
+- ~~`PCRCAP.ORG.js`?~~ **Resolved: drop** — one-off read-only `@pcrcap.org` audit, not
+  automation.
+- **`UpdateChatSpaces` superset (still open)** — under identical `src/` there is one version.
+  Adopt Pacific's superset (`syncAutomationGroupChatSpaces`, `syncUserAdditionsChatSpaces_`)
+  into the shared code, or confirm those extras are inert/safe for the wing. Line-by-line
+  diff needed before the push.
+- **`REGION_CAPWATCH_DATA_FOLDER_ID` (still open)** — used by the folded region code? Must be
+  modeled (Script Property or profile) if so.
 
 ---
 
