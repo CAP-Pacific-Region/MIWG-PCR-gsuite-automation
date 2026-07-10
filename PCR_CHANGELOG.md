@@ -14,6 +14,71 @@ next to each entry below.
 
 _Nothing yet._
 
+## [2026-07-09] — Fold region modules into the shared `src/` (identical-code model)
+
+All three tenants now run an identical `src/`; modules a tenant doesn't use are
+disabled by per-feature profile flags rather than removed (see
+[docs/PACIFIC_DIFF.md](docs/PACIFIC_DIFF.md)). **Behavior-preserving for the seniors
+and cadets tenants** (region features flag off). **Not yet deployed to Pacific** —
+deployment is on hold pending 2SV.
+
+### Added
+
+- **`src/region/UpdateRegionGroupChats.gs`** (v1.0.0) — region duty groups + duty chat
+  spaces (`updateRegionGroupChats()`), gated by `RUN_REGION_GROUP_CHATS`.
+- **`src/region/UnitVisitReport.gs`** (v1.0.0) — region-wide unit-visit spreadsheet
+  (`buildRegionUnitVisitReport()`), gated by `RUN_UNIT_VISIT_REPORT`. Destination
+  spreadsheet/calendar IDs read from Script Properties (no tenant literals).
+- **`src/accounts-and-groups/SharedContacts.gs`** (v1.0.0) — "External Contacts" sheet →
+  Domain Shared Contacts (`runExternalContactsToDomainSharedContacts()`), gated by
+  `RUN_SHARED_CONTACTS`.
+- Per-feature flags in `TENANT_PROFILES_` (all `false` for seniors/cadets, `true` for
+  pacific); `REGION_CAPWATCH_DATA_FOLDER_ID` identity + `TENANT_UNIT_VISIT_*` properties.
+- `https://www.googleapis.com/auth/contacts` OAuth scope (for shared contacts).
+
+### Changed
+
+- **`UpdateChatSpaces.gs` (v2.0.0)** — converged to the Pacific superset as the single
+  shared module: adds automation-group + user-additions chat spaces (gated by
+  `RUN_AUTOMATION_CHAT_SPACES`, off for the wing) and an empty-vs-null cache-safety fix.
+  Two corrections vs the Pacific copy: `buildWorkspaceCapidMaps` keeps
+  `customer:"my_customer"` (not `domain:`); `getMembersForChatSpaces_` falls back to
+  `INDEFINITE` not `LIFE`.
+- **`config.gs` (v1.2.0)** — region feature flags + `REGION_CAPWATCH_DATA_FOLDER_ID`.
+
+### Notes
+
+- **Adding the `contacts` scope requires re-authorization** on all three projects at the
+  next `clasp push` / first run. Verify during the Pacific dry-run that this scope suffices
+  for the M8 Domain Shared Contacts feed.
+- `PCRCAP.ORG.js` (one-off `@pcrcap.org` audit) intentionally **not** folded.
+
+## [2026-07-09] — Pacific tenant profile + profile-driven per-tenant orgs
+
+Code-side reconciliation so the Pacific Region project can run the shared `src/`,
+differentiated only by configuration (see [docs/PACIFIC_DIFF.md](docs/PACIFIC_DIFF.md)).
+Behavior-preserving for the seniors and cadets tenants. **Not yet deployed to
+Pacific** — deployment is on hold pending 2SV for `automation@pcr.cap.gov`.
+
+### Added
+
+- **`pacific` profile** in `TENANT_PROFILES_` (`config.gs`) — single-unit region
+  HQ (PCR-PCR-001): senior member types (`SENIOR`/`FIFTY YEAR`/`INDEFINITE`/`CADET`;
+  region confirmed no AEM and all `INDEFINITE`), holding unit 1345, org-path sync
+  and squadron-group auto-create disabled. Selected with `TENANT_PROFILE=pacific`.
+
+### Changed
+
+- **`config.gs` (v1.1.0)** — `EXCLUDED_ORG_IDS` and `SPECIAL_ORGS.AEM_UNIT` are now
+  profile-driven (`PROFILE_.*`) instead of hard-coded CA-wing values, so holding
+  units and AEM handling vary per tenant. Seniors/cadets values unchanged
+  (`['1297','368']`, AEM_UNIT `''`).
+- **`GetCapwatch.gs` (v1.0.0)** — `getCapwatch()` now calls `syncOrgPaths()` only
+  when `PROFILE_.SYNC_ORG_PATHS` is true, so single-unit region tenants skip
+  org-path auto-mapping (and its IT summary email) entirely.
+- **`config-tenants/pacific.json`** — populated with the live non-secret identity
+  read via clasp (was an all-blank stub); scriptId note corrected. (PR #9)
+
 ## [2026-07-09] — Reconcile live tenants + per-tenant config hardening
 
 Merged via PR #7 (`reconcile-live-hardening`). Reconciles the repository with the
