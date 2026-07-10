@@ -229,24 +229,27 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 
 ---
 
-## 7. Open items to confirm with the region
+## 7. Open items
 
-- ~~Does Pacific still run **AEM** automation?~~ **Resolved (2026-07-09): no.** AEM dropped
-  from the `pacific` profile.
-- ~~Any live members still typed **`LIFE`**?~~ **Resolved: no — all `INDEFINITE`.**
-- ~~Is `UpdateResources` used by the region?~~ **Resolved: no** — Pacific won't schedule it.
-- ~~Keep `UnitVisitReport` / `updateRegionGroupChats`?~~ **Resolved: region uses both →
-  fold into shared `src/`, gated OFF for the wing** (identical-code model, §3).
-- ~~Is `SharedContacts` region-used?~~ **Resolved: yes** (verified — CONFIG-driven External
-  Contacts → Domain Shared Contacts sync). Fold in; enable for Pacific, off for the wing.
-- ~~`PCRCAP.ORG.js`?~~ **Resolved: drop** — one-off read-only `@pcrcap.org` audit, not
-  automation.
-- ~~**`UpdateChatSpaces` superset**~~ **Resolved (diff done 2026-07-09): converge to Pacific's
-  version** as the single shared file, flag-gating the two new features OFF for the wing (their
-  loaders fall back to the wing's `Groups`/`User Additions` tabs, so they don't self-gate) and
-  keeping `customer:"my_customer"` + the wing's `INDEFINITE` fallback (§3 note).
-- **`REGION_CAPWATCH_DATA_FOLDER_ID` (still open)** — used by the folded region code? Must be
-  modeled (Script Property or profile) if so.
+All disposition questions are **resolved**; what remains is one deploy-time verification.
+
+- ~~Does Pacific still run **AEM** automation?~~ **Resolved: no — and code shows it was never
+  wired.** The dedicated AEM path (`getAEMembers()` → `getMembers(AEM_ONLY)`) has **zero
+  callers** in the shared repo *and* the live Pacific project, and no trigger invokes it, so
+  the AEM workflow was never part of any run. The only always-on AEM artifact is one in-memory
+  artificial squadron (`squadrons[AEM_UNIT]`); with `AEM_UNIT=''` on every tenant it maps no
+  member and is inert. (Live member data / Workspace directory could **not** be checked — the
+  automation clasp credential is scoped to `drive.file`/`script` only.) *Optional cleanup:*
+  strip `getAEMembers()`, `AEM_ONLY`, and the `AEM_UNIT` squadron creation — safe but touches
+  the `UpdateMembers` hot path; left in place (inert) unless removal is wanted.
+- ~~Any live members still typed **`LIFE`**?~~ **Resolved: no — all `INDEFINITE`.** No
+  functional `LIFE` remains in `src/` (only doc/comment references).
+- ~~`UpdateResources`, `UnitVisitReport`, `updateRegionGroupChats`, `SharedContacts`,
+  `PCRCAP.ORG`, `UpdateChatSpaces`, `REGION_CAPWATCH_DATA_FOLDER_ID`~~ — **all resolved**
+  (§3–§6). `REGION_CAPWATCH_DATA_FOLDER_ID` is modeled as the `TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`
+  Script Property (set in `config-tenants/pacific.json`).
+- **Deploy-time verification (Pacific dry-run):** confirm the added `contacts` scope suffices
+  for the M8 Domain Shared Contacts feed.
 
 ---
 
