@@ -239,9 +239,12 @@ All disposition questions are **resolved**; what remains is one deploy-time veri
   the AEM workflow was never part of any run. The only always-on AEM artifact is one in-memory
   artificial squadron (`squadrons[AEM_UNIT]`); with `AEM_UNIT=''` on every tenant it maps no
   member and is inert. (Live member data / Workspace directory could **not** be checked — the
-  automation clasp credential is scoped to `drive.file`/`script` only.) *Optional cleanup:*
-  strip `getAEMembers()`, `AEM_ONLY`, and the `AEM_UNIT` squadron creation — safe but touches
-  the `UpdateMembers` hot path; left in place (inert) unless removal is wanted.
+  automation clasp credential is scoped to `drive.file`/`script` only.) **Decision: keep the
+  AEM scaffolding in place (inert).** It is retained deliberately — a future *wing* may want to
+  give AEMs Workspace accounts, and it can enable that by setting `AEM_UNIT` (and adding `AEM`
+  to its profile's member types) without re-adding code. Do **not** delete `getAEMembers()`,
+  `AEM_ONLY`, or the `AEM_UNIT` squadron line as "dead code" — it is a dormant feature. PCR is
+  a region and does not use it.
 - ~~Any live members still typed **`LIFE`**?~~ **Resolved: no — all `INDEFINITE`.** No
   functional `LIFE` remains in `src/` (only doc/comment references).
 - ~~`UpdateResources`, `UnitVisitReport`, `updateRegionGroupChats`, `SharedContacts`,
