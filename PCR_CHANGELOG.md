@@ -12,7 +12,13 @@ next to each entry below.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **`UnitVisitReport.gs` (v1.0.1)** — `buildRegionUnitVisitReport()` failed with
+  "You can't merge frozen and non-frozen columns" in `buildWingTab_`.
+  `clear()`/`clearFormats()` don't reset a tab's freeze state, so a pre-existing
+  frozen column made the `A1:I1` title merge fail. Now resets frozen rows/columns
+  before merging. (Surfaced during the Pacific go-live.)
 
 ## [2026-07-09] — Fold region modules into the shared `src/` (identical-code model)
 

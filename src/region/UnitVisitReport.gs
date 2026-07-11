@@ -3,13 +3,13 @@
  * Source: CAPWATCH TXT exports in Drive folder
  * Output: One sheet tab per Wing, formatted to match
  *
- * Version: 1.0.0
+ * Version: 1.0.1
  * Date: 2026-07-09
- * Changes: Folded into the shared src/ from the Pacific Region project; gated
- *   behind PROFILE_.RUN_UNIT_VISIT_REPORT (on for pacific, off for wing).
- *   Destination spreadsheet/calendar IDs now read from Script Properties
- *   (TENANT_UNIT_VISIT_SPREADSHEET_ID / TENANT_UNIT_VISIT_CALENDAR_ID) instead
- *   of hard-coded literals. See PCR_CHANGELOG.md.
+ * Changes: (1.0.1) Reset frozen rows/columns in buildWingTab_ before the title
+ *   merge — clear()/clearFormats() don't reset freeze, so a leftover frozen
+ *   column broke the merge. (1.0.0) Folded into the shared src/ from the Pacific
+ *   Region project; gated behind PROFILE_.RUN_UNIT_VISIT_REPORT; destination
+ *   spreadsheet/calendar IDs read from Script Properties. See PCR_CHANGELOG.md.
  *******************************************************/
 
 /*************************************************************
@@ -792,6 +792,12 @@ function buildWingTab_(ss, wing, capwatch) {
   } else {
     sh.clear({ contentsOnly: true });
   }
+
+  // clear()/clearFormats() do NOT reset freeze state; a leftover frozen column
+  // on a pre-existing tab makes the A1:I1 title merge below fail with
+  // "You can't merge frozen and non-frozen columns", so reset it explicitly.
+  sh.setFrozenColumns(0);
+  sh.setFrozenRows(0);
 
   // Column widths
   Object.entries(FORMAT.COL_WIDTHS).forEach(([colLetter, width]) => {
