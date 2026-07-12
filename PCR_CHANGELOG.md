@@ -47,6 +47,30 @@ next to each entry below.
   flagged `ca###.all@cawgcadets.org` are the cadet tenant's own internal
   all-hands at `ALL_IN_DOMAIN_CAN_POST` — not cross-tenant receivers, left as-is.
 
+### Changed — squadron distribution toggles are now tenant-driven
+
+- **`SquadronGroups.gs` (v1.3.0) + `config.gs` (v1.2.1)** — `SQUADRON_DISTRIBUTION_TOGGLES`
+  was a hard-coded const, so the cadet tenant was creating senior-only lists
+  (`.seniors`, Deputy Commander for Seniors) that don't apply there. The toggles
+  now come from `PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES` in `config.gs` (selected
+  by the `TENANT_PROFILE` Script Property), read via
+  `getSquadronDistributionToggles_()`; the const is a fallback default only. Same
+  mechanism as the other per-tenant behavior — a shared-code `clasp push` can't
+  make a tenant create the wrong lists.
+- **Cadets profile = cadets + parents lists only.** Disabled on the cadet tenant:
+  `.seniors` (no seniors here), `.all` (redundant with `.cadets` on a cadet-only
+  tenant), and the command-staff lists (Commander / Deputy Commander / Deputy
+  Commander for Cadets — those are senior duty positions whose holders have wing
+  accounts, so the lists would be empty). This matches the pre-existing
+  `SQUADRON_DISTRIBUTION_TYPES` and the `_behavioral_note` in
+  `config-tenants/cadets.json`. Seniors profile unchanged; pacific = all off
+  (single-unit region, squadron sync not triggered there).
+- **Cleanup follow-up:** disabling a toggle stops managing those lists but does
+  not delete already-created groups. The existing `ca###.seniors@cawgcadets.org`,
+  `ca###.all@cawgcadets.org`, and cadet command-staff groups become orphans on
+  the cadet tenant and should be removed (e.g. via
+  `groupAdministration_bulkDeleteGroupsFromSheet`).
+
 ## [2026-07-09] — Pacific go-live
 
 The reconciled `src/` was deployed to the live "PCR Automation" project (`TENANT_PROFILE=pacific`)

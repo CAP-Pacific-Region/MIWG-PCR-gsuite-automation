@@ -1,10 +1,15 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.2.9
+ * Version: 1.3.0
  * Filename: SquadronGroups.gs
  * Saved: 2026-07-11
- * Changes: applyGroupSettings() enforces ONLY allowExternalMembers (v1.2.9,
+ * Changes: SQUADRON_DISTRIBUTION_TOGGLES is now profile-driven (v1.3.0) — the
+ *   effective toggles come from PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES
+ *   (config.gs, selected by TENANT_PROFILE) via getSquadronDistributionToggles_(),
+ *   so the cadet tenant no longer creates senior-only lists. The module-level
+ *   const is now a fallback default only.
+ *   v1.2.9: applyGroupSettings() enforces ONLY allowExternalMembers (
  *   narrowed from v1.2.8). It was a log-only stub, so making it apply the full
  *   settings block would have flipped the cadet-tenant receive lists
  *   (ca###.cadets@cawgcadets.org, live at ANYONE_CAN_POST) to
@@ -27,10 +32,17 @@
  */
 
 /**
- * Global squadron-group toggles.
- * Set any value to false to stop creating/updating that squadron group type.
+ * Default squadron-group toggles (fallback only).
+ *
+ * The AUTHORITATIVE per-tenant values come from
+ * PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES in config.gs, selected by the
+ * TENANT_PROFILE Script Property — so a shared-code `clasp push` can't make the
+ * cadets tenant create senior-only lists (e.g. `.seniors`). This object is used
+ * only when a profile doesn't define the toggles. Always read the effective
+ * toggles via getSquadronDistributionToggles_() (never this const directly), so
+ * PROFILE_ — defined in another file — is resolved lazily at call time.
  */
-const SQUADRON_DISTRIBUTION_TOGGLES = {
+const SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_ = {
   PUBLIC_CONTACT: false,
   ALLHANDS: true,
   CADETS: true,
@@ -41,6 +53,25 @@ const SQUADRON_DISTRIBUTION_TOGGLES = {
   DEPUTY_COMMANDER_CADETS: true,
   DEPUTY_COMMANDER_SENIORS: true
 };
+
+/**
+ * Returns the effective squadron-group toggles for this tenant: the profile's
+ * SQUADRON_DISTRIBUTION_TOGGLES overlaid on the defaults (so a profile may
+ * specify only the toggles it wants to change). Resolved lazily because PROFILE_
+ * lives in config.gs and cross-file top-level const ordering is not guaranteed.
+ *
+ * @returns {Object} toggle map keyed like SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_
+ */
+function getSquadronDistributionToggles_() {
+  try {
+    if (typeof PROFILE_ !== 'undefined' && PROFILE_ && PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES) {
+      return Object.assign({}, SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_, PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES);
+    }
+  } catch (e) {
+    // fall through to defaults
+  }
+  return SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_;
+}
 
 function getSquadronGroupMetadata_(squadron, label) {
   const rawUnitName = ((squadron && squadron.name) || (squadron && squadron.charter) || '').toString().trim();
@@ -1077,24 +1108,25 @@ function filterEnabledSquadronDistributionLists_(lists) {
 }
 
 function isSquadronDistributionListEnabled_(suffix) {
+  const toggles = getSquadronDistributionToggles_();
   switch (String(suffix || '').toLowerCase()) {
     case 'all':
     case 'allhands':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.ALLHANDS;
+      return !!toggles.ALLHANDS;
     case 'cadets':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.CADETS;
+      return !!toggles.CADETS;
     case 'seniors':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.SENIORS;
+      return !!toggles.SENIORS;
     case 'parents':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.PARENTS;
+      return !!toggles.PARENTS;
     case 'commander':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.COMMANDER;
+      return !!toggles.COMMANDER;
     case 'deputy-commander':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.DEPUTY_COMMANDER;
+      return !!toggles.DEPUTY_COMMANDER;
     case 'deputy-commander-cadets':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.DEPUTY_COMMANDER_CADETS;
+      return !!toggles.DEPUTY_COMMANDER_CADETS;
     case 'deputy-commander-seniors':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.DEPUTY_COMMANDER_SENIORS;
+      return !!toggles.DEPUTY_COMMANDER_SENIORS;
     default:
       return true;
   }
@@ -1103,7 +1135,7 @@ function isSquadronDistributionListEnabled_(suffix) {
 function isSquadronGroupTypeEnabled_(groupType) {
   switch (String(groupType || '').toLowerCase()) {
     case 'public-contact':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.PUBLIC_CONTACT;
+      return !!getSquadronDistributionToggles_().PUBLIC_CONTACT;
     default:
       return isSquadronDistributionListEnabled_(groupType);
   }
