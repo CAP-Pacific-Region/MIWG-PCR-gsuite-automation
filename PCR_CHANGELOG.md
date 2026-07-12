@@ -49,7 +49,7 @@ next to each entry below.
 
 ### Changed — squadron distribution toggles are now tenant-driven
 
-- **`SquadronGroups.gs` (v1.3.0) + `config.gs` (v1.2.1)** — `SQUADRON_DISTRIBUTION_TOGGLES`
+- **`SquadronGroups.gs` (v1.3.0) + `config.gs` (v1.2.2)** — `SQUADRON_DISTRIBUTION_TOGGLES`
   was a hard-coded const, so the cadet tenant was creating senior-only lists
   (`.seniors`, Deputy Commander for Seniors) that don't apply there. The toggles
   now come from `PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES` in `config.gs` (selected
@@ -57,19 +57,18 @@ next to each entry below.
   `getSquadronDistributionToggles_()`; the const is a fallback default only. Same
   mechanism as the other per-tenant behavior — a shared-code `clasp push` can't
   make a tenant create the wrong lists.
-- **Cadets profile = cadets + parents lists only.** Disabled on the cadet tenant:
-  `.seniors` (no seniors here), `.all` (redundant with `.cadets` on a cadet-only
-  tenant), and the command-staff lists (Commander / Deputy Commander / Deputy
-  Commander for Cadets — those are senior duty positions whose holders have wing
-  accounts, so the lists would be empty). This matches the pre-existing
-  `SQUADRON_DISTRIBUTION_TYPES` and the `_behavioral_note` in
-  `config-tenants/cadets.json`. Seniors profile unchanged; pacific = all off
-  (single-unit region, squadron sync not triggered there).
+- **Cadets profile = all-hands + cadets + parents lists.** Disabled on the cadet
+  tenant: `.seniors` (no seniors here) and the command-staff lists (Commander /
+  Deputy Commander / Deputy Commander for Cadets — those are senior duty positions
+  whose holders have wing accounts, so the lists would be empty). `.all` is kept
+  intentionally: on a cadet-only tenant it duplicates `.cadets`, but the lists
+  already exist and are retained in case something references them. Seniors profile
+  unchanged; pacific = all off (single-unit region, squadron sync not triggered there).
 - **Cleanup follow-up:** disabling a toggle stops managing those lists but does
-  not delete already-created groups. The existing `ca###.seniors@cawgcadets.org`,
-  `ca###.all@cawgcadets.org`, and cadet command-staff groups become orphans on
-  the cadet tenant and should be removed (e.g. via
-  `groupAdministration_bulkDeleteGroupsFromSheet`).
+  not delete already-created groups. The existing `ca###.seniors@cawgcadets.org`
+  and cadet command-staff groups become orphans on the cadet tenant and should be
+  removed (stage them with `groupAdministration_stageOrphanedSquadronGroups()`,
+  then `groupAdministration_bulkDeleteGroupsFromSheet`). `.all` groups are kept.
 
 ## [2026-07-09] — Pacific go-live
 

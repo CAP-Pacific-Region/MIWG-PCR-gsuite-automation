@@ -3,14 +3,15 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Version: 1.2.1
+ * Version: 1.2.2
  * Date: 2026-07-11
  * Changes: Added profile-driven SQUADRON_DISTRIBUTION_TOGGLES to each tenant
  *   profile (consumed by SquadronGroups.gs), so squadron list creation is
- *   tenant-aware. Cadets = cadets + parents only (no .seniors / .all /
+ *   tenant-aware. Cadets = all-hands + cadets + parents (no .seniors /
  *   command-staff lists). Prior toggles were hard-coded, so the cadet tenant was
  *   wrongly creating senior-only lists.
- *   (1.2.0: per-feature region flags + REGION_CAPWATCH_DATA_FOLDER_ID. 1.1.0:
+ *   (1.2.1: same, but cadets initially excluded .all; .all kept by request.
+ *   1.2.0: per-feature region flags + REGION_CAPWATCH_DATA_FOLDER_ID. 1.1.0:
  *   'pacific' profile + profile-driven EXCLUDED_ORG_IDS/AEM_UNIT/org sync. 1.0.0:
  *   per-tenant config to Script Properties; INDEFINITE not LIFE.)
  *   See PCR_CHANGELOG.md.
@@ -142,19 +143,20 @@ const TENANT_PROFILES_ = {
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [
+      { suffix: 'allhands', name: 'All Hands', description: 'All cadets', includeTypes: ['CADET'] },
       { suffix: 'cadets', name: 'Cadets', description: 'Cadet members only', includeTypes: ['CADET'] },
       { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
     ],
-    // Cadets tenant = cadets + parents lists only (matches SQUADRON_DISTRIBUTION_TYPES
-    // above and the _behavioral_note in config-tenants/cadets.json):
+    // Cadets tenant = all-hands + cadets + parents lists. No senior-side lists:
     //  - SENIORS: no senior members exist on this tenant.
-    //  - ALLHANDS: redundant with CADETS on a cadet-only tenant (both = all cadets).
-    //  - COMMANDER / DEPUTY_COMMANDER*: those are senior duty positions whose
-    //    holders have wing accounts, not cadet-tenant accounts, so the lists
-    //    would be empty here.
+    //  - COMMANDER / DEPUTY_COMMANDER*: senior duty positions whose holders have
+    //    wing accounts, not cadet-tenant accounts, so the lists would be empty.
+    //  - ALLHANDS: kept on purpose. On a cadet-only tenant it is effectively a
+    //    duplicate of CADETS (both = all cadets), but the .all lists already
+    //    exist and are retained in case something references them.
     SQUADRON_DISTRIBUTION_TOGGLES: {
       PUBLIC_CONTACT: false,
-      ALLHANDS: false,
+      ALLHANDS: true,
       CADETS: true,
       SENIORS: false,
       PARENTS: true,
