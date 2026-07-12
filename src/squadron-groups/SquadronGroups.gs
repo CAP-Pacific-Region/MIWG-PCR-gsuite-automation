@@ -1,13 +1,17 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.2.8
+ * Version: 1.2.9
  * Filename: SquadronGroups.gs
  * Saved: 2026-07-11
- * Changes: applyGroupSettings() now actually applies group settings via the
- *   AdminGroupsSettings advanced service (was a log-only stub), so squadron
- *   distribution lists get allowExternalMembers=true and cross-tenant nested
- *   cadet groups (ca###.cadets@cawgcadets.org) can be added to the .all lists.
+ * Changes: applyGroupSettings() enforces ONLY allowExternalMembers (v1.2.9,
+ *   narrowed from v1.2.8). It was a log-only stub, so making it apply the full
+ *   settings block would have flipped the cadet-tenant receive lists
+ *   (ca###.cadets@cawgcadets.org, live at ANYONE_CAN_POST) to
+ *   ALL_MEMBERS_CAN_POST and re-broken cadet delivery. Enforcing only
+ *   allowExternalMembers via the AdminGroupsSettings advanced service fixes the
+ *   reported bug (nesting the external cadet group into the wing .all lists)
+ *   without touching live posting policy.
  *   v1.2.7: Reconciled with live tenant code; AdminDirectory.Users.list
  *   standardized to customer:"my_customer". See PCR_CHANGELOG.md.
  *
@@ -1483,11 +1487,14 @@ function getOrCreateGroup(email, name, description, settings = {}) {
  * be patched separately through the AdminGroupsSettings advanced service
  * (enabled in appsscript.json; scope apps.groups.settings).
  *
- * Only settings the caller actually supplies are managed, and only keys whose
- * live value differs are patched, so this is safe to run on every sync.
+ * Scope is intentionally limited to allowExternalMembers (see the comment in
+ * the body): it is the only setting the reported cross-tenant delivery bug
+ * requires, and enforcing the others would clobber live posting policy —
+ * notably the ANYONE_CAN_POST on the cadet-tenant receive lists. Only patched
+ * when the live value differs, so it is safe to run on every sync.
  *
  * @param {string} email - Group email address
- * @param {Object} settings - Settings to apply
+ * @param {Object} settings - Settings to apply (only allowExternalMembers is enforced)
  * @returns {void}
  */
 function applyGroupSettings(email, settings) {
@@ -1495,21 +1502,21 @@ function applyGroupSettings(email, settings) {
     const groupEmail = String(email || '').trim().toLowerCase();
     if (!groupEmail) return;
 
-    // Only manage the keys the caller explicitly passed. This keeps behavior
-    // predictable and avoids clobbering console-configured options we don't own.
+    // Deliberately enforce ONLY allowExternalMembers.
+    //
+    // The caller's settings objects also carry whoCanPostMessage,
+    // whoCanViewMembership, enableCollaborativeInbox, etc., but those were never
+    // actually applied while this function was a stub, so live groups carry
+    // whatever posting/visibility policy they were given via console/GAM. In
+    // particular the cross-tenant cadet receive lists (ca###.cadets@cawgcadets.org)
+    // are live at ANYONE_CAN_POST, which is what lets them accept mail fanned out
+    // from the wing .all lists. The code passes ALL_MEMBERS_CAN_POST for every
+    // distribution list, so enforcing whoCanPostMessage here would flip those
+    // receivers to ALL_MEMBERS_CAN_POST and silently re-break cadet delivery.
+    // Only allowExternalMembers is needed to fix the reported bug (nesting the
+    // external cadet group into the wing .all list); leave posting policy alone.
     const managedKeys = [
-      'whoCanJoin',
-      'whoCanViewMembership',
-      'whoCanViewGroup',
-      'whoCanPostMessage',
-      'allowExternalMembers',
-      'whoCanContactOwner',
-      'messageModerationLevel',
-      'enableCollaborativeInbox',
-      'replyTo',
-      'includeInGlobalAddressList',
-      'sendMessageDenyNotification',
-      'defaultMessageDenyNotificationText'
+      'allowExternalMembers'
     ];
 
     const desired = {};

@@ -14,7 +14,7 @@ next to each entry below.
 
 ### Fixed
 
-- **`SquadronGroups.gs` (v1.2.8)** — squadron distribution lists (notably the
+- **`SquadronGroups.gs` (v1.2.9)** — squadron distribution lists (notably the
   `ca###.all` lists) were not receiving the setting that lets the cross-tenant
   cadet group `ca###.cadets@cawgcadets.org` be added as a member, so messages to
   a unit's **All** list never reached cadets. Root cause: `applyGroupSettings()`
@@ -24,22 +24,28 @@ next to each entry below.
   even though the `AdminGroupsSettings` advanced service is enabled and used
   elsewhere (`UpdateGroups.gs`, `groupAdministration.gs`). External-member adds
   therefore failed silently and were swallowed per-member in
-  `updateGroupMembership()`. `applyGroupSettings()` now patches settings through
-  `AdminGroupsSettings.Groups.patch`, managing only the keys the caller passes and
-  only patching values that differ (idempotent, `DRY_RUN`-aware). Because
-  `getOrCreateGroup()` runs it for existing groups too, the next
-  `updateAllSquadronGroups()` backfills `allowExternalMembers=true` across all
-  squadron lists — self-healing, no manual console work. Deployed to all three
-  tenants.
+  `updateGroupMembership()`. `applyGroupSettings()` now patches
+  `allowExternalMembers` through `AdminGroupsSettings.Groups.patch`, only when the
+  live value differs (idempotent, `DRY_RUN`-aware). Because `getOrCreateGroup()`
+  runs it for existing groups too, the next `updateAllSquadronGroups()` backfills
+  `allowExternalMembers=true` across all squadron lists — self-healing, no manual
+  console work. Deployed to all three tenants.
 
-### Follow-up
+### Scope note (why only `allowExternalMembers`)
 
-- End-to-end delivery to cadets also depends on the **cadet-side** group
-  `ca###.cadets@cawgcadets.org` accepting the forwarded message. Squadron lists
-  are created with `whoCanPostMessage: 'ALL_MEMBERS_CAN_POST'`, which can still
-  bounce mail forwarded from the senior-tenant `.all` list (the original sender
-  isn't a member of the cadet group). Verify the receiving cadet groups' posting
-  permission on the cadets tenant.
+- The fix deliberately enforces **only** `allowExternalMembers` (narrowed from an
+  initial v1.2.8 that applied the whole settings block). The code passes
+  `whoCanPostMessage: 'ALL_MEMBERS_CAN_POST'` for every distribution list, but
+  that was never applied while the function was a stub — so the live cadet-tenant
+  receive lists `ca###.cadets@cawgcadets.org` sit at `ANYONE_CAN_POST`, which is
+  exactly what lets them accept mail fanned out from the wing `.all` lists.
+  Enforcing the full block would have flipped those receivers to
+  `ALL_MEMBERS_CAN_POST` and silently re-broken cadet delivery. Posting/visibility
+  policy is therefore left to console/GAM.
+- Audit (`groupAdministration_auditReceiveListPosting()`, run on the cadets
+  tenant): `.cadets`/`.parents` receivers = `ANYONE_CAN_POST` (correct); the 66
+  flagged `ca###.all@cawgcadets.org` are the cadet tenant's own internal
+  all-hands at `ALL_IN_DOMAIN_CAN_POST` — not cross-tenant receivers, left as-is.
 
 ## [2026-07-09] — Pacific go-live
 
