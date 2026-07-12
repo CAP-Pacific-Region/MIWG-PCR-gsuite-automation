@@ -70,6 +70,17 @@ next to each entry below.
   removed (stage them with `groupAdministration_stageOrphanedSquadronGroups()`,
   then `groupAdministration_bulkDeleteGroupsFromSheet`). `.all` groups are kept.
 
+### Added — group-admin helpers (`groupAdministration.gs`)
+
+- `groupAdministration_auditReceiveListPosting()` — read-only audit of
+  `whoCanPostMessage` / `allowExternalMembers` on managed `.cadets`/`.parents`/`.all`
+  receive lists; flags any whose posting policy would reject cross-tenant fan-out.
+  Run on the tenant that owns the receiving groups (e.g. cadets).
+- `groupAdministration_stageOrphanedSquadronGroups(sheetName)` — tenant-aware; writes
+  squadron groups whose list type is currently disabled by `SQUADRON_DISTRIBUTION_TOGGLES`
+  to a worklist tab (default "Delete Groups") for review. Reads groups + writes the sheet
+  only; deletion stays a separate manual step (`groupAdministration_bulkDeleteGroupsFromSheet`).
+
 ## [2026-07-09] — Pacific go-live
 
 The reconciled `src/` was deployed to the live "PCR Automation" project (`TENANT_PROFILE=pacific`)

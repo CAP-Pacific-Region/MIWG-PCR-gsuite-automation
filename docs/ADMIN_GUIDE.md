@@ -88,8 +88,8 @@ These IDs are the load-bearing facts. Keep this table current — it is the map 
 
 | Tenant | Domain | Project owner | clasp target | Apps Script `scriptId` |
 |--------|--------|---------------|--------------|------------------------|
-| Seniors (the driver) | `cawgcap.org` | *confirm* | `clasp-targets/seniors.clasp.json` | `1ZjkCGQ2Dt-goAYO6n9y6cDwUnvm3Jor6DV0sLIsdCu4iB5zSzS9gmjAi` |
-| Cadets | project config = `cawgcap.org` (see note) | *confirm* | `clasp-targets/cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
+| Seniors (the driver) | `cawgcap.org` | `automation@cawgcap.org` | `clasp-targets/seniors.clasp.json` | `1ZjkCGQ2Dt-goAYO6n9y6cDwUnvm3Jor6DV0sLIsdCu4iB5zSzS9gmjAi` |
+| Cadets | `cawgcadets.org` | `automation@cawgcadets.org` | `clasp-targets/cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
 | Pacific Region | `pcr.cap.gov` | `automation@pcr.cap.gov` (project in a `pcr.cap.gov` Shared Drive) | `clasp-targets/pacific.clasp.json` | `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0` |
 
 Open any project in the browser from the repo with e.g. `npm run open:seniors`.
@@ -219,36 +219,33 @@ Apps Script projects via three clasp targets. Each target is just a `{ scriptId,
 
 ```
 clasp-targets/
-├── seniors.clasp.json   → cawgcap.org project   (the automation driver)
-├── cadets.clasp.json    → a second project      (clone of seniors — see below)
-└── pacific.clasp.json   → Pacific Region project (pcr.cap.gov Shared Drive; deployed)
+├── seniors.clasp.json   → cawgcap.org project      (seniors tenant + cross-tenant driver)
+├── cadets.clasp.json    → cawgcadets.org project   (cadets tenant)
+└── pacific.clasp.json   → Pacific Region project   (pcr.cap.gov Shared Drive; deployed)
 ```
 
-### How the cadet split *actually* works (verified by clasp pull)
+### How the cadet split *actually* works
 
-This is the most counter-intuitive part of the deployment, so read it carefully:
+The seniors and cadets projects are two **separate, active** tenants that run the **same `src/`**,
+differentiated only by Script Properties (`TENANT_*` identity + `TENANT_PROFILE`):
 
-- **`cawgcap.org` (the seniors project) is the single automation driver.** It manages the
-  seniors tenant directly via `CONFIG.DOMAIN` (`cawgcap.org`).
-- **The cadet tenant is not addressed through `CONFIG.DOMAIN`.** The cadet domain is resolved
-  separately by `getCAWGCadetsTenantDomain_()` in `UpdateCAWGCadetGroups.gs`, which — with no
-  `CADETS_TENANT_DOMAIN` override set — **derives it from `WING`**: `"CA"` → `cawgcadets.org`.
-  That derived value is used only to build **cross-tenant nested-group** references (cawgcap.org
-  groups that nest cadet groups living on cawgcadets.org). So `CONFIG.DOMAIN` being `cawgcap.org`
-  everywhere is *correct for the driver* — it was never meant to be the cadet domain.
-- **The standalone "cadets" Apps Script project (`15LW…`) is a byte-for-byte clone of the
-  seniors project** — identical `config.gs` and code, pointed at `cawgcap.org` and the seniors'
-  own Drive folders/sheets. Nothing in it targets `cawgcadets.org`.
-  - ⚠️ **Verified dormant.** As of this writing the cadets project has **no triggers** and **no
-    time-driven executions** (Executions showed only manual `testImpersonationToken` runs). Nothing
-    is scheduled on it. Triggers are known to have existed previously and are now gone — likely a
-    downstream effect of a push overwriting its `config.gs` (see the shared-config warning below):
-    once repointed at `cawgcap.org`, its nightly jobs would error or process 0 members, and Google
-    **auto-disables a time-driven trigger after repeated failures**. **Open question:** if this
-    project was the vehicle for `cawgcadets.org` account/group provisioning, that automation has
-    silently stopped — confirm whether cadets are still being provisioned somewhere, and decide to
-    either delete this clone (if truly vestigial) or rebuild cadet automation on a **durable owner**
-    with per-tenant config via Script Properties (not `config.gs`).
+- **Seniors project → `cawgcap.org`.** `CONFIG.DOMAIN` is `cawgcap.org` (from `TENANT_DOMAIN`). It
+  manages the seniors tenant and is also the **cross-tenant driver**: `updateCAWGCadetGroups()` runs
+  here and writes "User Additions" rows that nest the cadets' groups (which live on `cawgcadets.org`)
+  into the matching `cawgcap.org` groups. The cadet domain it nests against is resolved by
+  `getCAWGCadetsTenantDomain_()` in `UpdateCAWGCadetGroups.gs` — derived from `WING` (`"CA"` →
+  `cawgcadets.org`) unless a `CADETS_TENANT_DOMAIN` Script Property overrides it.
+- **Cadets project → `cawgcadets.org`.** `CONFIG.DOMAIN` is `cawgcadets.org` (from `TENANT_DOMAIN`)
+  and `TENANT_PROFILE=cadets`, so it processes **CADET** members only, in Cadet-Lite mode, and
+  creates the cadet list set (all-hands + cadets + parents). It provisions cadet accounts and groups
+  on `cawgcadets.org` directly. **Re-enabled 2026-07-09**; its time-driven triggers run under the
+  role account **`automation@cawgcadets.org`**.
+
+> **History (resolved).** This section used to describe the cadets project as a dormant
+> "byte-for-byte clone" pointed at `cawgcap.org` with no triggers. That was a symptom of the
+> shared-`config.gs` clobber (below), since fixed: the cadets project now carries its own `TENANT_*`
+> Script Properties, so a push no longer repoints it at the seniors domain, and its automation runs
+> on schedule again.
 
 > Because the three projects are pushed **independently**, they can **silently run different code**
 > from each other and from git. **Do not assume HEAD reflects what is live on any tenant.**
@@ -257,30 +254,26 @@ This is the most counter-intuitive part of the deployment, so read it carefully:
 > Properties + `TENANT_PROFILE`. The earlier gap (live tenants behind HEAD on the security-hardening
 > pass) is closed. Still, treat this as a point-in-time fact: always confirm before assuming.
 
-### ⚠️ `config.gs` is shared and overwritten on every push — per-tenant config is NOT durable
+### ⚠️ `config.gs` is shared and overwritten on every push — keep per-tenant config in Script Properties
 
-`.claspignore` ships **everything under `src/`**, and `config.gs` lives there. All three targets
-have `rootDir: ../src`. Therefore **every `clasp push` to any target overwrites that project's
-`config.gs` with the shared copy** — which hard-codes the **seniors** values
-(`DOMAIN: "cawgcap.org"`, seniors' folder/sheet IDs). Consequences:
+`.claspignore` ships **everything under `src/`**, and `config.gs` lives there; all three targets use
+`rootDir: ../src`. So **every `clasp push` overwrites that project's `config.gs` with the shared
+copy.** The design accounts for this: `config.gs` is **tenant-neutral** — it hard-codes no domain,
+ORGID, folder, or sheet values. `getTenantConfig_()` reads the per-tenant identity (`DOMAIN`,
+`EMAIL_DOMAIN`, `CAPWATCH_ORGID`, `WING`, `REGION`, the two folder IDs, the automation + retention
+sheet IDs, and the contact emails) from `TENANT_*` **Script Properties**, which pushes never touch,
+and `TENANT_PROFILE` selects per-tenant behavior. Canonical non-secret values are version-controlled
+in [`config-tenants/`](../config-tenants/).
 
-- Any per-tenant value you hand-edit into a project's `config.gs` **survives only until the next
-  push.** This is almost certainly why the cadets project's config is byte-identical to seniors:
-  a push repointed it at `cawgcap.org` and the seniors folders.
-- **The only durable per-tenant layer is Script Properties.** The code is built for this: the cadet
-  domain is *derived from `WING`* (or read from a `CADETS_TENANT_DOMAIN` Script Property), and
-  `MANAGE_RESOURCES` / `SA_*` / mission secrets are all Script Properties — none of them rely on
-  editing `config.gs` per tenant.
-- If you ever genuinely need a different domain/ORGID/folders on a tenant, do **not** put it in
-  `config.gs`. Move that value to a Script Property (and change the code to read it), or the next
-  push will silently wipe it.
+- **Never hand-edit per-tenant values into `config.gs`** — the next push wipes them. Set a Script
+  Property instead (and, if it's a new field, read it via `getTenantConfig_()`). Historically the
+  cadets project's `config.gs` went byte-identical to seniors precisely because a push clobbered a
+  hand-edited copy; the Script-Property layer is what removes that failure mode.
+- **The only durable per-tenant layer is Script Properties** — identity (`TENANT_*`), behavior
+  (`TENANT_PROFILE`), plus `MANAGE_RESOURCES`, `SA_*`, mission secrets, and CAPWATCH credentials.
 
-**This is now fixed in code.** `config.gs` no longer hard-codes tenant values — `getTenantConfig_()`
-reads the per-tenant identity (`DOMAIN`, `EMAIL_DOMAIN`, `CAPWATCH_ORGID`, `WING`, `REGION`, the two
-folder IDs, the automation + retention sheet IDs, and the contact emails) from `TENANT_*` **Script
-Properties**, which pushes never touch. Set them per project with `setupTenantConfig()` (or by hand),
-verify with `validateTenantConfig()`, and keep the canonical non-secret values version-controlled in
-[`config-tenants/`](../config-tenants/). See [Section 7](#7-secrets-and-script-properties-the-part-that-breaks-silently).
+Set them per project with `setupTenantConfig()` (or by hand), verify with `validateTenantConfig()`,
+and see [Section 7](#7-secrets-and-script-properties-the-part-that-breaks-silently).
 
 > **⚠️ Migration order — do this before pushing the refactor to any live tenant.** There is
 > deliberately **no fallback**: an unconfigured project yields an empty `DOMAIN` and fails loudly
@@ -460,6 +453,11 @@ an internal helper. **Preview/test functions never modify Workspace** — use th
 - `updateSquadronGroupsBatch(batchSize)` / `checkBatchStatus()` / `resetBatchProgress()` — batch control.
 - `previewSquadronGroups()`, `testPreviewSquadronGroups()`, `listAvailableSquadrons()` — **preview/inspect.**
 - `updateSingleSquadronGroups(unitNumber)` — operate on one unit.
+- Which list types get created is **tenant-driven** via `PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES`
+  (`config.gs`, per `TENANT_PROFILE`): seniors = all-hands / cadets / seniors / parents + command
+  staff; cadets = all-hands / cadets / parents (no `.seniors` or command-staff); pacific = none.
+  Groups left behind after a toggle is disabled are staged for cleanup by
+  `groupAdministration_stageOrphanedSquadronGroups()`.
 
 ### Region features (Pacific only — profile-gated)
 These ship in the shared `src/` but no-op unless their profile flag is on (`true` only for
@@ -499,6 +497,11 @@ These ship in the shared `src/` but no-op unless their profile flag is on (`true
 ### Group administration utilities (`groupAdministration.gs`)
 - Reporting: `groupAdministration_writeAllGroupsReport()`, `..._writeNoMemberGroupsReport()`,
   `..._previewStaleGroups()`, `..._previewConfiguredGroups()`.
+- Audit / cleanup prep (read-only, or writes a review sheet only): `..._auditReceiveListPosting()`
+  — flags managed `.cadets`/`.parents`/`.all` receive lists whose `whoCanPostMessage` would reject
+  cross-tenant fan-out from a wing `.all` list; run it on the tenant that owns them (e.g. cadets).
+  `..._stageOrphanedSquadronGroups()` — writes squadron groups whose list type is disabled for this
+  tenant (via `SQUADRON_DISTRIBUTION_TOGGLES`) to the "Delete Groups" tab for review before deletion.
 - Destructive (double-check before running): `..._deleteGroup()`, `..._bulkDeleteGroupsFromSheet()`,
   `..._clearGroup()`, `..._deleteConfiguredGroups()`, `..._hideGroupFromGal()`.
 
