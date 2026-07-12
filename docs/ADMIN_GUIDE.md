@@ -460,6 +460,11 @@ an internal helper. **Preview/test functions never modify Workspace** — use th
 - `updateSquadronGroupsBatch(batchSize)` / `checkBatchStatus()` / `resetBatchProgress()` — batch control.
 - `previewSquadronGroups()`, `testPreviewSquadronGroups()`, `listAvailableSquadrons()` — **preview/inspect.**
 - `updateSingleSquadronGroups(unitNumber)` — operate on one unit.
+- Which list types get created is **tenant-driven** via `PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES`
+  (`config.gs`, per `TENANT_PROFILE`): seniors = all-hands / cadets / seniors / parents + command
+  staff; cadets = all-hands / cadets / parents (no `.seniors` or command-staff); pacific = none.
+  Groups left behind after a toggle is disabled are staged for cleanup by
+  `groupAdministration_stageOrphanedSquadronGroups()`.
 
 ### Region features (Pacific only — profile-gated)
 These ship in the shared `src/` but no-op unless their profile flag is on (`true` only for
@@ -499,6 +504,11 @@ These ship in the shared `src/` but no-op unless their profile flag is on (`true
 ### Group administration utilities (`groupAdministration.gs`)
 - Reporting: `groupAdministration_writeAllGroupsReport()`, `..._writeNoMemberGroupsReport()`,
   `..._previewStaleGroups()`, `..._previewConfiguredGroups()`.
+- Audit / cleanup prep (read-only, or writes a review sheet only): `..._auditReceiveListPosting()`
+  — flags managed `.cadets`/`.parents`/`.all` receive lists whose `whoCanPostMessage` would reject
+  cross-tenant fan-out from a wing `.all` list; run it on the tenant that owns them (e.g. cadets).
+  `..._stageOrphanedSquadronGroups()` — writes squadron groups whose list type is disabled for this
+  tenant (via `SQUADRON_DISTRIBUTION_TOGGLES`) to the "Delete Groups" tab for review before deletion.
 - Destructive (double-check before running): `..._deleteGroup()`, `..._bulkDeleteGroupsFromSheet()`,
   `..._clearGroup()`, `..._deleteConfiguredGroups()`, `..._hideGroupFromGal()`.
 
