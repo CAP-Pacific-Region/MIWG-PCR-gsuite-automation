@@ -74,6 +74,12 @@
  *   Deletes the configured stale group email list at the top of this file.
  *   Missing groups are logged as already gone instead of throwing.
  *
+ * - groupAdministration_auditReceiveListPosting()
+ *   Read-only audit of whoCanPostMessage / allowExternalMembers on managed
+ *   .cadets/.parents/.all "receive lists". Run it on the tenant that OWNS those
+ *   groups (e.g. the cadets tenant) to find sublists that would silently reject
+ *   cross-tenant fan-out from a wing .all list.
+ *
  * Notes:
  * - Google Groups cannot be restored after deletion.
  * - Apps Script can manage Google Groups and Domain Shared Contacts.
@@ -521,6 +527,80 @@ function groupAdministration_deleteConfiguredGroups() {
   });
 
   return { deleted: deleted, missing: missing, failed: failed };
+}
+
+/**
+ * Read-only audit of "receive-list" posting permissions.
+ *
+ * Cross-tenant fan-out (wing ca###.all -> cadet ca###.cadets@cawgcadets.org)
+ * only delivers if the RECEIVING group accepts mail from the original, external
+ * sender. A receiving sublist set to ALL_MEMBERS_CAN_POST or
+ * ALL_IN_DOMAIN_CAN_POST silently rejects/holds forwarded wing mail; it
+ * generally needs ANYONE_CAN_POST (ideally paired with spam moderation).
+ *
+ * Run this on the tenant that OWNS the receiving groups (e.g. the cadets
+ * tenant). It reads, per managed .cadets/.parents/.all group:
+ *   whoCanPostMessage, allowExternalMembers, messageModerationLevel,
+ *   spamModerationLevel
+ * and flags any whose whoCanPostMessage would block external fan-out.
+ * This function only reads settings; it changes nothing.
+ *
+ * @returns {{checked:number, blocking:Array<Object>, ok:Array<Object>}}
+ */
+function groupAdministration_auditReceiveListPosting() {
+  if (typeof AdminGroupsSettings === 'undefined' || !AdminGroupsSettings.Groups || !AdminGroupsSettings.Groups.get) {
+    throw new Error('AdminGroupsSettings advanced service is not enabled');
+  }
+
+  const suffixRe = /\.(cadets|parents|all)$/i;
+  const groups = groupAdministration_listGroups().filter(g => {
+    const local = String(g.email || '').split('@')[0];
+    return suffixRe.test(local);
+  });
+
+  const blocking = [];
+  const ok = [];
+
+  for (let i = 0; i < groups.length; i++) {
+    const email = groups[i].email;
+    let settings;
+    try {
+      settings = executeWithRetry(() => AdminGroupsSettings.Groups.get(email));
+    } catch (e) {
+      Logger.warn('Could not read group settings during receive-list audit', {
+        group: email,
+        errorMessage: e.message
+      });
+      continue;
+    }
+
+    const row = {
+      email: email,
+      whoCanPostMessage: String(settings.whoCanPostMessage || ''),
+      allowExternalMembers: String(settings.allowExternalMembers || ''),
+      messageModerationLevel: String(settings.messageModerationLevel || ''),
+      spamModerationLevel: String(settings.spamModerationLevel || '')
+    };
+
+    // ANYONE_CAN_POST is the only value that reliably accepts external fan-out.
+    if (row.whoCanPostMessage === 'ANYONE_CAN_POST') {
+      ok.push(row);
+    } else {
+      blocking.push(row);
+    }
+  }
+
+  blocking.sort((a, b) => a.email.localeCompare(b.email));
+  ok.sort((a, b) => a.email.localeCompare(b.email));
+
+  Logger.info('Receive-list posting audit complete', {
+    checked: groups.length,
+    blockingCount: blocking.length,
+    okCount: ok.length,
+    blocking: blocking.slice(0, 50)
+  });
+
+  return { checked: groups.length, blocking: blocking, ok: ok };
 }
 
 /**
