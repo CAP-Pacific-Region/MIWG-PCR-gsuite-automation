@@ -88,8 +88,8 @@ These IDs are the load-bearing facts. Keep this table current — it is the map 
 
 | Tenant | Domain | Project owner | clasp target | Apps Script `scriptId` |
 |--------|--------|---------------|--------------|------------------------|
-| Seniors (the driver) | `cawgcap.org` | *confirm* | `clasp-targets/seniors.clasp.json` | `1ZjkCGQ2Dt-goAYO6n9y6cDwUnvm3Jor6DV0sLIsdCu4iB5zSzS9gmjAi` |
-| Cadets | project config = `cawgcap.org` (see note) | *confirm* | `clasp-targets/cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
+| Seniors (the driver) | `cawgcap.org` | `automation@cawgcap.org` | `clasp-targets/seniors.clasp.json` | `1ZjkCGQ2Dt-goAYO6n9y6cDwUnvm3Jor6DV0sLIsdCu4iB5zSzS9gmjAi` |
+| Cadets | `cawgcadets.org` | `automation@cawgcadets.org` | `clasp-targets/cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
 | Pacific Region | `pcr.cap.gov` | `automation@pcr.cap.gov` (project in a `pcr.cap.gov` Shared Drive) | `clasp-targets/pacific.clasp.json` | `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0` |
 
 Open any project in the browser from the repo with e.g. `npm run open:seniors`.
