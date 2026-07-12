@@ -1,10 +1,14 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.2.7
+ * Version: 1.2.8
  * Filename: SquadronGroups.gs
- * Saved: 2026-07-09
- * Changes: Reconciled with live tenant code; AdminDirectory.Users.list
+ * Saved: 2026-07-11
+ * Changes: applyGroupSettings() now actually applies group settings via the
+ *   AdminGroupsSettings advanced service (was a log-only stub), so squadron
+ *   distribution lists get allowExternalMembers=true and cross-tenant nested
+ *   cadet groups (ca###.cadets@cawgcadets.org) can be added to the .all lists.
+ *   v1.2.7: Reconciled with live tenant code; AdminDirectory.Users.list
  *   standardized to customer:"my_customer". See PCR_CHANGELOG.md.
  *
  * Manages squadron-specific Google Groups for unit collaboration and communication:
@@ -1470,11 +1474,17 @@ function getOrCreateGroup(email, name, description, settings = {}) {
 }
 
 /**
- * Applies settings to a Google Group using the Groups Settings API
+ * Applies settings to a Google Group using the Groups Settings API.
  *
- * Note: Google Apps Script has limited access to Groups Settings API
- * Many settings must be configured through Admin Console or Admin SDK API
- * This function logs intended settings for reference
+ * Squadron distribution lists (especially the ".all" lists) must have
+ * allowExternalMembers=true so cross-tenant nested groups such as
+ * ca###.cadets@cawgcadets.org can be added as members and receive mail.
+ * AdminDirectory.Groups.insert does NOT accept these fields, so they have to
+ * be patched separately through the AdminGroupsSettings advanced service
+ * (enabled in appsscript.json; scope apps.groups.settings).
+ *
+ * Only settings the caller actually supplies are managed, and only keys whose
+ * live value differs are patched, so this is safe to run on every sync.
  *
  * @param {string} email - Group email address
  * @param {Object} settings - Settings to apply
@@ -1482,41 +1492,72 @@ function getOrCreateGroup(email, name, description, settings = {}) {
  */
 function applyGroupSettings(email, settings) {
   try {
-    // Build settings object with defaults
-    const groupSettings = {
-      whoCanJoin: settings.whoCanJoin || 'INVITED_CAN_JOIN',
-      whoCanViewMembership: settings.whoCanViewMembership || 'ALL_MEMBERS_CAN_VIEW',
-      whoCanViewGroup: settings.whoCanViewGroup || 'ALL_MEMBERS_CAN_VIEW',
-      whoCanPostMessage: settings.whoCanPostMessage || 'ALL_MEMBERS_CAN_POST',
-      allowExternalMembers: settings.allowExternalMembers || 'false',
-      whoCanContactOwner: settings.whoCanContactOwner || 'ALL_MEMBERS_CAN_CONTACT',
-      messageModerationLevel: settings.messageModerationLevel || 'MODERATE_NONE',
-      enableCollaborativeInbox: settings.enableCollaborativeInbox || 'true',
-      replyTo: settings.replyTo || 'REPLY_TO_IGNORE',
-      includeInGlobalAddressList: settings.includeInGlobalAddressList || 'true',
-      isArchived: 'false',
-      membersCanPostAsTheGroup: 'false',
-      allowWebPosting: 'true',
-      primaryLanguage: 'en',
-      favoriteRepliesOnTop: 'false'
-    };
+    const groupEmail = String(email || '').trim().toLowerCase();
+    if (!groupEmail) return;
 
-    // Add optional settings
-    if (settings.sendMessageDenyNotification) {
-      groupSettings.sendMessageDenyNotification = settings.sendMessageDenyNotification;
-    }
-    if (settings.defaultMessageDenyNotificationText) {
-      groupSettings.defaultMessageDenyNotificationText = settings.defaultMessageDenyNotificationText;
+    // Only manage the keys the caller explicitly passed. This keeps behavior
+    // predictable and avoids clobbering console-configured options we don't own.
+    const managedKeys = [
+      'whoCanJoin',
+      'whoCanViewMembership',
+      'whoCanViewGroup',
+      'whoCanPostMessage',
+      'allowExternalMembers',
+      'whoCanContactOwner',
+      'messageModerationLevel',
+      'enableCollaborativeInbox',
+      'replyTo',
+      'includeInGlobalAddressList',
+      'sendMessageDenyNotification',
+      'defaultMessageDenyNotificationText'
+    ];
+
+    const desired = {};
+    managedKeys.forEach(key => {
+      if (settings[key] !== undefined && settings[key] !== null && settings[key] !== '') {
+        desired[key] = String(settings[key]);
+      }
+    });
+
+    if (Object.keys(desired).length === 0) return;
+
+    if (typeof DRY_RUN !== 'undefined' && DRY_RUN) {
+      Logger.info('💡 [Dry-Run] Would apply group settings', {
+        email: groupEmail,
+        settings: desired
+      });
+      return;
     }
 
-    // Note: Google Apps Script doesn't have direct Groups Settings API access
-    // Settings are applied at group creation via AdminDirectory.Groups.insert
-    // This function primarily logs intended settings for debugging
-    Logger.info('Group settings configured', {
-      email: email,
-      collaborativeInbox: groupSettings.enableCollaborativeInbox,
-      externalMembers: groupSettings.allowExternalMembers,
-      includeInGAL: groupSettings.includeInGlobalAddressList
+    if (typeof AdminGroupsSettings === 'undefined' || !AdminGroupsSettings.Groups || !AdminGroupsSettings.Groups.patch) {
+      Logger.warn('AdminGroupsSettings API not available; cannot apply group settings', {
+        email: groupEmail,
+        settings: desired
+      });
+      return;
+    }
+
+    const existing = executeWithRetry(() => AdminGroupsSettings.Groups.get(groupEmail));
+    const patch = {};
+    for (const key in desired) {
+      const currentValue = (existing && existing[key] != null) ? String(existing[key]) : '';
+      if (currentValue !== desired[key]) {
+        patch[key] = desired[key];
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      Logger.info('Group settings already correct', {
+        email: groupEmail,
+        externalMembers: desired.allowExternalMembers
+      });
+      return;
+    }
+
+    executeWithRetry(() => AdminGroupsSettings.Groups.patch(patch, groupEmail));
+    Logger.info('Group settings applied', {
+      email: groupEmail,
+      applied: patch
     });
 
   } catch (err) {

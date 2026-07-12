@@ -10,6 +10,37 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-11] — Squadron `.all` lists now admit cross-tenant cadet groups
+
+### Fixed
+
+- **`SquadronGroups.gs` (v1.2.8)** — squadron distribution lists (notably the
+  `ca###.all` lists) were not receiving the setting that lets the cross-tenant
+  cadet group `ca###.cadets@cawgcadets.org` be added as a member, so messages to
+  a unit's **All** list never reached cadets. Root cause: `applyGroupSettings()`
+  was a log-only stub that built the intended settings (including
+  `allowExternalMembers: 'true'`) but never called any API — the header comment
+  wrongly claimed "Apps Script doesn't have direct Groups Settings API access,"
+  even though the `AdminGroupsSettings` advanced service is enabled and used
+  elsewhere (`UpdateGroups.gs`, `groupAdministration.gs`). External-member adds
+  therefore failed silently and were swallowed per-member in
+  `updateGroupMembership()`. `applyGroupSettings()` now patches settings through
+  `AdminGroupsSettings.Groups.patch`, managing only the keys the caller passes and
+  only patching values that differ (idempotent, `DRY_RUN`-aware). Because
+  `getOrCreateGroup()` runs it for existing groups too, the next
+  `updateAllSquadronGroups()` backfills `allowExternalMembers=true` across all
+  squadron lists — self-healing, no manual console work. Deployed to all three
+  tenants.
+
+### Follow-up
+
+- End-to-end delivery to cadets also depends on the **cadet-side** group
+  `ca###.cadets@cawgcadets.org` accepting the forwarded message. Squadron lists
+  are created with `whoCanPostMessage: 'ALL_MEMBERS_CAN_POST'`, which can still
+  bounce mail forwarded from the senior-tenant `.all` list (the original sender
+  isn't a member of the cadet group). Verify the receiving cadet groups' posting
+  permission on the cadets tenant.
+
 ## [2026-07-09] — Pacific go-live
 
 The reconciled `src/` was deployed to the live "PCR Automation" project (`TENANT_PROFILE=pacific`)
