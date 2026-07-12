@@ -10,7 +10,13 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
-## [Unreleased]
+## [2026-07-09] — Pacific go-live
+
+The reconciled `src/` was deployed to the live "PCR Automation" project (`TENANT_PROFILE=pacific`)
+and verified end-to-end; triggers rebuilt under `automation@pcr.cap.gov`. **All three tenants now
+run identical source, differentiated only by configuration** — the reconciliation goal.
+_This supersedes the "not yet deployed to Pacific / on hold pending 2SV" notes in the entries
+below, which were accurate when written._
 
 ### Fixed
 
@@ -18,7 +24,16 @@ next to each entry below.
   "You can't merge frozen and non-frozen columns" in `buildWingTab_`.
   `clear()`/`clearFormats()` don't reset a tab's freeze state, so a pre-existing
   frozen column made the `A1:I1` title merge fail. Now resets frozen rows/columns
-  before merging. (Surfaced during the Pacific go-live.)
+  before merging. (Surfaced during the Pacific go-live; PR #11.)
+
+### Deployment notes
+
+- **Push must come from an account internal to `pcr.cap.gov`** (`automation@pcr.cap.gov`, the
+  owner). The project is in a `pcr.cap.gov` Shared Drive; an external-org account can pull but gets
+  a 403 "Apps Script API not enabled" on push (a cross-org write block, not an API-toggle issue).
+- The `contacts` OAuth scope was **verified working** against the M8 Domain Shared Contacts feed.
+- Two pre-existing Google **abuse-suspended** accounts (`timothy.verrett`, `rene.mccoy`) can't be
+  auto-restored (412); they need an admin restore in the console. Unrelated to the reconciliation.
 
 ## [2026-07-09] — Fold region modules into the shared `src/` (identical-code model)
 

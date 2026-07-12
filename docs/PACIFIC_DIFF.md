@@ -1,8 +1,9 @@
 # Pacific Region Reconciliation & Divergence Report
 
-**Status:** Analysis complete. Deployment to Pacific is **ON HOLD** pending 2SV for
-`automation@pcr.cap.gov`. This document is the plan of record for lining the Pacific
-Region project up with the shared repo.
+**Status: COMPLETE — deployed to Pacific 2026-07-09.** All three tenants now run identical
+`src/`, differentiated only by configuration. This document is the record of that reconciliation:
+what diverged, the decisions taken, and the migration that was executed (§6). Retained for history
+and as the pattern for future tenants.
 
 **Goal (from the wing/region director):**
 > Make the source of all three tenants line up in GitHub, differentiated only by
@@ -191,9 +192,9 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 
 ---
 
-## 6. Migration checklist (execute once 2SV clears — do NOT run while on hold)
+## 6. Migration checklist (✅ COMPLETE — executed 2026-07-09)
 
-**Code-side (can land before 2SV, in PRs):**
+**Code-side (landed in PRs #9–#11):**
 
 1. ~~**Add the `pacific` profile.**~~ **Done — PR #10** (`reconcile/pacific-profile`):
    `pacific` profile + profile-driven `EXCLUDED_ORG_IDS`/`AEM_UNIT` + `SYNC_ORG_PATHS` gate.
@@ -206,7 +207,7 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
    single shared module with the three corrections from the §3 note (flag-gate new features,
    keep `customer:"my_customer"`, keep `INDEFINITE` fallback).
 
-**Deploy-side (execute once 2SV clears — do NOT run while on hold):**
+**Deploy-side (executed 2026-07-09 as `automation@pcr.cap.gov` — the internal owner; an external-org account gets a 403 on push, see §0/ADMIN_GUIDE):**
 
 4. **Back up** the live "PCR Automation" project (versioned clasp pull, archived).
 5. **Set Script Properties** on "PCR Automation" from `config-tenants/pacific.json`

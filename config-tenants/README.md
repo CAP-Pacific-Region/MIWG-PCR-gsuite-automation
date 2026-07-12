@@ -16,7 +16,7 @@ One JSON file per tenant holding the **canonical, non-secret** values for that p
 so clasp never uploads them. They exist for version control and disaster recovery.
 
 - `seniors.json` — cawgcap.org (complete)
-- `cadets.json` — cawgcadets.org (fill the `TODO` fields from the cadet-tenant restore)
+- `cadets.json` — cawgcadets.org (complete)
 - `pacific.json` — Pacific Region (complete; verified from the live "PCR Automation" `config.gs`)
 - `setup-pacific.gs` — paste-once helper (`setupPacificScriptProperties()`) that writes
   Pacific's `TENANT_*` values from `pacific.json` to the project's Script Properties. Repo-only,
