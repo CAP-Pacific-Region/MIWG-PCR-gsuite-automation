@@ -10,6 +10,66 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-11] — Squadron `.all` lists now admit cross-tenant cadet groups
+
+### Fixed
+
+- **`SquadronGroups.gs` (v1.2.9)** — squadron distribution lists (notably the
+  `ca###.all` lists) were not receiving the setting that lets the cross-tenant
+  cadet group `ca###.cadets@cawgcadets.org` be added as a member, so messages to
+  a unit's **All** list never reached cadets. Root cause: `applyGroupSettings()`
+  was a log-only stub that built the intended settings (including
+  `allowExternalMembers: 'true'`) but never called any API — the header comment
+  wrongly claimed "Apps Script doesn't have direct Groups Settings API access,"
+  even though the `AdminGroupsSettings` advanced service is enabled and used
+  elsewhere (`UpdateGroups.gs`, `groupAdministration.gs`). External-member adds
+  therefore failed silently and were swallowed per-member in
+  `updateGroupMembership()`. `applyGroupSettings()` now patches
+  `allowExternalMembers` through `AdminGroupsSettings.Groups.patch`, only when the
+  live value differs (idempotent, `DRY_RUN`-aware). Because `getOrCreateGroup()`
+  runs it for existing groups too, the next `updateAllSquadronGroups()` backfills
+  `allowExternalMembers=true` across all squadron lists — self-healing, no manual
+  console work. Deployed to all three tenants.
+
+### Scope note (why only `allowExternalMembers`)
+
+- The fix deliberately enforces **only** `allowExternalMembers` (narrowed from an
+  initial v1.2.8 that applied the whole settings block). The code passes
+  `whoCanPostMessage: 'ALL_MEMBERS_CAN_POST'` for every distribution list, but
+  that was never applied while the function was a stub — so the live cadet-tenant
+  receive lists `ca###.cadets@cawgcadets.org` sit at `ANYONE_CAN_POST`, which is
+  exactly what lets them accept mail fanned out from the wing `.all` lists.
+  Enforcing the full block would have flipped those receivers to
+  `ALL_MEMBERS_CAN_POST` and silently re-broken cadet delivery. Posting/visibility
+  policy is therefore left to console/GAM.
+- Audit (`groupAdministration_auditReceiveListPosting()`, run on the cadets
+  tenant): `.cadets`/`.parents` receivers = `ANYONE_CAN_POST` (correct); the 66
+  flagged `ca###.all@cawgcadets.org` are the cadet tenant's own internal
+  all-hands at `ALL_IN_DOMAIN_CAN_POST` — not cross-tenant receivers, left as-is.
+
+### Changed — squadron distribution toggles are now tenant-driven
+
+- **`SquadronGroups.gs` (v1.3.0) + `config.gs` (v1.2.2)** — `SQUADRON_DISTRIBUTION_TOGGLES`
+  was a hard-coded const, so the cadet tenant was creating senior-only lists
+  (`.seniors`, Deputy Commander for Seniors) that don't apply there. The toggles
+  now come from `PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES` in `config.gs` (selected
+  by the `TENANT_PROFILE` Script Property), read via
+  `getSquadronDistributionToggles_()`; the const is a fallback default only. Same
+  mechanism as the other per-tenant behavior — a shared-code `clasp push` can't
+  make a tenant create the wrong lists.
+- **Cadets profile = all-hands + cadets + parents lists.** Disabled on the cadet
+  tenant: `.seniors` (no seniors here) and the command-staff lists (Commander /
+  Deputy Commander / Deputy Commander for Cadets — those are senior duty positions
+  whose holders have wing accounts, so the lists would be empty). `.all` is kept
+  intentionally: on a cadet-only tenant it duplicates `.cadets`, but the lists
+  already exist and are retained in case something references them. Seniors profile
+  unchanged; pacific = all off (single-unit region, squadron sync not triggered there).
+- **Cleanup follow-up:** disabling a toggle stops managing those lists but does
+  not delete already-created groups. The existing `ca###.seniors@cawgcadets.org`
+  and cadet command-staff groups become orphans on the cadet tenant and should be
+  removed (stage them with `groupAdministration_stageOrphanedSquadronGroups()`,
+  then `groupAdministration_bulkDeleteGroupsFromSheet`). `.all` groups are kept.
+
 ## [2026-07-09] — Pacific go-live
 
 The reconciled `src/` was deployed to the live "PCR Automation" project (`TENANT_PROFILE=pacific`)

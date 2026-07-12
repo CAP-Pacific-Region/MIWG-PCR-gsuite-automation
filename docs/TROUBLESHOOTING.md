@@ -331,6 +331,11 @@ function checkMemberStatus() {
 4. **External Email Issues**
    - Group settings may prevent external members
    - Check group settings in Admin Console
+   - Squadron distribution lists auto-apply `allowExternalMembers=true` via
+     `applyGroupSettings()` (SquadronGroups.gs) on each `updateAllSquadronGroups()`
+     run. If a cross-tenant nested group (e.g. `ca###.cadets@cawgcadets.org`) still
+     won't add, confirm the `AdminGroupsSettings` advanced service is enabled and
+     check the log for "Group settings applied".
 
 ### Too Many Members Removed
 
@@ -715,6 +720,9 @@ The format is: `Last, First Rank CAP GLR-MI-XXX`
 **"Cannot add external member - not found"**
 - External email (parent/guardian) doesn't exist or group settings prevent external members
 - Verify email exists, check group settings
+- For squadron lists, `allowExternalMembers` is applied automatically by
+  `applyGroupSettings()`; a persistent failure here usually means the target
+  external address/group doesn't exist, not a settings problem
 
 **"File not found"**
 - CAPWATCH file missing from Drive folder
