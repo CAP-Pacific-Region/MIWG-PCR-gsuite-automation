@@ -1308,11 +1308,11 @@ Main configuration object in `config.gs`.
 - Default: 7
 
 **EXCLUDED_ORG_IDS** (string[])
-- Organization IDs that should have users suspended
-- Default: ['744', '1920']
+- Organization IDs whose members are suspended and never provisioned (holding units)
+- **Profile-driven** (`PROFILE_.EXCLUDED_ORG_IDS`): seniors/cadets `['1297', '368']`; pacific `['1345']`
 
 **SPECIAL_ORGS** (Object)
-- AEM_UNIT (string): Artificial org ID for AEM members. Default: '182'
+- AEM_UNIT (string): Artificial org ID for AEM members. **Profile-driven** (`PROFILE_.AEM_UNIT`); currently `''` on every tenant (none run AEM automation)
 
 **BATCH_SIZE** (number)
 - Members to process per batch
@@ -1323,7 +1323,7 @@ Main configuration object in `config.gs`.
 - Default: 3
 
 **MEMBER_TYPES** (Object)
-- ACTIVE (string[]): All active types. Default: ['CADET', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'AEM']
+- ACTIVE (string[]): Active types for this tenant. **Profile-driven** (`PROFILE_.MEMBER_TYPES_ACTIVE`): seniors `['SENIOR','FIFTY YEAR','INDEFINITE','CADET SPONSOR']`; cadets `['CADET']`; pacific `['SENIOR','FIFTY YEAR','INDEFINITE','CADET']`
 - AEM_ONLY (string[]): Only AEM. Default: ['AEM']
 
 **CAPWATCH_ORGID** (string)
