@@ -19,6 +19,8 @@
  * - Fixed external contacts and parent/guardian emails
  * - FIxed Group name and description
  * - Added new column to Groups tab EXT where you can create a Group as allow external members
+ * - Added 'dutyPositionIdsGroupScope' attribute: one wing-level DL of the
+ *   group-echelon-unit commanders only (e.g. ca.group-commanders)
  *******************************************************/
 
 var workspaceUsers = {};
@@ -1071,6 +1073,54 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
           members[member].email
         ) {
           groups[groupId][members[member].email] = 1;
+        }
+      }
+
+      // Prevent creating an empty group
+      if (Object.keys(groups[groupId]).length === 0) {
+        delete groups[groupId];
+      }
+      break;
+
+    case 'dutyPositionIdsGroupScope':
+      // Wing-level DL containing members who hold one of the given duty IDs at a
+      // GROUP-echelon org ONLY. Wing HQ holders and squadron/unit holders are
+      // intentionally excluded, and NO per-group child DLs are created.
+      //
+      // Built for the "group commanders" list: the commanders of the group-echelon
+      // units (CC at GROUP scope) collapsed into a single wing-level list. Squadron
+      // commanders (CC at UNIT scope) and any Wing HQ CC are excluded because the
+      // duty's own assigned org scope is checked, not the member's home unit.
+      //
+      // Spreadsheet usage:
+      //   Category:   duty-position
+      //   Group Name: group-commanders
+      //   Attribute:  dutyPositionIdsGroupScope
+      //   Values:     CC
+      // Result: creates ONLY <wing>.group-commanders (e.g., ca.group-commanders).
+      // The wing Deputy Commander over the groups is not encoded distinctly in
+      // CAPWATCH, so add that person via the "User Additions" tab, not here.
+      groupId = wingGroupId;
+      if (!groups[groupId]) groups[groupId] = {};
+
+      for (const member in members) {
+        if (!members[member].email || !Array.isArray(members[member].dutyPositions)) continue;
+
+        for (let i = 0; i < members[member].dutyPositions.length; i++) {
+          const dutyPosition = members[member].dutyPositions[i];
+          if (!matchesAnyDutyId_(dutyPosition.id, values)) continue;
+
+          const dutyOrg = getDutyAssignmentOrg_(dutyPosition);
+          if (
+            dutyOrg &&
+            String(dutyOrg.scope || '').toUpperCase() === 'GROUP' &&
+            String(dutyOrg.wing || '').toUpperCase() === CONFIG.WING.toUpperCase() &&
+            String(dutyOrg.unit || '') !== '000' &&
+            String(dutyOrg.unit || '') !== '001'
+          ) {
+            groups[wingGroupId][members[member].email] = 1;
+            break;
+          }
         }
       }
 
