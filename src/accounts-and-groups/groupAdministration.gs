@@ -80,6 +80,12 @@
  *   groups (e.g. the cadets tenant) to find sublists that would silently reject
  *   cross-tenant fan-out from a wing .all list.
  *
+ * - groupAdministration_stageOrphanedSquadronGroups(sheetName)
+ *   Finds existing squadron groups whose list type is now DISABLED for this
+ *   tenant (via SQUADRON_DISTRIBUTION_TOGGLES) and writes them to a worklist tab
+ *   ("Delete Groups" by default) for review. Does NOT delete — feed the reviewed
+ *   sheet to groupAdministration_bulkDeleteGroupsFromSheet().
+ *
  * Notes:
  * - Google Groups cannot be restored after deletion.
  * - Apps Script can manage Google Groups and Domain Shared Contacts.
@@ -601,6 +607,100 @@ function groupAdministration_auditReceiveListPosting() {
   });
 
   return { checked: groups.length, blocking: blocking, ok: ok };
+}
+
+/**
+ * Stages "orphaned" managed squadron groups for review before deletion.
+ *
+ * Now that SQUADRON_DISTRIBUTION_TOGGLES is tenant-driven, some list types are no
+ * longer managed on a given tenant (e.g. on cadets: .all, .seniors, and the
+ * command-staff lists). Disabling a toggle stops managing those lists but does
+ * NOT delete the already-created groups, leaving orphans with stale membership.
+ *
+ * This finds existing groups whose email suffix matches a managed squadron list
+ * type whose toggle is currently DISABLED for this tenant, and writes them to the
+ * "Delete Groups" worklist tab (first column header "group") for human review.
+ * It only reads groups and writes the sheet — it does NOT delete anything. After
+ * reviewing/trimming the sheet, run groupAdministration_bulkDeleteGroupsFromSheet().
+ *
+ * Tenant-aware: it reads THIS tenant's profile toggles (via
+ * isSquadronDistributionListEnabled_), so a list type that is still enabled here
+ * is treated as managed, not orphaned. Run it on the tenant you want to clean
+ * (e.g. cadets). Note: this overwrites the target tab's contents.
+ *
+ * @param {string=} sheetName Target worklist tab (default "Delete Groups").
+ * @returns {{staged:number, sheet:string, groups:Array<Object>}}
+ */
+function groupAdministration_stageOrphanedSquadronGroups(sheetName) {
+  if (typeof isSquadronDistributionListEnabled_ !== 'function') {
+    throw new Error('isSquadronDistributionListEnabled_ (SquadronGroups.gs) is required');
+  }
+
+  const targetSheetName = String(sheetName || 'Delete Groups').trim();
+
+  // Suffixes the squadron-group automation manages. A group is an orphan
+  // candidate when its suffix is one of these AND that suffix is currently
+  // disabled by this tenant's toggles.
+  const managedSuffixSet = {};
+  [
+    'all', 'allhands', 'cadets', 'seniors', 'parents',
+    'commander', 'deputy-commander', 'deputy-commander-cadets', 'deputy-commander-seniors'
+  ].forEach(s => { managedSuffixSet[s] = true; });
+
+  // Managed squadron prefixes: the wing code, optionally + a 3-digit unit
+  // (wing-level "ca", group/unit-level "ca###").
+  const wing = String((CONFIG && CONFIG.WING) || '').trim().toLowerCase();
+  if (!wing) throw new Error('CONFIG.WING is not set');
+  const prefixRe = new RegExp('^' + wing.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:\\d{3})?$');
+
+  const orphans = [];
+  const groups = groupAdministration_listGroups();
+
+  for (let i = 0; i < groups.length; i++) {
+    const email = String(groups[i].email || '').toLowerCase();
+    const local = email.split('@')[0];
+    const dot = local.indexOf('.');
+    if (dot < 0) continue; // no suffix (bare unit / public-contact) — skip
+
+    const prefix = local.slice(0, dot);
+    const suffix = local.slice(dot + 1);
+
+    if (!prefixRe.test(prefix)) continue;
+    if (!managedSuffixSet[suffix]) continue;
+    if (isSquadronDistributionListEnabled_(suffix)) continue; // still managed → not an orphan
+
+    orphans.push({
+      group: email,
+      name: String(groups[i].name || ''),
+      suffix: suffix,
+      directMembersCount: Number(groups[i].directMembersCount || 0),
+      reason: 'Squadron list type "' + suffix + '" is disabled for this tenant'
+    });
+  }
+
+  orphans.sort((a, b) => a.group.localeCompare(b.group));
+
+  const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
+  const sheet = getOrCreateSheet_(ss, targetSheetName);
+  const rows = [['group', 'name', 'suffix', 'directMembersCount', 'reason']];
+  for (let i = 0; i < orphans.length; i++) {
+    rows.push([
+      orphans[i].group,
+      orphans[i].name,
+      orphans[i].suffix,
+      orphans[i].directMembersCount,
+      orphans[i].reason
+    ]);
+  }
+  writeTabularData_(sheet, rows);
+
+  Logger.info('Staged orphaned squadron groups for review', {
+    sheet: targetSheetName,
+    staged: orphans.length,
+    sample: orphans.slice(0, 20)
+  });
+
+  return { staged: orphans.length, sheet: targetSheetName, groups: orphans };
 }
 
 /**
