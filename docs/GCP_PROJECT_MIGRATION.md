@@ -43,7 +43,10 @@ In the correct Workspace org, create a project (e.g. `cawg-seniors-automation`).
 
 ### 2. Enable all required APIs (APIs & Services → Library)
 Enable **all** of these in the new project — the six the automation already uses plus
-Contacts. Missing one breaks that feature after the switch:
+Contacts. On a standard project Apps Script **cannot auto-enable** them (unlike a default
+project), so a missing API fails with `Permission denied while enabling APIs: <api> for GCP
+project <n>` at runtime — and a **time-based trigger hitting a missing API fails silently**.
+Enable them all up front rather than discovering them one failure at a time:
 
 1. **Admin SDK API** (`admin.googleapis.com`) — directory + the cross-tenant peer read
 2. **Google Drive API**
