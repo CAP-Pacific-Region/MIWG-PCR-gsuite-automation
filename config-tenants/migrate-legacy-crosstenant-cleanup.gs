@@ -21,6 +21,11 @@
  * PROCEDURE
  *   - Leave DRY_RUN = true, Run, and review the logged count + sample.
  *   - Set DRY_RUN = false, Run again to delete.
+ *   - The m8 feed has a per-day write cap (~few thousand). A large backlog may
+ *     hit it: the run logs "Aborting ... quota exhausted" or "Reached
+ *     MAX_DELETES_PER_RUN" and stops cleanly. Just re-run after the daily reset
+ *     (~midnight Pacific) — it re-lists and continues where it left off. Repeat
+ *     until a DRY_RUN reports matched=0.
  *   - Delete this function from the project when done.
  *
  * Reuses xtListManagedContacts_() and xtDeleteContact_() from the pushed module.
@@ -40,26 +45,49 @@ function cleanupLegacyCrossTenantContacts() {
 
   const cfg = { selfDomain: CONFIG.DOMAIN };
   const token = ScriptApp.getOAuthToken();
-  let matched = 0, deleted = 0, failed = 0;
 
-  LEGACY_MARKERS.forEach(function (marker) {
+  // The m8 Domain Shared Contacts feed has a per-day write cap (~few thousand).
+  // Cap deletes per run to stay under it, and bail out fast when sustained 429s
+  // mean the quota is exhausted — re-run after the daily reset to finish.
+  const MAX_DELETES_PER_RUN = 2000;
+  const ABORT_AFTER_CONSECUTIVE_FAILS = 25;
+
+  let matched = 0, deleted = 0, failed = 0, consecutiveFails = 0, aborted = false;
+
+  for (let mi = 0; mi < LEGACY_MARKERS.length && !aborted; mi++) {
+    const marker = LEGACY_MARKERS[mi];
     const rows = xtListManagedContacts_(cfg, marker);
     matched += rows.length;
     console.log('Legacy marker "' + marker + '": ' + rows.length + ' contacts in ' + cfg.selfDomain);
 
-    rows.forEach(function (r, i) {
+    for (let i = 0; i < rows.length; i++) {
       if (DRY_RUN) {
-        if (i < 15) console.log('  would delete: ' + (r.email || r.resourceId));
-        return;
+        if (i < 15) console.log('  would delete: ' + (rows[i].email || rows[i].resourceId));
+        continue;
       }
-      const res = xtDeleteContact_(r, token);
-      if (res.ok) { deleted++; }
-      else { failed++; console.log('  DELETE FAILED (' + res.code + '): ' + (r.email || r.resourceId)); }
-      if ((i + 1) % 50 === 0) Utilities.sleep(200); // gentle throttle
-    });
-  });
+      if (deleted >= MAX_DELETES_PER_RUN) {
+        console.log('Reached MAX_DELETES_PER_RUN (' + MAX_DELETES_PER_RUN + '); re-run to continue.');
+        aborted = true; break;
+      }
 
-  console.log((DRY_RUN ? 'DRY RUN — ' : '') + 'Legacy cleanup complete. matched=' +
-    matched + ', deleted=' + deleted + ', failed=' + failed);
-  return { dryRun: DRY_RUN, matched: matched, deleted: deleted, failed: failed };
+      const res = xtDeleteContact_(rows[i], token);
+      if (res.ok) {
+        deleted++; consecutiveFails = 0;
+        if (deleted % 100 === 0) console.log('  progress: deleted ' + deleted);
+        if (deleted % 50 === 0) Utilities.sleep(300);
+      } else {
+        failed++; consecutiveFails++;
+        console.log('  DELETE FAILED (' + res.code + '): ' + (rows[i].email || rows[i].resourceId));
+        if (consecutiveFails >= ABORT_AFTER_CONSECUTIVE_FAILS) {
+          console.log('Aborting: ' + consecutiveFails + ' consecutive failures (likely m8 daily write ' +
+            'quota exhausted). Nothing is broken — re-run after the quota resets to finish.');
+          aborted = true; break;
+        }
+      }
+    }
+  }
+
+  console.log((DRY_RUN ? 'DRY RUN — ' : '') + 'Legacy cleanup ' + (aborted ? 'PAUSED' : 'complete') +
+    '. matched=' + matched + ', deleted=' + deleted + ', failed=' + failed);
+  return { dryRun: DRY_RUN, matched: matched, deleted: deleted, failed: failed, aborted: aborted };
 }

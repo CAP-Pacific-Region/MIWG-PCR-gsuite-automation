@@ -259,6 +259,21 @@ Admin-console UI for domain shared contacts, so deletion is scripted.
 The old export spreadsheets (`CAWG_seniors`, `CAWG_cadets`, `CAWG_cadets_groups`) are now
 unused and can be archived.
 
+## m8 feed write quota (affects backfill & cleanup)
+
+The Domain Shared Contacts (m8) feed has a **per-day write cap** (~a few thousand writes) per
+tenant. Steady-state sync is unaffected (idempotent → ~0 writes/day), but the **one-time**
+operations are large and must be sequenced so they don't exceed a day's budget on one tenant:
+
+- **Initial backfill** ≈ one write per peer member (~2,600 for CAWG cadets).
+- **Legacy cleanup** ≈ one delete per legacy contact (~2,600).
+
+Doing both on the same tenant on the same day will hit the cap (sustained `429`s). Split them
+across days, e.g. **day 1 backfill + verify, day 2 cleanup** (the cleanup helper caps per-run
+deletes, aborts cleanly on quota exhaustion, and resumes on re-run). Hold the daily triggers
+until cleanup is finished so they don't compete for the same budget. The observed cap on
+`cawgcap.org` was ~3,000 writes/day.
+
 ## Limitations
 
 - The peer directory read needs a cross-tenant credential (read-only SA). This is the
