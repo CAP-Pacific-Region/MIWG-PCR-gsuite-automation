@@ -1,7 +1,9 @@
 {
   "_note": "Canonical NON-SECRET tenant identity for the CADETS (cawgcadets.org) Apps Script project (scriptId 15LW...). Recovered from the pre-clobber cadet config.gs. Enter these as TENANT_* Script Properties on the cadets project — do NOT put them in config.gs (a push overwrites it).",
   "_behavioral_note": "The cadet tenant's BEHAVIORAL differences (MEMBER_TYPES.ACTIVE=CADET only, CADET_LITE=true, ACCESS/PUBLIC auto-create off, distribution lists = all-hands + cadets + parents, no .seniors or command-staff lists) are now driven by TENANT_PROFILE=cadets (see the seniors/cadets profiles in src/config.gs, incl. SQUADRON_DISTRIBUTION_TOGGLES). Setting TENANT_PROFILE alone gives correct cadet behavior; no config.gs edits needed.",
+  "_xt_note": "Cross-tenant contacts (src/cross-tenant-contacts) publishes the SENIOR roster into this tenant's GAL — mirror image of the seniors project. XT_PEER_DOMAIN below is the only non-secret cross-tenant value; the peer read-only service-account creds (XT_PEER_SA_EMAIL/SUBJECT via setupCrossTenantConfig(), XT_PEER_SA_KEY by hand) are set on the project, NOT stored here.",
   "TENANT_PROFILE": "cadets",
+  "XT_PEER_DOMAIN": "cawgcap.org",
   "TENANT_DOMAIN": "cawgcadets.org",
   "TENANT_EMAIL_DOMAIN": "@cawgcadets.org",
   "TENANT_CAPWATCH_ORGID": "188",

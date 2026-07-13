@@ -89,6 +89,53 @@ run identical source, differentiated only by configuration** — the reconciliat
 _This supersedes the "not yet deployed to Pacific / on hold pending 2SV" notes in the entries
 below, which were accurate when written._
 
+### Added
+
+- **`src/cross-tenant-contacts/CrossTenantContacts.gs`** (v0.1.0, draft) — folds the
+  wing's two separate cross-tenant directory-sync projects (cadets `1fJRqo…`, seniors
+  `1b2JSIB…`) into the shared `src/` as one **role-relative, Script-Property-configured**
+  module. Publishes the **peer** Workspace tenant's members into this tenant's Global
+  Address List (seniors ⇄ cadets) as Domain Shared Contacts.
+  - **Spreadsheet-free.** Replaces the old export→sheet→import pipeline. The peer roster
+    (incl. cadet-lite members with no account) comes from one wing CAPWATCH pull via the
+    existing `getMembers()`; the authoritative Workspace email comes from a live read of
+    the **peer** directory (read-only peer-tenant service account, DWD, same JWT pattern
+    as `getImpersonatedToken_`).
+  - **Email waterfall** per member: peer Workspace `primaryEmail` (authoritative; fixes
+    collisions/renames) → CAPWATCH `MbrContact` personal email (cadet-lite / no-account)
+    → `do.not.contact+<CAPID>@` sentinel (presence-only, opt-in).
+  - **Stateless reconcile.** No sync-state sheet: managed contacts are marked by
+    `orgName` and carry their content hash in a `gContact:userDefinedField`.
+  - **Parent-group sync** (`syncCrossTenantParentContacts`, gated by `RUN_PARENTS`, on for
+    seniors) publishes the peer tenant's `*.parents@` distribution groups into the GAL
+    under a separate `<WING>_PARENTS` marker.
+  - Entry points `syncCrossTenantContacts` / `syncCrossTenantParentContacts`; helpers
+    `setupCrossTenantConfig()` / `validateCrossTenantConfig()`. All symbols `xt`-prefixed
+    (zero collisions with existing `src/`).
+- **`config.gs`** — `PROFILE_.CROSS_TENANT` block per profile (on for seniors/cadets, off
+  for pacific): `RUN_INBOUND`, `RUN_PARENTS`, `PEER_TYPES`, `PEER_LABEL`, `EMIT_PLACEHOLDERS`.
+- **`XT_PEER_*` Script Properties** — `XT_PEER_DOMAIN` (canonical values added to
+  `config-tenants/seniors.json` + `cadets.json`) and the read-only peer SA creds
+  `XT_PEER_SA_EMAIL` / `XT_PEER_SA_SUBJECT` / `XT_PEER_SA_KEY` (secret; on-project only).
+- **`https://www.google.com/m8/feeds`** OAuth scope in `appsscript.json` (Domain Shared
+  Contacts; the manifest previously had only `.../auth/contacts`). Requires one re-consent
+  per project.
+- **[docs/CROSS_TENANT_CONTACTS.md](docs/CROSS_TENANT_CONTACTS.md)** — architecture, the
+  email waterfall, per-project setup, and migration off the two legacy projects.
+- **[docs/GCP_PROJECT_MIGRATION.md](docs/GCP_PROJECT_MIGRATION.md)** — one-way migration of a
+  tenant's Apps Script project from its default GCP project to a standard project, required
+  to enable the Contacts API (m8 feed) for any shared-contacts feature. Surfaced by the
+  seniors canary: default projects deny `serviceusage.services.enable`.
+
+### Notes
+
+- Draft — not yet deployed. Requires per-peer read-only service accounts (DWD:
+  `admin.directory.user.readonly` + `admin.directory.group.readonly`), the `m8/feeds`
+  re-consent, and triggers. **Migration:** the legacy projects tag managed contacts
+  `orgName=CAWG` / `CAWG_CADET_PARENTS_GROUPS`; this module uses `CONFIG.WING` (`CA`) /
+  `CA_PARENTS`, so decommission the old projects and clean up their contacts (or re-tag)
+  to avoid duplicates. See the doc.
+
 ### Fixed
 
 - **`UnitVisitReport.gs` (v1.0.1)** — `buildRegionUnitVisitReport()` failed with

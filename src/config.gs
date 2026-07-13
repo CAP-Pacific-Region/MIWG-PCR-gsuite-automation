@@ -3,14 +3,15 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Version: 1.2.2
- * Date: 2026-07-11
- * Changes: Added profile-driven SQUADRON_DISTRIBUTION_TOGGLES to each tenant
- *   profile (consumed by SquadronGroups.gs), so squadron list creation is
- *   tenant-aware. Cadets = all-hands + cadets + parents (no .seniors /
- *   command-staff lists). Prior toggles were hard-coded, so the cadet tenant was
- *   wrongly creating senior-only lists.
- *   (1.2.1: same, but cadets initially excluded .all; .all kept by request.
+ * Version: 1.3.0
+ * Date: 2026-07-13
+ * Changes: Added a per-profile CROSS_TENANT block (consumed by
+ *   cross-tenant-contacts/CrossTenantContacts.gs) selecting cross-tenant shared-
+ *   contact behavior — on for seniors/cadets, off for pacific.
+ *   (1.2.2: profile-driven SQUADRON_DISTRIBUTION_TOGGLES per tenant, so squadron
+ *   list creation is tenant-aware; cadets = all-hands + cadets + parents (no
+ *   .seniors / command-staff lists), prior toggles were hard-coded.
+ *   1.2.1: same, but cadets initially excluded .all; .all kept by request.
  *   1.2.0: per-feature region flags + REGION_CAPWATCH_DATA_FOLDER_ID. 1.1.0:
  *   'pacific' profile + profile-driven EXCLUDED_ORG_IDS/AEM_UNIT/org sync. 1.0.0:
  *   per-tenant config to Script Properties; INDEFINITE not LIFE.)
@@ -128,6 +129,18 @@ const TENANT_PROFILES_ = {
       DEPUTY_COMMANDER: true,
       DEPUTY_COMMANDER_CADETS: true,
       DEPUTY_COMMANDER_SENIORS: true
+    },
+    // Cross-tenant Domain Shared Contacts (src/cross-tenant-contacts). The
+    // seniors tenant publishes the CADET roster into its own GAL. Peer identity
+    // + service-account creds are Script Properties (XT_PEER_*); see
+    // validateCrossTenantConfig(). Sheet-free: roster from CAPWATCH, authoritative
+    // email from the peer directory, fallback from CAPWATCH MbrContact.
+    CROSS_TENANT: {
+      RUN_INBOUND: true,
+      RUN_PARENTS: true,                 // publish cadet-squadron *.parents groups into the senior GAL
+      PEER_TYPES: ['CADET'],             // peer members to publish
+      PEER_LABEL: 'CADET',               // notes tag on managed contacts
+      EMIT_PLACEHOLDERS: true            // include no-email peers as do.not.contact sentinels
     }
   },
   cadets: {
@@ -164,6 +177,15 @@ const TENANT_PROFILES_ = {
       DEPUTY_COMMANDER: false,
       DEPUTY_COMMANDER_CADETS: false,
       DEPUTY_COMMANDER_SENIORS: false
+    },
+    // Cross-tenant Domain Shared Contacts: the cadets tenant publishes the
+    // SENIOR roster into its own GAL. Mirror image of the seniors profile.
+    CROSS_TENANT: {
+      RUN_INBOUND: true,
+      RUN_PARENTS: false,
+      PEER_TYPES: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'],
+      PEER_LABEL: 'SENIOR',
+      EMIT_PLACEHOLDERS: true
     }
   },
   // Pacific Region — single-unit region HQ (PCR-PCR-001). Runs the shared code,
@@ -194,6 +216,14 @@ const TENANT_PROFILES_ = {
       DEPUTY_COMMANDER: false,
       DEPUTY_COMMANDER_CADETS: false,
       DEPUTY_COMMANDER_SENIORS: false
+    },
+    // Region has no peer tenant to cross-publish; cross-tenant sync is off.
+    CROSS_TENANT: {
+      RUN_INBOUND: false,
+      RUN_PARENTS: false,
+      PEER_TYPES: [],
+      PEER_LABEL: '',
+      EMIT_PLACEHOLDERS: false
     }
   }
 };

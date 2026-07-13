@@ -1,6 +1,8 @@
 {
   "_note": "Canonical NON-SECRET tenant identity for the SENIORS (cawgcap.org) Apps Script project. These map 1:1 to Script Properties consumed by getTenantConfig_() in src/config.gs. Secrets (SA_PRIVATE_KEY, MISSION_WEBHOOK_SECRET, CAPWATCH_AUTHORIZATION) are NOT stored here — see docs/ADMIN_GUIDE.md. This file is repo-only; .claspignore keeps config-tenants/ out of every clasp push.",
+  "_xt_note": "Cross-tenant contacts (src/cross-tenant-contacts) publishes the CADET roster into this tenant's GAL. XT_PEER_DOMAIN below is the only non-secret cross-tenant value. The peer read-only service-account creds — XT_PEER_SA_EMAIL and XT_PEER_SA_SUBJECT (via setupCrossTenantConfig()) and XT_PEER_SA_KEY (by hand, secret) — are set on the project, NOT stored here. Run validateCrossTenantConfig() to confirm.",
   "TENANT_PROFILE": "seniors",
+  "XT_PEER_DOMAIN": "cawgcadets.org",
   "TENANT_DOMAIN": "cawgcap.org",
   "TENANT_EMAIL_DOMAIN": "@cawgcap.org",
   "TENANT_CAPWATCH_ORGID": "188",
