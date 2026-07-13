@@ -1,5 +1,12 @@
 # Utilities Reference
 
+> **📖 Multi-tenant note.** This document covers shared, tenant-agnostic mechanics (file parsing +
+> caching, retry logic, validation, structured logging, common patterns). It applies **unchanged**
+> across all three PCR tenants — these helpers behave identically regardless of `TENANT_PROFILE`.
+> The `miwg.cap.gov` / `MI-001` values in examples are illustrative only; real config comes from
+> Script Properties (see [DEVELOPMENT.md](DEVELOPMENT.md#configuration) and
+> [`config-tenants/`](../config-tenants/README.md)).
+
 Complete guide to the utility functions and patterns in the CAPWATCH automation system.
 
 ## Table of Contents

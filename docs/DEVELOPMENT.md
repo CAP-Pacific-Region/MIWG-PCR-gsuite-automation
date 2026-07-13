@@ -1,5 +1,15 @@
 # Development Guide
 
+> **📖 Multi-tenant note.** This guide was inherited from the upstream single-wing Michigan Wing
+> project. Its explanations of **code mechanics** (data model, change detection, caching, retry,
+> logging, coding standards) remain accurate, but anything about **setup, configuration, and
+> deployment** originally assumed *one wing / one domain*. In the PCR deployment the same `src/`
+> runs on **three tenants** (seniors `cawgcap.org`, cadets `cawgcadets.org`, Pacific `pcr.cap.gov`),
+> configured through **Script Properties** (`TENANT_*` + `TENANT_PROFILE`) — **not** literals in
+> `config.gs`. The sections below have been updated for that model; where anything still disagrees,
+> the **[Administrator & Successor Guide](ADMIN_GUIDE.md)** is authoritative. See also
+> [README](../README.md#per-tenant-configuration) and [`config-tenants/`](../config-tenants/README.md).
+
 This guide provides detailed information for developers working on the CAPWATCH automation system.
 
 ## Table of Contents
@@ -18,55 +28,57 @@ This guide provides detailed information for developers working on the CAPWATCH 
 
 ### Prerequisites
 
-- Google Workspace Admin account with Super Admin privileges
-- Access to Google Apps Script
+- Google Workspace Admin account with Super Admin privileges on the tenant(s) you'll push to
+- Node.js and [`clasp`](https://github.com/google/clasp) (Google's Apps Script CLI)
 - Git installed locally
-- Chrome browser with Google Apps Script GitHub Assistant extension
+- The Apps Script API enabled for your Google account ([script.google.com/home/usersettings](https://script.google.com/home/usersettings) → **Google Apps Script API: ON**)
 
 ### Initial Setup
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-org/capwatch-automation.git
-   cd capwatch-automation
+   git clone https://github.com/CAP-Pacific-Region/MIWG-PCR-gsuite-automation.git
+   cd MIWG-PCR-gsuite-automation
    ```
 
-2. **Install Chrome Extension:**
-   - Install [Google Apps Script GitHub Assistant](https://chrome.google.com/webstore/detail/google-apps-script-github/lfjcgcmkmjjlieihflfhjopckgpelofo/)
-   - Generate GitHub personal access token with `repo` and `gist` permissions
-   - Configure extension with your GitHub credentials
+2. **Install and authenticate clasp:**
+   ```bash
+   npm install -g @google/clasp
+   clasp login          # opens a browser; log in as an owner of the target project(s)
+   ```
+   Development happens in git against the shared `src/`; you push/pull to each tenant's Apps Script
+   project through the `clasp-targets/*.clasp.json` pointers (wired up as npm scripts — see
+   [Deployment](#deployment)). We no longer use the Chrome "GitHub Assistant" extension.
 
-3. **Set up Google Apps Script Project:**
-   - Create new Apps Script project or open existing
-   - Enable required APIs:
-     - Admin SDK API
-     - Groups Settings API
-   - Configure OAuth consent screen if needed
+3. **Advanced services / APIs:**
+   These are declared in [`src/appsscript.json`](../src/appsscript.json) (`enabledAdvancedServices`,
+   `oauthScopes`) and travel with `clasp push` — Admin SDK Directory, Groups Settings, Calendar,
+   Chat, Drive, etc. After a push, open the project and re-authorize when prompted.
 
 4. **Configure Access:**
-   - Ensure you have:
-     - Super Admin role in Google Workspace
-     - Write access to CAPWATCH data folder
-     - Write access to automation spreadsheet
+   - Super Admin role on the target Workspace tenant
+   - Owner/editor on that tenant's CAPWATCH data folder and automation spreadsheet
+   - GitHub write access to `CAP-Pacific-Region/MIWG-PCR-gsuite-automation`
 
-### Configuration Files
+### Configuration
 
-Create/update these key configuration areas:
+**`config.gs` is tenant-neutral and is overwritten on every `clasp push`** (all three targets use
+`rootDir: ../src`). Do **not** put a domain, ORGID, or folder ID in it — a push would clobber it.
+Per-tenant identity and behavior live in that project's **Script Properties**, which pushes never
+touch:
 
-**config.gs** - Main configuration:
-```javascript
-const CONFIG = {
-  CAPWATCH_ORGID: 'YOUR_WING_ORGID',
-  DOMAIN: 'yourwing.cap.gov',
-  EMAIL_DOMAIN: '@yourwing.cap.gov',
-  CAPWATCH_DATA_FOLDER_ID: 'YOUR_FOLDER_ID',
-  AUTOMATION_FOLDER_ID: 'YOUR_FOLDER_ID',
-  AUTOMATION_SPREADSHEET_ID: 'YOUR_SPREADSHEET_ID'
-};
-```
+- **Identity** (`TENANT_DOMAIN`, `TENANT_EMAIL_DOMAIN`, `TENANT_CAPWATCH_ORGID`, `TENANT_WING`, `TENANT_REGION`, the folder/spreadsheet IDs, contact emails) — read at runtime by `getTenantConfig_()` in `config.gs`. Canonical non-secret values per tenant are version-controlled in [`config-tenants/<tenant>.json`](../config-tenants/README.md).
+- **Behavior** (`TENANT_PROFILE` = `seniors` | `cadets` | `pacific`) — selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
+- **Secrets** (`SA_*`, `XT_PEER_*`, `MISSION_WEBHOOK_SECRET`, the per-user `CAPWATCH_AUTHORIZATION`) — never committed.
 
-**Set CAPWATCH Credentials:**
-Run `setAuthorization()` once with your eServices credentials, then immediately clear them from the code.
+Apply values once per project with `setupTenantConfig()` (or by hand in **Project Settings →
+Script Properties**), then run `validateTenantConfig()`. There is **no fallback** — an unconfigured
+project fails loudly rather than acting on the wrong domain, so **set a project's `TENANT_*`
+properties before pushing to it.** Full inventory:
+[Admin Guide §7](ADMIN_GUIDE.md#7-secrets-and-script-properties-the-part-that-breaks-silently).
+
+**Set CAPWATCH Credentials:** run `setAuthorization()` once with your eServices credentials, then
+immediately clear them from the code (the token lands in your **User** Properties; it is per-user).
 
 ---
 
@@ -74,19 +86,43 @@ Run `setAuthorization()` once with your eServices credentials, then immediately 
 
 ### File Organization
 
+The **one** `src/` tree below is deployed unchanged to all three tenants; `config-tenants/` and
+`clasp-targets/` live outside `src/` (repo-only, never pushed):
+
 ```
-/
-├── GetCapwatch.gs           # CAPWATCH data download
-├── config.gs                # Configuration constants
-├── utils.gs                 # Shared utilities
-├── Accounts and Email Groups/
-│   ├── UpdateMembers.gs     # Member synchronization
-│   ├── UpdateGroups.gs      # Group membership management
-│   └── ManageLicenses.gs    # License lifecycle management
-├── extra/
-│   ├── update-display-name/ # GAM display name scripts
-│   └── check-MX-records/    # MX record monitoring
-└── README.md
+src/                          # Shared codebase — deployed to all three Apps Script projects
+├── config.gs                # Tenant-NEUTRAL config; reads TENANT_*/TENANT_PROFILE from Script Properties
+├── utils.gs                 # Shared utilities (parseFile cache, executeWithRetry, validation, Logger)
+├── GetCapwatch.gs           # CAPWATCH data download + credential storage
+├── SyncOrgPaths.gs          # ORGID→OU map; auto-creates OUs for new squadrons
+├── appsscript.json          # Manifest: advanced services, OAuth scopes, web-app config
+├── accounts-and-groups/
+│   ├── UpdateMembers.gs         # Member sync (create/update/suspend/reactivate); SA impersonation JWT
+│   ├── UpdateGroups.gs          # Configured email groups + manual User Additions
+│   ├── UpdateCAWGCadetGroups.gs # Cross-tenant cadet group nesting (seniors driver)
+│   ├── UpdateChatSpaces.gs      # Unit/committee Chat spaces
+│   ├── UpdateCalendars.gs       # Share unit calendars with members; writer groups
+│   ├── SharedContacts.gs        # Domain shared-contacts sync (region External Contacts sheet)
+│   ├── ManageLicenses.gs        # Lifecycle: reactivate/suspend/delete to manage seats
+│   └── groupAdministration.gs   # Ad-hoc group reporting & cleanup utilities
+├── squadron-groups/
+│   └── SquadronGroups.gs        # Per-squadron distribution lists (profile-driven set; batched)
+├── calendar-resources/
+│   └── UpdateResources.gs       # Aircraft/vehicle resources + squadron buildings (seniors only)
+├── cross-tenant-contacts/
+│   └── CrossTenantContacts.gs   # Peer tenant's directory → this tenant's GAL (seniors ⇄ cadets)
+├── region/
+│   ├── UpdateRegionGroupChats.gs # Region duty groups + Chat spaces (Pacific)
+│   └── UnitVisitReport.gs        # Region-wide unit-visit report (Pacific)
+├── mission-provisioning/
+│   └── MissionProvisioning.gs   # doPost webhook: Group + Chat space + Drive folder per mission
+└── recruiting-and-retention/
+    ├── SendRetentionEmail.gs    # Age-out / expiration / welcome emails
+    └── *.html                   # Email templates (exact slash-prefixed names matter!)
+
+config-tenants/               # Canonical non-secret TENANT_* values per tenant (repo-only)
+clasp-targets/                # {scriptId, rootDir:../src} pointers, one per tenant
+extra/                        # Standalone helper scripts (GAM display-name, MX-record checks)
 ```
 
 ### Module Dependencies
@@ -307,27 +343,30 @@ var summary = Logger.getSummary();
 
 1. **Create Feature Branch:**
    ```bash
-   git checkout -b feature/your-feature-name
+   git checkout -b fix/your-change
    ```
 
-2. **Edit in Apps Script:**
-   - Make changes in the Apps Script editor
-   - Test changes thoroughly
-   - Document new functions
+2. **Edit `src/` locally** in git (your editor of choice), then push to a tenant to test:
+   ```bash
+   npm run status:seniors    # preview what would change
+   npm run push:seniors      # deploy src/ → seniors project
+   ```
 
-3. **Push to GitHub:**
-   - Use Apps Script GitHub Assistant extension
-   - Click extension icon → "Push to GitHub"
-   - Select branch and commit
+3. **Verify on the tenant:**
+   - In the Apps Script editor, run the relevant **preview/test** function (never a destructive one first)
+   - Check **Executions** for errors and review the logs
 
-4. **Create Pull Request:**
-   - Go to GitHub repository
-   - Create PR from feature branch to main
-   - Request review from team
+4. **Roll out to the other tenants** once seniors looks healthy:
+   ```bash
+   npm run push:cadets
+   npm run push:pacific
+   ```
+   Push one at a time and confirm each — never push all three blind. Remember each push resets that
+   project's `config.gs` to the shared copy (identity stays in Script Properties).
 
-5. **After Merge:**
-   - Pull latest changes to Apps Script
-   - Test in production
+5. **Commit and open a Pull Request** to **`CAP-Pacific-Region/MIWG-PCR-gsuite-automation` master**
+   — **not** the upstream `cap-miwg/gsuite-automation` repo. Update
+   [PCR_CHANGELOG.md](../PCR_CHANGELOG.md) in the same PR.
 
 ### Version Control Best Practices
 
@@ -864,34 +903,48 @@ To integrate additional CAPWATCH files:
 - [ ] Logging comprehensive
 - [ ] Documentation updated
 
+Deployment is `clasp push` per tenant. The npm scripts wrap
+`clasp <cmd> -P clasp-targets/<tenant>.clasp.json`:
+
+| Action | Seniors | Cadets | Pacific |
+|--------|---------|--------|---------|
+| Status (what would change) | `npm run status:seniors` | `npm run status:cadets` | `npm run status:pacific` |
+| Push (`src/` → project) | `npm run push:seniors` | `npm run push:cadets` | `npm run push:pacific` |
+| Pull (project → `src/`) | `npm run pull:seniors` | `npm run pull:cadets` | `npm run pull:pacific` |
+| Open in browser | `npm run open:seniors` | `npm run open:cadets` | `npm run open:pacific` |
+
 ### Deployment Process
 
-1. **Merge to Main:**
+1. **Merge to master** (after PR approval on `CAP-Pacific-Region/MIWG-PCR-gsuite-automation`).
+
+2. **Push each tenant, in order, with verification between:**
    ```bash
-   git checkout main
-   git pull origin main
-   git merge feature/your-feature
-   git push origin main
+   npm run push:seniors    # then run a preview fn + check Executions
+   npm run push:cadets
+   npm run push:pacific
    ```
+   The three projects are pushed **independently and can silently drift** — `master` is not proof of
+   what is live on any tenant. If you set a new `TENANT_*`/profile field, set it in Script Properties
+   **before** pushing (there's no fallback).
 
-2. **Pull to Apps Script:**
-   - Open Apps Script project
-   - Use GitHub Assistant extension
-   - Pull from main branch
+3. **`clasp push` ≠ new version ≠ web-app redeploy.** A push updates trigger-executed code
+   immediately, but does **not** bump the Versions list or update the mission web-app deployment. If
+   you changed `MissionProvisioning.gs`, create a new web-app version so the `/exec` URL serves it
+   (see [Admin Guide §11](ADMIN_GUIDE.md#11-mission-provisioning-webhook)).
 
-3. **Verify Triggers:**
-   - Check all triggers still active
+4. **Verify Triggers:**
+   - Check all triggers still active and owned by a durable role account
    - Verify schedule is correct
    - Test trigger manually if possible
 
-4. **Monitor First Run:**
+5. **Monitor First Run:**
    - Watch execution logs
    - Review any error emails
    - Check results in Admin Console
    - Review generated reports
 
-5. **Document Changes:**
-   - Update CHANGELOG.md
+6. **Document Changes:**
+   - Update [PCR_CHANGELOG.md](../PCR_CHANGELOG.md) (and CHANGELOG.md if relevant)
    - Update relevant documentation
    - Notify team of changes
 
@@ -901,8 +954,7 @@ If deployment causes issues:
 
 1. **Immediate:**
    - Disable affected triggers
-   - Use Apps Script version history to revert
-   - Or pull previous Git commit
+   - Use Apps Script version history to revert, or re-push the previous git commit with `clasp push`
 
 2. **Investigate:**
    - Review execution logs

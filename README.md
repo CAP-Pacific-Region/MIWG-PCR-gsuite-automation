@@ -1,473 +1,240 @@
-# CAPWATCH Google Workspace Automation
+# CAPWATCH → Google Workspace Automation (Pacific Region)
 
-> **Automated management of Google Workspace accounts and groups based on CAPWATCH data for Civil Air Patrol wings**
+> **Keeps multiple Google Workspace tenants in sync with CAPWATCH membership data for Civil Air Patrol — one shared codebase, several domains.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?logo=google&logoColor=white)](https://www.google.com/script/start/)
-[![Status: Production](https://img.shields.io/badge/Status-Production-green)](https://github.com)
+[![Status: Production](https://img.shields.io/badge/Status-Production-green)](https://github.com/CAP-Pacific-Region/MIWG-PCR-gsuite-automation)
 
 > **📖 New administrator taking this over?** Start with the
-> **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the PCR-specific "hit by a bus"
-> runbook covering the three-tenant deployment, access checklist, secrets, schedule, and
-> disaster recovery. This README below is the inherited upstream single-wing documentation.
+> **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the PCR "hit by a bus" runbook
+> covering the three-tenant deployment, access checklist, secrets, schedule, and disaster recovery.
+> This README is the map; the Admin Guide is the ground truth for operating the live system.
 
 ## Overview
 
-This project provides a complete automation solution for Civil Air Patrol (CAP) wings to synchronize their Google Workspace environment with CAPWATCH membership data. It eliminates manual account management, ensures data accuracy, and optimizes license utilization.
+This project synchronizes Civil Air Patrol (CAP) Google Workspace environments with **CAPWATCH**
+membership data. It began as a fork of the Michigan Wing single-wing automation, but has grown into
+a **multi-tenant platform**: a single `src/` codebase is deployed to **three independent Workspace
+tenants** and adapts its behavior per tenant through Google Apps Script **Script Properties** — no
+per-tenant code branches, no forks.
 
-### What It Does
+### The three tenants
 
-- **Automated Account Management**: Creates, updates, and suspends Google Workspace accounts based on member status
-- **Email Group Synchronization**: Maintains email distribution groups based on member attributes (rank, duty positions, achievements, etc.)
-- **Calendar Resource Management**: Syncs wing aircraft and vehicles as bookable Google Calendar resources, with squadron locations as buildings
-- **License Optimization**: Automatically archives inactive accounts and manages license allocation
-- **Data Integration**: Daily downloads and processing of CAPWATCH data files
-- **Error Tracking**: Comprehensive logging and error reporting for troubleshooting
+| Tenant | Domain | Profile | Role |
+|--------|--------|---------|------|
+| **Seniors** | `cawgcap.org` | `seniors` (default) | CAWG senior members; also the **cross-tenant driver** |
+| **Cadets** | `cawgcadets.org` | `cadets` | CAWG cadets (cadet-lite accounts, smaller group set) |
+| **Pacific Region** | `pcr.cap.gov` | `pacific` | Region-level features (mission webhook, unit-visit report, region chats) |
 
-### Key Benefits
+The **same code** runs on all three. Each project carries its own `TENANT_*` identity and a
+`TENANT_PROFILE` selector in Script Properties (which `clasp push` never touches), so a deploy can
+never repoint one tenant at another's domain. Canonical non-secret values are version-controlled in
+[`config-tenants/`](config-tenants/README.md); secrets live only in each project's Script Properties.
 
-- ✅ **Zero Manual Updates**: Member changes automatically sync from CAPWATCH
-- ✅ **Cost Savings**: Automated license management reduces wasted licenses
-- ✅ **Data Accuracy**: Single source of truth (CAPWATCH) prevents sync issues
-- ✅ **Scalable**: Handles wings of any size with automated batch processing
-- ✅ **Auditable**: Detailed logging tracks all changes for compliance
-- ✅ **No Infrastructure Required**: Runs entirely within Google Apps Script and Drive - no servers or cloud infrastructure needed
-- ✅ **Resource Scheduling**: Aircraft and vehicles bookable directly in Google Calendar with unit contact info attached
+> ⚠️ **`src/config.gs` is tenant-neutral by design and is overwritten on every push.** Never
+> hand-edit a domain, ORGID, or folder ID into it — set a Script Property instead. See
+> [config-tenants/](config-tenants/README.md) and [Admin Guide §5](docs/ADMIN_GUIDE.md#5-the-three-tenants-and-how-code-gets-deployed).
+
+### What it does
+
+- **Account management** — creates, updates, suspends, reactivates, and deletes Workspace accounts from CAPWATCH member status, placing each in the correct Organizational Unit.
+- **Email group synchronization** — wing / duty-position / specialty distribution lists, plus per-squadron all-hands / cadets / seniors / parents lists (the exact set is profile-driven).
+- **Cross-tenant integration** — the seniors tenant nests cadet groups (living on `cawgcadets.org`) into matching senior groups, and seniors ⇄ cadets publish each other's members into their Global Address List (see [cross-tenant contacts](docs/CROSS_TENANT_CONTACTS.md)).
+- **Calendars & Chat** — shares unit calendars with new/transferred members; syncs squadron and committee Chat spaces.
+- **Calendar resources** — aircraft and vehicles as bookable Calendar resources, with squadrons as buildings (seniors only).
+- **License lifecycle** — suspends expired members, and deletes long-ineligible accounts to stay under the Workspace-for-Nonprofits seat cap.
+- **Region features** (Pacific only) — region duty groups + Chat spaces, a region-wide unit-visit report, and an on-demand **mission provisioning webhook** (Group + Chat space + Drive folder per mission).
+
+### Key characteristics
+
+- ✅ **One codebase, many tenants** — behavior varies by Script Property, not by code fork.
+- ✅ **Zero manual account updates** — member changes flow from CAPWATCH automatically.
+- ✅ **No infrastructure** — runs entirely inside Google Apps Script; time-driven triggers do the work overnight.
+- ✅ **Seat-cap aware** — the Nonprofits edition caps users regardless of suspension, so lifecycle logic deletes to reclaim seats.
+- ✅ **Auditable** — structured logging, per-tenant execution logs, and error/report emails.
 
 ## Table of Contents
 
-- [Features](#features)
-- [System Architecture](#system-architecture)
+- [Architecture](#architecture)
+- [Repository layout](#repository-layout)
 - [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Module Documentation](#module-documentation)
-  - [Calendar Resources](#calendar-resources-module)
-- [Troubleshooting](#troubleshooting)
+- [Getting started (developers)](#getting-started-developers)
+- [Per-tenant configuration](#per-tenant-configuration)
+- [What runs, when](#what-runs-when)
+- [Modules](#modules)
+- [Documentation](#documentation)
 - [Contributing](#contributing)
-- [License](#license)
-- [Support](#support)
+- [License & acknowledgments](#license--acknowledgments)
 
-## Features
-
-### Account & Email Group Management
-- Automatic user account creation and updates
-  - Username: Member's CAPID (e.g., 123456@miwg.cap.gov)
-  - Email alias: firstname.lastname@miwg.cap.gov
-- Email alias management with automatic conflict resolution
-- Group membership based on member attributes
-- Support for wing-level and group-level distribution lists
-- Manual member additions via spreadsheet
-
-### License Lifecycle Management
-- Auto-suspend expired members after grace period
-- Archive long-suspended users (1+ year)
-- Delete long-archived users (5+ years)
-- Reactivate renewed members automatically
-- Detailed lifecycle reporting
-
-### Data Synchronization
-- Daily CAPWATCH data downloads
-- Incremental updates (only changed records)
-- Change detection and delta processing
-- Comprehensive error tracking
-- Automated retry logic for API failures
-
-### Monitoring & Reporting
-- Structured JSON logging
-- Email reports for license management
-- Error tracking spreadsheet
-- Progress indicators for long operations
-
-## System Architecture
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    CAPWATCH eServices                   │
-│                    (Source of Truth)                    │
-└────────────────────┬────────────────────────────────────┘
-                     │ Daily Download (4:00 AM)
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│              Google Drive Data Storage                  │
-│  • Member.txt           • Organization.txt              │
-│  • DutyPosition.txt     • MbrContact.txt                │
-│  • MbrAchievements.txt  • OrgPaths.txt                  │
-│  • Aircraft.txt         • Vehicles.txt                  │
-│  • OrgAddresses.txt     • AirportCache.json             │
-└────────────────────┬────────────────────────────────────┘
-                     │ Parse & Process
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│            Google Apps Script Processing                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│  │   Update     │  │   Update     │  │   Manage     │   │
-│  │   Members    │  │   Groups     │  │  Licenses    │   │
-│  └──────────────┘  └──────────────┘  └──────────────┘   │
-│  ┌──────────────┐                                       │
-│  │   Update     │                                       │
-│  │   Resources  │                                       │
-│  └──────────────┘                                       │
-└────────────────────┬────────────────────────────────────┘
-                     │ Admin SDK API Calls
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│            Google Workspace Admin SDK                   │
-│  • Directory API    • Groups API                        │
-│  • Users API        • Members API                       │
-└────────────────────┬────────────────────────────────────┘
-                     │ Updates
-                     ▼
-┌─────────────────────────────────────────────────────────┐
-│              Google Workspace Domain                    │
-│  • User Accounts    • Email Groups                      │
-│  • Organizational Units  • Licenses                     │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                      CAPWATCH eServices                       │
+│                      (source of truth)                        │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ daily download (after ~4 AM blackout)
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│                   One shared codebase (src/)                  │
+│      Apps Script: config-neutral; behavior via Script Props   │
+└───────────┬───────────────────┬───────────────────┬──────────┘
+   clasp push│         clasp push│          clasp push│
+            ▼                   ▼                   ▼
+   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+   │  SENIORS     │    │   CADETS     │    │  PACIFIC     │
+   │ cawgcap.org  │◄──►│cawgcadets.org│    │  pcr.cap.gov │
+   │ profile:     │xt  │ profile:     │    │ profile:     │
+   │  seniors     │    │  cadets      │    │  pacific     │
+   └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+         │ Admin SDK / Calendar / Chat / Groups Settings APIs
+         ▼                   ▼                   ▼
+   ┌──────────────────────────────────────────────────────┐
+   │  Workspace: accounts · OUs · groups · calendars ·     │
+   │  chat spaces · resources · shared contacts            │
+   └──────────────────────────────────────────────────────┘
+
+  Per-tenant identity + behavior comes from Script Properties
+  (TENANT_* + TENANT_PROFILE), never from committed code.
+  "xt" = cross-tenant sync (group nesting + shared contacts).
+```
+
+Each tenant's project has its own time-driven triggers and its own dedicated Google Cloud **service
+account** (used only for the Gmail-settings and Calendar calls that require domain-wide
+impersonation). Because the three projects are pushed independently, **they can silently run
+different code** — `master` is not proof of what is live on any tenant. See
+[Admin Guide §5](docs/ADMIN_GUIDE.md#5-the-three-tenants-and-how-code-gets-deployed).
+
+## Repository layout
+
+```
+src/                          # The shared codebase — deployed unchanged to all three tenants
+├── config.gs                 # Tenant-NEUTRAL config; reads identity/profile from Script Properties
+├── utils.gs                  # parseFile (CSV cache), executeWithRetry, email/validation helpers
+├── GetCapwatch.gs            # Download CAPWATCH ZIP → Drive; credential storage
+├── SyncOrgPaths.gs           # ORGID→OU map; auto-creates OUs for new squadrons
+├── appsscript.json           # Manifest: advanced services, OAuth scopes, web-app config
+├── accounts-and-groups/      # Members, groups, licenses, calendars, chat, cross-tenant cadet groups
+├── squadron-groups/          # Per-squadron distribution lists (profile-driven set)
+├── calendar-resources/       # Aircraft/vehicle resources + squadron buildings (seniors only)
+├── cross-tenant-contacts/    # Peer-tenant directory → this tenant's shared contacts (seniors ⇄ cadets)
+├── region/                   # Region group chats + unit-visit report (Pacific only)
+├── mission-provisioning/     # doPost webhook: Group + Chat space + Drive folder per mission
+└── recruiting-and-retention/ # Age-out / expiration / welcome emails + HTML templates
+
+config-tenants/               # Canonical NON-SECRET per-tenant values (repo-only; never pushed)
+├── seniors.json  cadets.json  pacific.json
+clasp-targets/                # {scriptId, rootDir:../src} pointers, one per tenant
+docs/                         # Admin Guide, cross-tenant, migration, troubleshooting, etc.
 ```
 
 ## Prerequisites
 
-### Required
+- **Super Admin** on each Workspace tenant you intend to operate.
+- **CAP eServices / CAPWATCH** credentials for the relevant ORGID (requires a security assessment and commander approval).
+- **[clasp](https://github.com/google/clasp)** and Node, plus the Apps Script API enabled for your Google account ([script.google.com/home/usersettings](https://script.google.com/home/usersettings)).
+- A dedicated Google Cloud **service account** per tenant for domain-wide-delegated Gmail/Calendar calls (see [Admin Guide §3](docs/ADMIN_GUIDE.md#3-system-inventory-the-facts-you-cannot-guess)).
 
-- **Google Workspace Account**: Domain administrator access
-- **CAP eServices Access**: CAPWATCH API credentials for your wing
-  - Note: CAPWATCH access requires a security assessment and commander approval
-- **Google Apps Script**: Projects enabled in your workspace
+## Getting started (developers)
 
-### Recommended Skills
+There is **one** `src/` and three clasp targets. All operations go through npm scripts:
 
-- Basic JavaScript/Google Apps Script knowledge
-- Familiarity with Google Workspace Admin Console
-- Understanding of CAP organizational structure
-- Experience with Google Sheets
+```bash
+npm install -g @google/clasp
+clasp login                       # log in as an owner of the target project(s)
 
-## Installation
-
-### Step 1: Create Google Apps Script Project
-
-1. Go to [Google Apps Script](https://script.google.com/)
-2. Create a new project
-3. Copy all `.gs` files from this repository into your project:
-   - `config.gs` (configure first)
-   - `utils.gs`
-   - `GetCapwatch.gs`
-   - `src/accounts-and-groups/UpdateMembers.gs`
-   - `src/accounts-and-groups/UpdateGroups.gs`
-   - `src/accounts-and-groups/ManageLicenses.gs`
-   - `src/calendar-resources/UpdateResources.gs` *(optional — see [Calendar Resources](#calendar-resources-module))*
-
-**Note**: When you first run any function, Google Apps Script will automatically prompt you to authorize the required permissions.
-
-### Step 2: Create Required Google Drive Structure
-
-1. Create a **top-level "Automation" folder** in Google Drive
-   - This will contain your Apps Script project and configuration spreadsheet
-   - Note the folder ID from the URL
-   
-2. Create a **"CAPWATCH Data" subfolder** inside the Automation folder
-   - This will store downloaded CAPWATCH files
-   - Note the folder ID from the URL
-
-3. In the Automation folder, create the **automation spreadsheet**: "CAPWATCH Automation Config"
-   - Add these sheets: `Groups`, `User Additions`, `Error Emails` (header row only)
-   - Note spreadsheet ID from URL
-
-4. In the CAPWATCH Data folder, create the following files:
-   - `CurrentMembers.txt` (empty JSON file: `{}`)
-   - `EmailGroups.txt` (empty JSON file: `{}`)
-   - `OrgPaths.txt` (CSV file - see example in `/examples` directory)
-
-**OrgPaths.txt Format**:
-```csv
-ORGID,OrgUnitPath
-223,/MI-001
-1984,/MI-001/MI-700
-2774,/MI-001/MI-705/MI-100
-```
-- ORGID: From CAPWATCH Organization.txt file
-- OrgUnitPath: Organizational Unit path from Google Admin Console
-  - Wing level: `/MI-001`
-  - Group level: `/MI-001/MI-705`
-  - Squadron level: `/MI-001/MI-705/MI-100`
-
-### Step 3: Configure Your Wing
-
-1. Open `config.gs`
-2. Update the following constants:
-   ```javascript
-   CAPWATCH_ORGID: '223',  // Your wing ORGID
-   WING: "MI",              // Your wing abbreviation
-   EMAIL_DOMAIN: "@miwg.cap.gov",  // Your email domain
-   DOMAIN: "miwg.cap.gov",  // Your Google Workspace domain
-   CAPWATCH_DATA_FOLDER_ID: '<your-folder-id>',
-   AUTOMATION_FOLDER_ID: '<your-folder-id>',
-   AUTOMATION_SPREADSHEET_ID: '<your-spreadsheet-id>'
-   ```
-
-3. Update notification emails:
-   ```javascript
-   RETENTION_EMAIL: '<your-retention-email>',  // Or comment out if not using retention workflows
-   DIRECTOR_RECRUITING_EMAIL: '<director-email>',
-   AUTOMATION_SENDER_EMAIL: '<sender-email>',  // Create service account in Admin Console
-   ITSUPPORT_EMAIL: '<it-email>'
-   ```
-   **Note**: If not setting up retention workflows, you can comment out all emails except `ITSUPPORT_EMAIL`.
-
-### Step 4: Set Up CAPWATCH Credentials
-
-1. In your Google Apps Script project, open `GetCapwatch.gs`
-2. Find the `setAuthorization()` function
-3. **Temporarily** add your eServices username and password in the function
-4. Run `setAuthorization()` once
-5. **Important**: Immediately clear the username and password from the code after running
-
-### Step 5: Create Organizational Units
-
-Set up your OU structure in Google Workspace Admin Console following the Wing → Group → Squadron hierarchy:
-
-```
-/ (root: miwg.cap.gov)
-└── MI-001 (Wing - Active Members)
-    │
-    ├── MI-700 (Group 700)
-    │   ├── MI-101 (Squadron)
-    │   ├── MI-201 (Squadron)
-    │   └── ...
-    ├── MI-701 (Group 701)
-    │   ├── MI-075 (Squadron)
-    │   ├── MI-165 (Squadron)
-    │   └── ...
-    └── ...
+npm run status:seniors            # preview what would change on a tenant
+npm run push:seniors              # deploy src/ → seniors project
+npm run pull:seniors              # pull project → src/ (to inspect drift)
+npm run open:seniors              # open the project in the browser
+# ...and the :cadets / :pacific equivalents
 ```
 
-**Note**: Groups are geographic/organizational entities between Wing and Squadron level. This structure allows for group-level email distribution lists.
+**Recommended change flow:** branch → edit `src/` → `push:seniors` → run the relevant `preview…`
+function and check **Executions** → push `cadets`, then `pacific` → update
+[PCR_CHANGELOG.md](PCR_CHANGELOG.md) → open a PR to **`CAP-Pacific-Region/MIWG-PCR-gsuite-automation`
+master** (not the upstream `cap-miwg` repo). Full details in
+[Admin Guide §6](docs/ADMIN_GUIDE.md#6-local-development-with-clasp) and
+[DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-### Step 6: Set Up Automation Triggers
+> Push to one tenant, confirm it's healthy, then the next — never push all three blind, and remember
+> each push resets that project's `config.gs` to the shared copy.
 
-Create time-driven triggers for the following functions. **Important**: Due to CAPWATCH blackout overnight, timing is critical:
+## Per-tenant configuration
 
-| Function | Frequency | Time Window | Purpose |
-|----------|-----------|-------------|---------|
-| `getCapwatch()` | Daily | 4:00-5:00 AM | Download CAPWATCH data (after blackout) |
-| `updateAllMembers()` | Daily | 5:00-6:00 AM | Sync member accounts |
-| `suspendExpiredMembers()` | Daily | 5:00-6:00 AM | Suspend expired members (7-day grace) |
-| `updateEmailGroups()` | Daily | 5:00-6:00 AM | Update group memberships |
-| `updateAdditionalGroupMembers()` | Daily | 6:00-7:00 AM | Add manual members from spreadsheet |
-| `updateMissingAliases()` | Daily | 6:00-7:00 AM | Fix missing email aliases |
-| `manageLicenseLifecycle()` | Monthly | 15th, 4:00 AM | Archive/delete old accounts |
-| `syncResources()` | Weekly | Sunday, 6:00 AM | Sync aircraft, vehicles, and squadron buildings |
+A project's identity and behavior come entirely from **Script Properties**, set once per project
+and never overwritten by a push:
 
-**Note**: Google Apps Script allows 1-hour scheduling blocks. The script will run sometime within the specified hour.
+- **Identity** — `TENANT_DOMAIN`, `TENANT_EMAIL_DOMAIN`, `TENANT_CAPWATCH_ORGID`, `TENANT_WING`, `TENANT_REGION`, the Drive folder / spreadsheet IDs, and contact addresses. Canonical values live in [`config-tenants/<tenant>.json`](config-tenants/README.md).
+- **Behavior** — `TENANT_PROFILE` (`seniors` | `cadets` | `pacific`) selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
+- **Secrets** — `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` (per-tenant service account), `XT_PEER_*` (cross-tenant peer SA), `MISSION_WEBHOOK_SECRET`, and the per-user `CAPWATCH_AUTHORIZATION` token. Never committed.
 
-## Configuration
+Apply values with `setupTenantConfig()` (or by hand), then run `validateTenantConfig()`. There is
+**no fallback** — an unconfigured project fails loudly rather than acting on the wrong domain, so
+**set a project's `TENANT_*` properties before pushing to it.** Full inventory:
+[Admin Guide §7](docs/ADMIN_GUIDE.md#7-secrets-and-script-properties-the-part-that-breaks-silently).
 
-### Group Configuration Spreadsheet
+## What runs, when
 
-The **Groups** sheet defines which email groups to create and maintain:
+Each tenant schedules its own time-driven triggers. Order matters — CAPWATCH has an overnight
+blackout, so downloads run after ~4 AM and everything else consumes the data afterward:
 
-| Column | Description | Example |
-|--------|-------------|---------|
-| Category | Group category for organization | `member-type` |
-| Group Name | Base group name (without domain) | `cadets` |
-| Attribute | Member attribute to filter on | `type` |
-| Values | Comma-separated values to match | `CADET` |
+| Order | Function | Cadence | Notes |
+|------:|----------|---------|-------|
+| 1 | `getCapwatch()` | Daily 4–5 AM | Download CAPWATCH ZIP → Drive; refreshes OrgPaths |
+| 2 | `updateAllMembers()` | Daily 5–6 AM | Create/update accounts, OU placement, aliases |
+| 3 | `suspendExpiredMembers()` | Daily 5–6 AM | Suspend past the 7-day grace window |
+| 4 | `updateEmailGroups()` | Daily 5–6 AM | Wing / duty / specialty distribution groups |
+| 5 | `updateAllSquadronGroups()` | Daily 6–7 AM | Per-squadron lists; batched via `SQUADRON_BATCH_INDEX` |
+| 6 | `updateAdditionalGroupMembers()` | Daily 6–7 AM | Manual additions from the `User Additions` sheet |
+| 7 | `syncMemberCalendarsDaily()` | Daily | Share unit calendars with new/transferred members |
+| 8 | `updateChatSpaces()` | Daily/weekly | Squadron & committee Chat spaces |
+| 9 | `updateResources()` | Weekly (Sun) | Aircraft/vehicle resources + buildings — **seniors only** |
+| 10 | `manageLicenseLifecycle()` | Monthly | Reactivate renewed; delete long-ineligible to free seats |
 
-**Supported Attributes:**
-- `type`: Member type (CADET, SENIOR, AEM, etc.)
-- `rank`: Member rank
-- `dutyPositionIds`: Duty position codes
-- `dutyPositionIdsAndLevel`: Position + level combination
-- `dutyPositionLevel`: Position level only
-- `achievements`: Member achievements
-- `contact`: Contact types (for parent/guardian emails)
+Cross-tenant (`updateCAWGCadetGroups()`, `syncCrossTenantContacts`) and region-only functions
+(`updateRegionGroupChats()`, `buildRegionUnitVisitReport()`, `runExternalContactsToDomainSharedContacts()`)
+run where their profile flag enables them. Confirm the **actual** triggers per project — the table
+is the intended design. See [Admin Guide §8–9](docs/ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule).
 
-### License Configuration
+## Modules
 
-Adjust lifecycle settings in `config.gs`:
+| Module | Purpose |
+|--------|---------|
+| [Accounts & Groups](src/accounts-and-groups/README.md) | Members, email groups, licenses, calendars, Chat spaces, cross-tenant cadet groups |
+| [Squadron Groups](src/squadron-groups) | Per-squadron distribution lists (profile-driven set) |
+| [Calendar Resources](src/calendar-resources/README.md) | Aircraft/vehicle resources + squadron buildings (seniors only) |
+| [Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md) | Publish the peer tenant's members into this tenant's Global Address List |
+| Region features (`src/region`) | Region duty groups + Chat spaces; region-wide unit-visit report (Pacific) |
+| Mission Provisioning (`src/mission-provisioning`) | Webhook that provisions a Group + Chat space + Drive folder per mission |
+| [Recruiting & Retention](src/recruiting-and-retention/README.md) | Age-out / expiration / welcome emails |
 
-```javascript
-const LICENSE_CONFIG = {
-  DAYS_BEFORE_ARCHIVE: 365,  // Suspend → Archive
-  DAYS_BEFORE_DELETE: 1825,   // Archive → Delete (5 years)
-  MAX_BATCH_SIZE: 500,
-  NOTIFICATION_EMAILS: [...]
-};
-```
+## Documentation
 
-### Organizational Paths
-
-The `OrgPaths.txt` file maps CAPWATCH org IDs to Google Workspace OUs:
-
-```csv
-orgid,orgPath
-223,/MI-001
-1984,/MI-001/MI-700
-1308,/MI-001/MI-700/MI-096
-```
-
-## Usage
-
-### Running Manual Updates
-
-You can run functions manually from the Apps Script editor:
-
-```javascript
-// Download latest CAPWATCH data
-getCapwatch();
-
-// Update all member accounts
-updateAllMembers();
-
-// Update email groups
-updateEmailGroups();
-
-// Suspend expired members
-suspendExpiredMembers();
-
-// Run license lifecycle management
-manageLicenseLifecycle();
-```
-
-### Testing Functions
-
-Use the provided test functions to verify configuration:
-
-```javascript
-// Test member retrieval
-testGetMember();
-
-// Test squadron data
-testGetSquadrons();
-
-// Preview license lifecycle changes (no modifications)
-previewLicenseLifecycle();
-```
-
-### Monitoring
-
-1. **Execution Logs**: View in Apps Script editor under "Executions"
-2. **Email Reports**: Receive monthly license management summaries
-3. **Error Tracking**: Check "Error Emails" sheet in automation spreadsheet
-4. **Drive Files**: Review `EmailGroups.txt` and `CurrentMembers.txt` for state
-
-## Module Documentation
-
-### Core Modules
-
-- **[Accounts & Groups](src/accounts-and-groups/README.md)** - Member and group management
-  - Member synchronization
-  - Email group automation
-  - License lifecycle management
-
-- **[Calendar Resources](src/calendar-resources/README.md)** - Aircraft, vehicle, and building management
-  - Aircraft resources with airport buildings and maintenance officer contact
-  - Vehicle resources with squadron buildings and transportation officer contact
-  - All wing squadrons added as calendar buildings for event scheduling
-
-- **[Recruiting & Retention](src/recruiting-and-retention/README.md)** - R&R workflows (future)
-
-- **[Utilities](docs/UTILITIES.md)** - Shared helper functions
-  - File parsing and caching
-  - API retry logic
-  - Data validation
-  - Structured logging
-
-### Additional Documentation
-
-- **[API Reference](docs/API_REFERENCE.md)** - Function documentation
-- **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues and solutions
-- **[Development Guide](docs/DEVELOPMENT.md)** - Contributing and development setup
-- **[Changelog](CHANGELOG.md)** - Version history and updates
-
-## Troubleshooting
-
-### Common Issues
-
-**Problem**: Functions timing out
-- **Solution**: Reduce `BATCH_SIZE` in `config.gs` or enable batch processing
-
-**Problem**: Users not being created
-- **Solution**: Check OrgPaths.txt has correct organizational unit mappings
-
-**Problem**: Groups not updating correctly
-- **Solution**: Verify group configuration in automation spreadsheet
-
-**Problem**: Authorization errors
-- **Solution**: Re-run `setAuthorization()` with valid credentials
-
-**Problem**: Aircraft or vehicles not appearing in Calendar
-- **Solution**: Verify the `Admin SDK Directory API` is enabled in your Apps Script project's Services
-
-**Problem**: Airport buildings showing ID instead of name (e.g. "C83" instead of "Byron Airport")
-- **Solution**: Delete `AirportCache.json` from your CAPWATCH data folder and re-run `syncResources()`. If the airport still doesn't resolve, add it to `AirportOverrides.json`
-
-**Problem**: Aircraft with `ASSIGN` as airport ID are missing
-- **Solution**: Add an entry to `AircraftOverrides.json` with the correct ICAO code and owning unit orgid
-
-See the [full troubleshooting guide](docs/TROUBLESHOOTING.md) for more solutions.
+- **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the operational runbook (start here for anything live).
+- **[Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md)** — seniors ⇄ cadets shared-contact sync.
+- **[Pacific Diff](docs/PACIFIC_DIFF.md)** / **[GCP Project Migration](docs/GCP_PROJECT_MIGRATION.md)** — Pacific-specific setup and the standard-GCP-project migration.
+- **[Spreadsheet Setup](docs/SPREADSHEET_SETUP.md)** — the automation config spreadsheet tabs.
+- **[API Reference](docs/API_REFERENCE.md)** · **[Utilities](docs/UTILITIES.md)** · **[Development Guide](docs/DEVELOPMENT.md)** · **[Troubleshooting](docs/TROUBLESHOOTING.md)** — internals, inherited from the upstream single-wing project and reconciled for the multi-tenant model (each carries a note on what changed).
+- **[SECURITY.md](SECURITY.md)** · **[PCR_CHANGELOG.md](PCR_CHANGELOG.md)** / **[CHANGELOG.md](CHANGELOG.md)** · **[Versioning](docs/VERSIONING.md)**.
 
 ## Contributing
 
-We welcome contributions from other CAP wings! Here's how to help:
+Contributions are welcome. Branch from `master`, follow the existing code style, add JSDoc and a
+`preview…`/`test…` variant for anything that mutates Workspace state, and open a PR to
+**`CAP-Pacific-Region/MIWG-PCR-gsuite-automation`** — **not** the upstream `cap-miwg` repo. See
+[CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/AmazingFeature`)
-3. **Commit** your changes (`git commit -m 'Add some AmazingFeature'`)
-4. **Push** to the branch (`git push origin feature/AmazingFeature`)
-5. **Open** a Pull Request
+## License & acknowledgments
 
-### Development Guidelines
+MIT — see [LICENSE](LICENSE).
 
-- Follow existing code style and structure
-- Add JSDoc comments for all functions
-- Include test functions for new features
-- Update documentation for any changes
-- Test thoroughly before submitting
-
-See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed guidelines.
-
-## Versioning
-
-We use [Semantic Versioning](http://semver.org/) for releases. For available versions, see the [tags on this repository](https://github.com/cap-miwg/gsuite-automation/tags).
-
-**Current Version**: 2.x.x (June 2026)
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-### Development Team
-
-- **Luke Bunge** (lbunge) - Lead Developer (v1.0 → v2.0)
-- **Jeremy Ginnard** (jginnard) - Original Developer (v1.0)
-
-### Credits
-
-- Michigan Wing IT Team - Testing and feedback
-- California Wing IT Team - Calendar resources module development and testing
-- CAP National IT - CAPWATCH API access
-
-## Support
-
-### Getting Help
-
-- **Documentation**: Start with this README and linked guides
-- **Issues**: [Submit an issue](https://github.com/cap-miwg/gsuite-automation/issues) on GitHub
-- **Questions**: Open a discussion in the repository
-- **Email**: Contact your wing IT team
-
-### Related Resources
-
-- [CAP eServices](https://www.capnhq.gov/CAP.eServices.Web/Default.aspx)
-- [Google Workspace Admin Help](https://support.google.com/a)
-- [Google Apps Script Documentation](https://developers.google.com/apps-script)
-- [Admin SDK Directory API](https://developers.google.com/admin-sdk/directory)
+**Pacific Region multi-tenant work:** Noel Luneau (PCR IT) and Isaac Wilson IV (CAWG IT).
+**Upstream single-wing automation:** Luke Bunge (lead, v1.0→v2.0) and Jeremy Ginnard (original), Michigan Wing IT; Calendar resources by California Wing IT.
+Thanks to CAP National IT for CAPWATCH access, and to the Michigan and California Wing IT teams for testing and feedback.
 
 ---
 
-**Made with ❤️ by Michigan Wing IT for the Civil Air Patrol community**
-
-*This is an unofficial project and is not endorsed by CAP National*
+**Built for the Civil Air Patrol Pacific Region IT team.**
+*Unofficial project — not endorsed by CAP National.*
