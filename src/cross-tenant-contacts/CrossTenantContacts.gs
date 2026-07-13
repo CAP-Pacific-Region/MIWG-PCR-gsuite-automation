@@ -32,7 +32,10 @@
  * Requires (beyond the shared manifest): the legacy Domain Shared Contacts
  * scope  https://www.google.com/m8/feeds  (added to appsscript.json).
  *
- * Version: 0.1.1 (draft)
+ * Version: 0.1.2 (draft)
+ * 0.1.2: dedupe desired set by email — Domain Shared Contacts key on address, so
+ *   siblings sharing a parent email churned; collapse to one entry per email.
+ *   Also adds update/delete diagnostic sampling in the reconcile.
  * 0.1.1: scope roster to peer types only — getMembers() merges the Manual
  *   Members sheet unconditionally, which leaked non-peer accounts into the set.
  *************************************************************/
@@ -248,8 +251,7 @@ function xtBuildDesiredContacts_(cfg) {
   const peerWsByCapid = xtPeerWorkspaceEmailByCapid_(cfg);
 
   const byCapid = {};
-  const list = [];
-  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0 };
+  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0, dedupedEmail: 0 };
 
   Object.keys(roster).forEach(capid => {
     const m = roster[capid];
@@ -277,8 +279,29 @@ function xtBuildDesiredContacts_(cfg) {
     byCapid[contact.capid] = contact;
   });
 
-  Object.keys(byCapid).forEach(k => list.push(byCapid[k]));
+  // Domain Shared Contacts effectively key on the email address: Google keeps a
+  // single entry when two contacts share an address, so a duplicate email churns
+  // forever (the second CAPID never finds its own record). Collapse to one entry
+  // per email — siblings sharing a parent's CAPWATCH email keep the lowest CAPID.
+  // Workspace and do.not.contact+CAPID addresses are unique, so only shared
+  // personal emails are affected.
+  const byEmail = {};
+  const collisions = [];
+  Object.keys(byCapid).sort((a, b) => Number(a) - Number(b)).forEach(capid => {
+    const c = byCapid[capid];
+    const key = String(c.email).toLowerCase();
+    if (byEmail[key]) {
+      stats.dedupedEmail++;
+      if (collisions.length < 25) collisions.push({ email: key, kept: byEmail[key].capid, dropped: c.capid });
+      delete byCapid[capid];          // keep desired.byCapid consistent with the deduped set
+      return;
+    }
+    byEmail[key] = c;
+  });
+  const list = Object.keys(byEmail).map(k => byEmail[k]);
+
   Logger.info('Cross-tenant desired set built', { total: list.length, sources: stats });
+  if (collisions.length) Logger.info('Cross-tenant email collisions deduped', { sample: collisions });
   return { byCapid, list, stats };
 }
 
