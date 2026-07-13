@@ -111,7 +111,19 @@ const TENANT_PROFILES_ = {
       { suffix: 'cadets', name: 'Cadets', description: 'Cadet members only', includeTypes: ['CADET'] },
       { suffix: 'seniors', name: 'Seniors', description: 'Senior members only', includeTypes: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'] },
       { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
-    ]
+    ],
+    // Cross-tenant Domain Shared Contacts (src/cross-tenant-contacts). The
+    // seniors tenant publishes the CADET roster into its own GAL. Peer identity
+    // + service-account creds are Script Properties (XT_PEER_*); see
+    // validateCrossTenantConfig(). Sheet-free: roster from CAPWATCH, authoritative
+    // email from the peer directory, fallback from CAPWATCH MbrContact.
+    CROSS_TENANT: {
+      RUN_INBOUND: true,
+      RUN_PARENTS: true,                 // publish cadet-squadron *.parents groups into the senior GAL
+      PEER_TYPES: ['CADET'],             // peer members to publish
+      PEER_LABEL: 'CADET',               // notes tag on managed contacts
+      EMIT_PLACEHOLDERS: true            // include no-email peers as do.not.contact sentinels
+    }
   },
   cadets: {
     MEMBER_TYPES_ACTIVE: ['', 'CADET', ''],
@@ -128,7 +140,16 @@ const TENANT_PROFILES_ = {
     SQUADRON_DISTRIBUTION_TYPES: [
       { suffix: 'cadets', name: 'Cadets', description: 'Cadet members only', includeTypes: ['CADET'] },
       { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
-    ]
+    ],
+    // Cross-tenant Domain Shared Contacts: the cadets tenant publishes the
+    // SENIOR roster into its own GAL. Mirror image of the seniors profile.
+    CROSS_TENANT: {
+      RUN_INBOUND: true,
+      RUN_PARENTS: false,
+      PEER_TYPES: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'],
+      PEER_LABEL: 'SENIOR',
+      EMIT_PLACEHOLDERS: true
+    }
   },
   // Pacific Region — single-unit region HQ (PCR-PCR-001). Runs the shared code,
   // differentiated only by config. Region confirmed: no AEM automation, and all
@@ -145,7 +166,15 @@ const TENANT_PROFILES_ = {
     RUN_AUTOMATION_CHAT_SPACES: true,  // automation + user-additions chat spaces
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
-    SQUADRON_DISTRIBUTION_TYPES: [] // no subordinate squadrons
+    SQUADRON_DISTRIBUTION_TYPES: [], // no subordinate squadrons
+    // Region has no peer tenant to cross-publish; cross-tenant sync is off.
+    CROSS_TENANT: {
+      RUN_INBOUND: false,
+      RUN_PARENTS: false,
+      PEER_TYPES: [],
+      PEER_LABEL: '',
+      EMIT_PLACEHOLDERS: false
+    }
   }
 };
 

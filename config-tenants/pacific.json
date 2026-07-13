@@ -1,6 +1,7 @@
 {
   "_note": "Canonical NON-SECRET tenant identity for the PACIFIC REGION Apps Script project 'PCR Automation' (scriptId 1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0). Values below were read from the live project's config.gs via clasp (automation@pcr.cap.gov). These map 1:1 to Script Properties consumed by getTenantConfig_() in src/config.gs. Secrets (SA_PRIVATE_KEY, CAPWATCH_AUTHORIZATION) are NOT stored here. This file is repo-only; .claspignore keeps config-tenants/ out of every clasp push. NOTE: the live project pre-dates the Script-Properties refactor and has NOT yet been migrated — see docs/PACIFIC_DIFF.md before pushing shared src/ to it.",
   "_profile_note": "TENANT_PROFILE=pacific selects the single-unit region profile added in config.gs (org-path sync and squadron groups off). Region confirmed: no AEM automation, all senior members typed INDEFINITE. See docs/PACIFIC_DIFF.md.",
+  "_xt_note": "Cross-tenant contacts is OFF for the region profile (RUN_INBOUND=false; no peer tenant). No XT_PEER_* Script Properties are needed on this project.",
   "TENANT_PROFILE": "pacific",
   "TENANT_DOMAIN": "pcr.cap.gov",
   "TENANT_EMAIL_DOMAIN": "@pcr.cap.gov",

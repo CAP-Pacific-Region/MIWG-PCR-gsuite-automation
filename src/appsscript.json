@@ -44,6 +44,7 @@
     "https://www.googleapis.com/auth/gmail.settings.sharing",
     "https://www.googleapis.com/auth/script.external_request",
     "https://www.googleapis.com/auth/contacts",
+    "https://www.google.com/m8/feeds",
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.google.com/calendar/feeds",
