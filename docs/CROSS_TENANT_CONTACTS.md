@@ -127,6 +127,10 @@ control:
 
 1. Create a **service account** (or reuse one) and generate a **JSON key**. Note its
    `client_email` and its numeric **OAuth client ID**.
+   - **Enable the Admin SDK API in the SA's own GCP project.** SA-token API calls are
+     attributed to the project that owns the SA (not this Apps Script project), so the peer
+     directory read 403s (`Admin SDK API … disabled … project <n>`) until Admin SDK is
+     enabled there. Easy to miss when the SA lives in a different project than the script.
 2. In the **peer tenant's** Admin console → **Security → Access and data control → API
    controls → Domain-wide delegation**, add the SA's client ID with **exactly** these
    scopes (read-only, comma-separated):
