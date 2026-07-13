@@ -32,7 +32,9 @@
  * Requires (beyond the shared manifest): the legacy Domain Shared Contacts
  * scope  https://www.google.com/m8/feeds  (added to appsscript.json).
  *
- * Version: 0.1.2 (draft)
+ * Version: 0.1.3 (draft)
+ * 0.1.3: combine (not drop) cadets sharing one email into a single card naming
+ *   every cadet, so both stay searchable on a shared parent address.
  * 0.1.2: dedupe desired set by email — Domain Shared Contacts key on address, so
  *   siblings sharing a parent email churned; collapse to one entry per email.
  *   Also adds update/delete diagnostic sampling in the reconcile.
@@ -251,7 +253,7 @@ function xtBuildDesiredContacts_(cfg) {
   const peerWsByCapid = xtPeerWorkspaceEmailByCapid_(cfg);
 
   const byCapid = {};
-  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0, dedupedEmail: 0 };
+  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0, combinedEmail: 0 };
 
   Object.keys(roster).forEach(capid => {
     const m = roster[capid];
@@ -279,29 +281,39 @@ function xtBuildDesiredContacts_(cfg) {
     byCapid[contact.capid] = contact;
   });
 
-  // Domain Shared Contacts effectively key on the email address: Google keeps a
-  // single entry when two contacts share an address, so a duplicate email churns
-  // forever (the second CAPID never finds its own record). Collapse to one entry
-  // per email — siblings sharing a parent's CAPWATCH email keep the lowest CAPID.
-  // Workspace and do.not.contact+CAPID addresses are unique, so only shared
-  // personal emails are affected.
-  const byEmail = {};
-  const collisions = [];
+  // Domain Shared Contacts key on the email address, so multiple cadets sharing
+  // a parent's CAPWATCH email must be ONE contact (a duplicate address otherwise
+  // churns forever). Combine them into a single card whose name lists every
+  // cadet — "Last, First Grade & Last, First Grade" — so it's searchable by any
+  // of them. The lowest CAPID is the primary for structured fields and the
+  // stable match key. Workspace and do.not.contact+CAPID addresses are unique, so
+  // only shared personal emails are affected.
+  const groups = {};
   Object.keys(byCapid).sort((a, b) => Number(a) - Number(b)).forEach(capid => {
     const c = byCapid[capid];
     const key = String(c.email).toLowerCase();
-    if (byEmail[key]) {
-      stats.dedupedEmail++;
-      if (collisions.length < 25) collisions.push({ email: key, kept: byEmail[key].capid, dropped: c.capid });
-      delete byCapid[capid];          // keep desired.byCapid consistent with the deduped set
-      return;
-    }
-    byEmail[key] = c;
+    (groups[key] = groups[key] || []).push(c);
   });
-  const list = Object.keys(byEmail).map(k => byEmail[k]);
+
+  const list = [];
+  const combined = [];
+  Object.keys(groups).forEach(key => {
+    const members = groups[key];
+    if (members.length === 1) { list.push(members[0]); return; }
+
+    stats.combinedEmail += members.length - 1;
+    const primary = members[0];
+    const card = Object.assign({}, primary, {
+      displayName: members.map(m => m.displayName).join(' & ')
+    });
+    card.syncHash = xtHash_(card);
+    list.push(card);
+    members.slice(1).forEach(m => { delete byCapid[m.capid]; }); // keep desired.byCapid to primaries
+    if (combined.length < 25) combined.push({ email: key, capids: members.map(m => m.capid), name: card.displayName });
+  });
 
   Logger.info('Cross-tenant desired set built', { total: list.length, sources: stats });
-  if (collisions.length) Logger.info('Cross-tenant email collisions deduped', { sample: collisions });
+  if (combined.length) Logger.info('Cross-tenant shared-email cards combined', { sample: combined });
   return { byCapid, list, stats };
 }
 
