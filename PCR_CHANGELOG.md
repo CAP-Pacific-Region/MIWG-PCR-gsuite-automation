@@ -45,6 +45,10 @@ next to each entry below.
   per project.
 - **[docs/CROSS_TENANT_CONTACTS.md](docs/CROSS_TENANT_CONTACTS.md)** — architecture, the
   email waterfall, per-project setup, and migration off the two legacy projects.
+- **[docs/GCP_PROJECT_MIGRATION.md](docs/GCP_PROJECT_MIGRATION.md)** — one-way migration of a
+  tenant's Apps Script project from its default GCP project to a standard project, required
+  to enable the Contacts API (m8 feed) for any shared-contacts feature. Surfaced by the
+  seniors canary: default projects deny `serviceusage.services.enable`.
 
 ### Notes
 

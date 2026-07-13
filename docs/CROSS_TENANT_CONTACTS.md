@@ -182,10 +182,11 @@ easy to confuse:
    `validateCrossTenantConfig`) and complete the authorization prompt.
 2. **Contacts API enablement** (project level) — the legacy m8 feed is served by
    `contacts.googleapis.com`, which must be **enabled in the GCP project behind this Apps
-   Script project**. The main automation didn't previously use shared contacts (pacific-only),
-   so it is off by default. Enable it: **Apps Script → Project Settings → note the GCP
-   project → Cloud Console → APIs & Services → Library → "Contacts API" → Enable**, or visit
-   the activation URL from the `SERVICE_DISABLED` error. Allow 1–3 minutes to propagate.
+   Script project**. Apps Script **default** GCP projects don't allow enabling extra APIs
+   (`serviceusage.services.enable` denied), so this requires migrating the project to a
+   **standard GCP project** first. That is a one-way, production-affecting step — see
+   **[docs/GCP_PROJECT_MIGRATION.md](GCP_PROJECT_MIGRATION.md)**. Once on a standard project,
+   enable **Contacts API** there.
 
 Symptom if step 2 is skipped: `Peer Workspace email map built` succeeds, then
 `Managed shared-contact list failed … Contacts API … is disabled`. **Each project has its own
