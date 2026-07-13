@@ -1,5 +1,14 @@
 # Troubleshooting Guide
 
+> **📖 Multi-tenant note.** Inherited from the upstream single-wing project; most diagnostics apply
+> unchanged. Two PCR differences to keep in mind: **(1)** each of the three tenants (seniors
+> `cawgcap.org`, cadets `cawgcadets.org`, Pacific `pcr.cap.gov`) has its **own** Apps Script project,
+> triggers, and Script Properties — diagnose on the affected project, and remember they can drift;
+> **(2)** config values (folder IDs, ORGID, domain) live in **Script Properties** (`TENANT_*`), not
+> literals in `config.gs`. On this Workspace-for-Nonprofits edition **archiving is a no-op** and
+> seats are reclaimed by **deletion** (see the License Management section). Operational escalation:
+> the **[Administrator & Successor Guide](ADMIN_GUIDE.md)** (§14 has a symptom→fix table).
+
 This guide helps diagnose and resolve common issues with the CAPWATCH automation system.
 
 ## Table of Contents
@@ -488,51 +497,49 @@ function testAdditionalMember() {
 
 ## License Management Issues
 
-### Too Many Users Being Archived
+### "Archiving" isn't reclaiming seats
 
-**Symptom:** Active members being moved to archived status
+**Symptom:** You expected `manageLicenseLifecycle()` to archive old accounts and free licenses, but
+nothing gets archived and seat usage doesn't drop.
 
-**Causes:**
+**Cause:** This is **expected** on the Workspace-for-Nonprofits edition. Archived-User licenses are
+not provisioned, so `AdminDirectory.Users.update({archived:true})` returns **412** and
+`archiveLongSuspendedUsers()` is effectively a no-op. Suspension alone also does **not** free a seat
+against the 2,000-user cap — **only deletion does.**
 
-1. **Not in CAPWATCH**
-   - Members must appear in Member.txt with ACTIVE status
-   - Verify member is actually active
+**What actually reclaims seats:** `deleteIneligibleSuspendedUsers()` (called by
+`manageLicenseLifecycle()`) deletes accounts that are **suspended in Workspace AND ineligible in
+CAPWATCH** after a 30-day grace (`LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE`). Renewed members are
+rescued by `reactivateRenewedMembers()` first, so they are skipped.
 
-2. **Suspension Period Calculation**
-   - System uses `lastLoginTime` or `creationTime` as proxy
-   - This may not reflect actual suspension date
-
-3. **Configuration**
-   - Check `LICENSE_CONFIG.DAYS_BEFORE_ARCHIVE` (default: 365 days)
-
-**Prevention:**
+**Preview before trusting it:**
 ```javascript
-// Preview archival before running
-var candidates = previewArchival();
-console.log('Would archive:', candidates.length, 'users');
-
-// Review list
-candidates.forEach(function(user) {
-  console.log(user.name, user.email, user.daysSinceActivity);
-});
+var preview = previewLicenseLifecycle();   // or previewIneligibleMembers()
+// Review the ineligible-deletion candidates before the monthly run does it for real.
 ```
 
-### Archived Users Not Being Deleted
+### Ineligible accounts not being deleted
 
-**Symptom:** Long-archived users remain in system
+**Symptom:** Suspended, long-ineligible users remain and seats stay exhausted.
 
-**Note:** Deletion is commented out in production for safety:
+**Diagnostic steps:**
 
-```javascript
-// In manageLicenseLifecycle()
-// COMMENTED OUT WHILE TESTING TO PREVENT ACCIDENTAL DELETION
-//summary.deleted = deleteLongArchivedUsers(activeCapsns);
-```
+1. **Confirm the account is actually ineligible.** It must be **suspended** in Workspace and **not**
+   an eligible active CAPWATCH member. A member who renewed will be reactivated and skipped.
+2. **Check the grace window.** Deletion only applies after `DAYS_BEFORE_DELETE_INELIGIBLE` (30 days).
+3. **Manual member protection.** Accounts added via the `User Additions` / Manual Members sheet
+   (e.g. PCR/NHQ staff) are **never** auto-deleted by design.
+4. **Preview and run:**
+   ```javascript
+   var preview = previewIneligibleMembers();   // read-only
+   console.log('Would delete:', preview.length);
+   // If the list looks right:
+   manageLicenseLifecycle();                    // performs the deletion step
+   ```
 
-To enable deletion:
-1. Thoroughly test with `previewDeletion()`
-2. Uncomment the line
-3. Monitor first few runs closely
+> `deleteLongArchivedUsers()` (the old archive→delete path) is intentionally commented out in
+> `manageLicenseLifecycle()` because archiving never happens on this edition. Don't re-enable it
+> expecting seat recovery — use the ineligible-deletion path above.
 
 ### No License Management Report Received
 

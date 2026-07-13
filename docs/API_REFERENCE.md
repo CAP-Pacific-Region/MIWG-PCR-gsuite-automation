@@ -1,6 +1,17 @@
 # API Reference
 
-Complete reference for all functions in the CAPWATCH automation system.
+> **📖 Multi-tenant note.** This reference is inherited from the upstream single-wing project and
+> documents the **core modules** (GetCapwatch, UpdateMembers, UpdateGroups, ManageLicenses, Utils).
+> Function signatures and behavior are accurate, but two framing points differ in the PCR deployment:
+> **(1)** configuration is read from **Script Properties** (`TENANT_*` + `TENANT_PROFILE`), not
+> literals in `config.gs` — the `miwg.cap.gov` / `MI-001` values in examples below are illustrative;
+> **(2)** on this Workspace-for-Nonprofits edition **archiving is a no-op** (Archived-User licenses
+> aren't provisioned; `Users.update({archived:true})` returns 412), so the license lifecycle reclaims
+> seats by **deleting long-ineligible accounts**, not by archiving. The newer modules (SquadronGroups,
+> cross-tenant contacts, region features, mission provisioning, Chat, calendars) are catalogued in
+> **[Admin Guide §9](ADMIN_GUIDE.md#9-entry-point-function-reference)**.
+
+Complete reference for the core-module functions in the CAPWATCH automation system.
 
 ## Table of Contents
 - [GetCapwatch Module](#getcapwatch-module)
@@ -804,8 +815,9 @@ console.log('Deleted:', summary.deleted.length);
 **Summary Object:**
 ```javascript
 {
-  archived: [{email, capsn, name, orgUnitPath, daysSinceActivity, archivedAt}, ...],
-  deleted: [{email, capsn, name, orgUnitPath, daysSinceActivity, deletedAt}, ...],
+  archived: [...],          // effectively empty — archiving no-ops on this edition
+  deleted: [...],           // long-archived deletions — path disabled (archiving no-ops)
+  deletedIneligible: [{email, capsn, name, orgUnitPath, ...}, ...],  // the active seat-reclaim path
   errors: [{message, timestamp}, ...],
   startTime: '2024-01-15T10:00:00.000Z',
   endTime: '2024-01-15T10:05:00.000Z',
@@ -813,21 +825,30 @@ console.log('Deleted:', summary.deleted.length);
 }
 ```
 
-**Process:**
-1. Loads active members from CAPWATCH
-2. Archives users suspended 1+ year (not in CAPWATCH)
-3. Deletes users archived 5+ years (not in CAPWATCH)
-4. Sends email report
+**Process (as it runs on this edition):**
+1. Loads active members from CAPWATCH.
+2. `archiveLongSuspendedUsers()` — **no-op** here: archiving returns 412 (no Archived-User licenses).
+3. `deleteLongArchivedUsers()` — **commented out**, since step 2 never archives anything.
+4. `deleteIneligibleSuspendedUsers()` — **the real work**: deletes accounts that are suspended in
+   Workspace **and** ineligible in CAPWATCH after a 30-day grace (`DAYS_BEFORE_DELETE_INELIGIBLE`).
+   Renewed members are rescued first by `reactivateRenewedMembers()` and skipped.
+5. Sends the email report.
 
 **Scheduled:** Monthly (recommend mid-month, around 15th)
 
-**⚠️ Note:** Deletion is currently commented out for safety
+**⚠️ Note:** Suspension does **not** free a seat under the 2,000-user cap — only deletion does. That
+is why step 4 exists. Always run `previewLicenseLifecycle()` / `previewIneligibleMembers()` first.
 
 ---
 
 ### archiveLongSuspendedUsers(activeCapsns)
 
 Archives users suspended for 1+ year who are not active in CAPWATCH.
+
+> **⚠️ No-op on this domain.** Workspace for Nonprofits does not provision Archived-User licenses,
+> so `AdminDirectory.Users.update({archived:true})` returns **412** and nothing is archived. This
+> function still runs (and returns an empty/near-empty array); seat reclamation happens via
+> `deleteIneligibleSuspendedUsers()` instead. Documented here for completeness.
 
 **Parameters:**
 - `activeCapsns` (Set<string>) - Set of active CAPIDs from CAPWATCH
@@ -1299,7 +1320,13 @@ Logger.clearLogs();
 
 ### CONFIG Object
 
-Main configuration object in `config.gs`.
+Main configuration object in `config.gs`. **Its per-tenant identity fields
+(`DOMAIN`, `EMAIL_DOMAIN`, `CAPWATCH_ORGID`, `WING`, `REGION`, the folder/spreadsheet IDs, contact
+emails) are populated at runtime from that project's Script Properties** via `getTenantConfig_()` —
+they are **not** literals in the file (a `clasp push` would clobber them). The example values below
+are illustrative; the live value for a tenant is whatever its `TENANT_*` Script Properties hold
+(canonical copies in [`config-tenants/`](../config-tenants/README.md)). Behavioral fields marked
+"profile-driven" come from `PROFILE_` keyed by `TENANT_PROFILE`.
 
 **Properties:**
 
