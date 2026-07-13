@@ -205,18 +205,44 @@ Run each function once by hand and check the execution log:
 
 ## Migration off the legacy projects
 
-The two legacy projects tag their managed contacts `orgName = CAWG` (members) and
-`CAWG_CADET_PARENTS_GROUPS` (parents). This module uses `CONFIG.WING` (`CA`) and
-`CA_PARENTS`. Because the markers differ, the new module will not see the old contacts and
-would create duplicates alongside them. Before enabling in production:
+### What's left behind, and where
 
-1. **Decommission** the legacy cadets (`1fJRqo…`) and seniors (`1b2JSIB…`) projects
-   (remove their triggers).
-2. **Clean up** their managed contacts in each tenant (delete `orgName=CAWG` /
-   `CAWG_CADET_PARENTS_GROUPS`), **or** run a one-time re-tag to the new markers.
-3. Then enable the module's triggers so it repopulates from live data.
+The retired projects wrote Domain Shared Contacts tagged in the `orgName` field. Those
+markers differ from the new module's, so they must be deleted or they linger as duplicates.
 
-The old export spreadsheets (`CAWG_seniors`, `CAWG_cadets`, `CAWG_cadets_groups`) become
+| Tenant | Legacy contacts | Legacy `orgName` marker | New module marker |
+| --- | --- | --- | --- |
+| Seniors (`cawgcap.org`) | cadet members | `CAWG` | `CA` |
+| Seniors (`cawgcap.org`) | cadet parent groups | `CAWG_CADET_PARENTS_GROUPS` | `CA_PARENTS` |
+| Cadets (`cawgcadets.org`) | senior members | `CAWG` | `CA` |
+
+Because `CONFIG.WING` is `CA` while the legacy code hard-coded `WING="CAWG"`, the markers
+never overlap — deleting everything tagged `CAWG` / `CAWG_CADET_PARENTS_GROUPS` removes
+**only** legacy contacts and cannot touch the new `CA` / `CA_PARENTS` ones. There is no
+Admin-console UI for domain shared contacts, so deletion is scripted.
+
+### Procedure (per tenant, no GAL gap)
+
+1. **Retire the legacy projects.** Remove the triggers on the cadets (`1fJRqo…`) and
+   seniors (`1b2JSIB…`) projects so they stop recreating contacts. (Keep them until
+   cleanup is confirmed, then delete.)
+2. **Run the new module manually** (`syncCrossTenantContacts`, and on seniors
+   `syncCrossTenantParentContacts`) and confirm the new `CA` contacts resolve in the GAL.
+   During this window both old and new contacts coexist (brief duplicates) — intentional,
+   so the GAL is never empty.
+3. **Delete the legacy contacts.** Paste `config-tenants/migrate-legacy-crosstenant-cleanup.gs`
+   into the project editor and run `cleanupLegacyCrossTenantContacts()`:
+   - Leave `DRY_RUN = true`, Run, and review the logged match count + sample
+     (`Legacy marker "CAWG": N contacts…`).
+   - Set `DRY_RUN = false`, Run again to delete. It reuses the module's list/delete
+     primitives, matches only the legacy markers, and refuses to run if this tenant's live
+     marker would collide.
+   - Delete the pasted function when done.
+4. **Repeat on the other tenant.** (Cadets has only the `CAWG` member marker; the parents
+   marker matches zero there — harmless.)
+5. **Enable the triggers** (runbook § 4) so the module keeps the GAL current from live data.
+
+The old export spreadsheets (`CAWG_seniors`, `CAWG_cadets`, `CAWG_cadets_groups`) are now
 unused and can be archived.
 
 ## Limitations
