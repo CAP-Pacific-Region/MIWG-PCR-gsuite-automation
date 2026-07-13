@@ -2941,8 +2941,63 @@ function addAliasesFromSheet() {
   });
 }
 
+// How long a single execution is allowed to run before it checkpoints and
+// hands off to a continuation trigger. Kept well under the 30-min hard cap so
+// the in-flight user and the trigger scheduling always finish cleanly.
+const SEND_AS_TIME_BUDGET_MS = 25 * 60 * 1000;   // 25 minutes
+const SEND_AS_CURSOR_KEY = 'sendas_cursor';       // next index to process
+
+/**
+ * Entry point: (re)starts a full Send-As display-name sync from the beginning.
+ * Clears any stale checkpoint/continuation triggers, then runs the first batch.
+ * If the batch can't finish inside the time budget it checkpoints and schedules
+ * itself to resume, so every account eventually gets updated across executions.
+ */
 function updateAllSendAsNames() {
-  Logger.info('Starting updateAllSendAsNames');
+  // Guard: if a continuation trigger is already pending, a resumable run is
+  // mid-flight (paused between batches). Don't wipe its checkpoint out from
+  // under it — letting that run resume will finish the whole list. To force a
+  // clean restart instead, call resetSendAsNames() first.
+  if (hasSendAsContinuationTrigger()) {
+    Logger.warn('updateAllSendAsNames skipped: a run is already in progress. ' +
+      'Let it finish, or call resetSendAsNames() to force a fresh start.');
+    return;
+  }
+
+  Logger.info('Starting updateAllSendAsNames (fresh run)');
+  PropertiesService.getScriptProperties().deleteProperty(SEND_AS_CURSOR_KEY);
+  processSendAsNamesBatch();
+}
+
+/**
+ * Continuation-trigger handler (and the batch worker). Resumes from the saved
+ * cursor, processes users until the time budget is hit or the list is
+ * exhausted, then either schedules another run or reports completion.
+ */
+function processSendAsNamesBatch() {
+  // Only one batch may run at a time. If a manual run and a continuation
+  // trigger (or two triggers) ever overlap, the late arrival backs off instead
+  // of double-processing users.
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    Logger.warn('processSendAsNamesBatch skipped: another batch holds the lock.');
+    return;
+  }
+
+  try {
+    processSendAsNamesBatchLocked();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function processSendAsNamesBatchLocked() {
+  const startMs = Date.now();
+  const props = PropertiesService.getScriptProperties();
+
+  // Any continuation trigger that just fired has served its purpose — clear
+  // spent triggers so they don't accumulate against the project trigger quota.
+  deleteSendAsContinuationTriggers();
 
   // 1. Fetch CAPWATCH members → build lookup
   const members = getMembers();
@@ -2951,7 +3006,8 @@ function updateAllSendAsNames() {
     memberIndex[String(capid)] = members[capid];
   }
 
-  // 2. Fetch all Workspace users
+  // 2. Fetch all Workspace users in a deterministic order so the saved cursor
+  //    (an index) points at the same user on every resume.
   let pageToken = null;
   const workspaceUsers = [];
 
@@ -2960,6 +3016,7 @@ function updateAllSendAsNames() {
       customer: "my_customer",
       maxResults: 200,
       projection: "full",
+      orderBy: "email",
       pageToken: pageToken
     });
 
@@ -2968,14 +3025,32 @@ function updateAllSendAsNames() {
 
   } while (pageToken);
 
-  // 3. Loop users and update Send-As display name
-  workspaceUsers.forEach(user => {
+  // 3. Resume from the saved cursor and process until we run low on time.
+  let index = parseInt(props.getProperty(SEND_AS_CURSOR_KEY), 10) || 0;
+  Logger.info('Send-As batch resuming', {
+    startIndex: index,
+    totalUsers: workspaceUsers.length
+  });
+
+  for (; index < workspaceUsers.length; index++) {
+    if (Date.now() - startMs > SEND_AS_TIME_BUDGET_MS) {
+      // Out of time: save progress and hand off to a continuation trigger.
+      props.setProperty(SEND_AS_CURSOR_KEY, String(index));
+      scheduleSendAsContinuation();
+      Logger.info('Send-As batch paused; continuation scheduled', {
+        nextIndex: index,
+        totalUsers: workspaceUsers.length
+      });
+      return;
+    }
+
+    const user = workspaceUsers[index];
     const capid = user.externalIds?.[0]?.value;
     const member = memberIndex[capid];
 
     if (!member) {
       Logger.warn('No CAPWATCH record for user', { email: user.primaryEmail });
-      return;
+      continue;
     }
 
     // Build display name exactly like addOrUpdateUser()
@@ -3005,9 +3080,48 @@ function updateAllSendAsNames() {
     }
     updateGmailSendAsDisplayName(user.primaryEmail, displayName);
     Utilities.sleep(200);
-  });
+  }
 
-  Logger.info('Completed updateAllSendAsNames for all Workspace users');
+  // Finished the whole list — clear the checkpoint.
+  props.deleteProperty(SEND_AS_CURSOR_KEY);
+  Logger.info('Completed updateAllSendAsNames for all Workspace users', {
+    totalUsers: workspaceUsers.length
+  });
+}
+
+/** Schedules a one-shot trigger to resume the Send-As sync ~1 minute out. */
+function scheduleSendAsContinuation() {
+  ScriptApp.newTrigger('processSendAsNamesBatch')
+    .timeBased()
+    .after(60 * 1000)  // 1 minute
+    .create();
+}
+
+/** Removes any pending continuation triggers for the Send-As batch worker. */
+function deleteSendAsContinuationTriggers() {
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'processSendAsNamesBatch') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+}
+
+/** True when a continuation trigger is pending, i.e. a run is mid-flight. */
+function hasSendAsContinuationTrigger() {
+  return ScriptApp.getProjectTriggers().some(
+    trigger => trigger.getHandlerFunction() === 'processSendAsNamesBatch'
+  );
+}
+
+/**
+ * Force-clears a Send-As run: drops the saved cursor and removes any pending
+ * continuation triggers. Use this if a run is stuck or you want to abandon an
+ * in-progress pass before starting a fresh updateAllSendAsNames().
+ */
+function resetSendAsNames() {
+  PropertiesService.getScriptProperties().deleteProperty(SEND_AS_CURSOR_KEY);
+  deleteSendAsContinuationTriggers();
+  Logger.info('Send-As sync checkpoint and continuation triggers cleared.');
 }
 
 /**
