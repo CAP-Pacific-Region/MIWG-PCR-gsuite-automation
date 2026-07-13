@@ -538,9 +538,12 @@ function xtReconcile_(desired, existing, cfg) {
   const ops = [];
   const matched = {};
   let creates = 0, updates = 0, unchanged = 0, deletes = 0;
+  const updateSample = [];   // diagnostics: which contacts churn and why
+  const deleteSample = [];
 
   desired.list.forEach(want => {
-    const cur = existingByCapid[want.capid] || existingByEmail[want.email];
+    const byCapid = existingByCapid[want.capid];
+    const cur = byCapid || existingByEmail[want.email];
     if (!cur) {
       creates++;
       ops.push(() => xtCreateContact_(feedBase, token, want, cfg));
@@ -550,6 +553,13 @@ function xtReconcile_(desired, existing, cfg) {
 
     if (cur.syncHash && cur.syncHash === want.syncHash) { unchanged++; return; }
     updates++;
+    if (updateSample.length < 25) {
+      updateSample.push({
+        capid: want.capid, email: want.email, source: want.emailSource,
+        matchedBy: byCapid ? 'capid' : 'email',
+        storedHash: cur.syncHash ? (cur.syncHash === want.syncHash ? 'same' : 'differs') : 'EMPTY'
+      });
+    }
     ops.push(() => xtUpdateContact_(cur, token, want, cfg));
   });
 
@@ -558,12 +568,15 @@ function xtReconcile_(desired, existing, cfg) {
     if (matched[cur.resourceId]) return;
     if (cur.capid && desired.byCapid[cur.capid]) return;
     deletes++;
+    if (deleteSample.length < 25) deleteSample.push({ capid: cur.capid, email: cur.email });
     ops.push(() => xtDeleteContact_(cur, token));
   });
 
   Logger.info('Cross-tenant reconcile plan', {
     creates, updates, deletes, unchanged, totalWrites: ops.length
   });
+  if (updateSample.length) Logger.info('Cross-tenant update sample', { sample: updateSample });
+  if (deleteSample.length) Logger.info('Cross-tenant delete sample', { sample: deleteSample });
 
   return xtRunWriteOps_(ops);
 }
