@@ -1,10 +1,23 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.2.7
+ * Version: 1.3.0
  * Filename: SquadronGroups.gs
- * Saved: 2026-07-09
- * Changes: Reconciled with live tenant code; AdminDirectory.Users.list
+ * Saved: 2026-07-11
+ * Changes: SQUADRON_DISTRIBUTION_TOGGLES is now profile-driven (v1.3.0) — the
+ *   effective toggles come from PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES
+ *   (config.gs, selected by TENANT_PROFILE) via getSquadronDistributionToggles_(),
+ *   so the cadet tenant no longer creates senior-only lists. The module-level
+ *   const is now a fallback default only.
+ *   v1.2.9: applyGroupSettings() enforces ONLY allowExternalMembers (
+ *   narrowed from v1.2.8). It was a log-only stub, so making it apply the full
+ *   settings block would have flipped the cadet-tenant receive lists
+ *   (ca###.cadets@cawgcadets.org, live at ANYONE_CAN_POST) to
+ *   ALL_MEMBERS_CAN_POST and re-broken cadet delivery. Enforcing only
+ *   allowExternalMembers via the AdminGroupsSettings advanced service fixes the
+ *   reported bug (nesting the external cadet group into the wing .all lists)
+ *   without touching live posting policy.
+ *   v1.2.7: Reconciled with live tenant code; AdminDirectory.Users.list
  *   standardized to customer:"my_customer". See PCR_CHANGELOG.md.
  *
  * Manages squadron-specific Google Groups for unit collaboration and communication:
@@ -19,10 +32,17 @@
  */
 
 /**
- * Global squadron-group toggles.
- * Set any value to false to stop creating/updating that squadron group type.
+ * Default squadron-group toggles (fallback only).
+ *
+ * The AUTHORITATIVE per-tenant values come from
+ * PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES in config.gs, selected by the
+ * TENANT_PROFILE Script Property — so a shared-code `clasp push` can't make the
+ * cadets tenant create senior-only lists (e.g. `.seniors`). This object is used
+ * only when a profile doesn't define the toggles. Always read the effective
+ * toggles via getSquadronDistributionToggles_() (never this const directly), so
+ * PROFILE_ — defined in another file — is resolved lazily at call time.
  */
-const SQUADRON_DISTRIBUTION_TOGGLES = {
+const SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_ = {
   PUBLIC_CONTACT: false,
   ALLHANDS: true,
   CADETS: true,
@@ -33,6 +53,25 @@ const SQUADRON_DISTRIBUTION_TOGGLES = {
   DEPUTY_COMMANDER_CADETS: true,
   DEPUTY_COMMANDER_SENIORS: true
 };
+
+/**
+ * Returns the effective squadron-group toggles for this tenant: the profile's
+ * SQUADRON_DISTRIBUTION_TOGGLES overlaid on the defaults (so a profile may
+ * specify only the toggles it wants to change). Resolved lazily because PROFILE_
+ * lives in config.gs and cross-file top-level const ordering is not guaranteed.
+ *
+ * @returns {Object} toggle map keyed like SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_
+ */
+function getSquadronDistributionToggles_() {
+  try {
+    if (typeof PROFILE_ !== 'undefined' && PROFILE_ && PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES) {
+      return Object.assign({}, SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_, PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES);
+    }
+  } catch (e) {
+    // fall through to defaults
+  }
+  return SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_;
+}
 
 function getSquadronGroupMetadata_(squadron, label) {
   const rawUnitName = ((squadron && squadron.name) || (squadron && squadron.charter) || '').toString().trim();
@@ -1069,24 +1108,25 @@ function filterEnabledSquadronDistributionLists_(lists) {
 }
 
 function isSquadronDistributionListEnabled_(suffix) {
+  const toggles = getSquadronDistributionToggles_();
   switch (String(suffix || '').toLowerCase()) {
     case 'all':
     case 'allhands':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.ALLHANDS;
+      return !!toggles.ALLHANDS;
     case 'cadets':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.CADETS;
+      return !!toggles.CADETS;
     case 'seniors':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.SENIORS;
+      return !!toggles.SENIORS;
     case 'parents':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.PARENTS;
+      return !!toggles.PARENTS;
     case 'commander':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.COMMANDER;
+      return !!toggles.COMMANDER;
     case 'deputy-commander':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.DEPUTY_COMMANDER;
+      return !!toggles.DEPUTY_COMMANDER;
     case 'deputy-commander-cadets':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.DEPUTY_COMMANDER_CADETS;
+      return !!toggles.DEPUTY_COMMANDER_CADETS;
     case 'deputy-commander-seniors':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.DEPUTY_COMMANDER_SENIORS;
+      return !!toggles.DEPUTY_COMMANDER_SENIORS;
     default:
       return true;
   }
@@ -1095,7 +1135,7 @@ function isSquadronDistributionListEnabled_(suffix) {
 function isSquadronGroupTypeEnabled_(groupType) {
   switch (String(groupType || '').toLowerCase()) {
     case 'public-contact':
-      return !!SQUADRON_DISTRIBUTION_TOGGLES.PUBLIC_CONTACT;
+      return !!getSquadronDistributionToggles_().PUBLIC_CONTACT;
     default:
       return isSquadronDistributionListEnabled_(groupType);
   }
@@ -1470,53 +1510,93 @@ function getOrCreateGroup(email, name, description, settings = {}) {
 }
 
 /**
- * Applies settings to a Google Group using the Groups Settings API
+ * Applies settings to a Google Group using the Groups Settings API.
  *
- * Note: Google Apps Script has limited access to Groups Settings API
- * Many settings must be configured through Admin Console or Admin SDK API
- * This function logs intended settings for reference
+ * Squadron distribution lists (especially the ".all" lists) must have
+ * allowExternalMembers=true so cross-tenant nested groups such as
+ * ca###.cadets@cawgcadets.org can be added as members and receive mail.
+ * AdminDirectory.Groups.insert does NOT accept these fields, so they have to
+ * be patched separately through the AdminGroupsSettings advanced service
+ * (enabled in appsscript.json; scope apps.groups.settings).
+ *
+ * Scope is intentionally limited to allowExternalMembers (see the comment in
+ * the body): it is the only setting the reported cross-tenant delivery bug
+ * requires, and enforcing the others would clobber live posting policy —
+ * notably the ANYONE_CAN_POST on the cadet-tenant receive lists. Only patched
+ * when the live value differs, so it is safe to run on every sync.
  *
  * @param {string} email - Group email address
- * @param {Object} settings - Settings to apply
+ * @param {Object} settings - Settings to apply (only allowExternalMembers is enforced)
  * @returns {void}
  */
 function applyGroupSettings(email, settings) {
   try {
-    // Build settings object with defaults
-    const groupSettings = {
-      whoCanJoin: settings.whoCanJoin || 'INVITED_CAN_JOIN',
-      whoCanViewMembership: settings.whoCanViewMembership || 'ALL_MEMBERS_CAN_VIEW',
-      whoCanViewGroup: settings.whoCanViewGroup || 'ALL_MEMBERS_CAN_VIEW',
-      whoCanPostMessage: settings.whoCanPostMessage || 'ALL_MEMBERS_CAN_POST',
-      allowExternalMembers: settings.allowExternalMembers || 'false',
-      whoCanContactOwner: settings.whoCanContactOwner || 'ALL_MEMBERS_CAN_CONTACT',
-      messageModerationLevel: settings.messageModerationLevel || 'MODERATE_NONE',
-      enableCollaborativeInbox: settings.enableCollaborativeInbox || 'true',
-      replyTo: settings.replyTo || 'REPLY_TO_IGNORE',
-      includeInGlobalAddressList: settings.includeInGlobalAddressList || 'true',
-      isArchived: 'false',
-      membersCanPostAsTheGroup: 'false',
-      allowWebPosting: 'true',
-      primaryLanguage: 'en',
-      favoriteRepliesOnTop: 'false'
-    };
+    const groupEmail = String(email || '').trim().toLowerCase();
+    if (!groupEmail) return;
 
-    // Add optional settings
-    if (settings.sendMessageDenyNotification) {
-      groupSettings.sendMessageDenyNotification = settings.sendMessageDenyNotification;
-    }
-    if (settings.defaultMessageDenyNotificationText) {
-      groupSettings.defaultMessageDenyNotificationText = settings.defaultMessageDenyNotificationText;
+    // Deliberately enforce ONLY allowExternalMembers.
+    //
+    // The caller's settings objects also carry whoCanPostMessage,
+    // whoCanViewMembership, enableCollaborativeInbox, etc., but those were never
+    // actually applied while this function was a stub, so live groups carry
+    // whatever posting/visibility policy they were given via console/GAM. In
+    // particular the cross-tenant cadet receive lists (ca###.cadets@cawgcadets.org)
+    // are live at ANYONE_CAN_POST, which is what lets them accept mail fanned out
+    // from the wing .all lists. The code passes ALL_MEMBERS_CAN_POST for every
+    // distribution list, so enforcing whoCanPostMessage here would flip those
+    // receivers to ALL_MEMBERS_CAN_POST and silently re-break cadet delivery.
+    // Only allowExternalMembers is needed to fix the reported bug (nesting the
+    // external cadet group into the wing .all list); leave posting policy alone.
+    const managedKeys = [
+      'allowExternalMembers'
+    ];
+
+    const desired = {};
+    managedKeys.forEach(key => {
+      if (settings[key] !== undefined && settings[key] !== null && settings[key] !== '') {
+        desired[key] = String(settings[key]);
+      }
+    });
+
+    if (Object.keys(desired).length === 0) return;
+
+    if (typeof DRY_RUN !== 'undefined' && DRY_RUN) {
+      Logger.info('💡 [Dry-Run] Would apply group settings', {
+        email: groupEmail,
+        settings: desired
+      });
+      return;
     }
 
-    // Note: Google Apps Script doesn't have direct Groups Settings API access
-    // Settings are applied at group creation via AdminDirectory.Groups.insert
-    // This function primarily logs intended settings for debugging
-    Logger.info('Group settings configured', {
-      email: email,
-      collaborativeInbox: groupSettings.enableCollaborativeInbox,
-      externalMembers: groupSettings.allowExternalMembers,
-      includeInGAL: groupSettings.includeInGlobalAddressList
+    if (typeof AdminGroupsSettings === 'undefined' || !AdminGroupsSettings.Groups || !AdminGroupsSettings.Groups.patch) {
+      Logger.warn('AdminGroupsSettings API not available; cannot apply group settings', {
+        email: groupEmail,
+        settings: desired
+      });
+      return;
+    }
+
+    const existing = executeWithRetry(() => AdminGroupsSettings.Groups.get(groupEmail));
+    const patch = {};
+    for (const key in desired) {
+      const currentValue = (existing && existing[key] != null) ? String(existing[key]) : '';
+      if (currentValue !== desired[key]) {
+        patch[key] = desired[key];
+      }
+    }
+
+    if (Object.keys(patch).length === 0) {
+      Logger.info('Group settings already correct', {
+        email: groupEmail,
+        externalMembers: desired.allowExternalMembers
+      });
+      return;
+    }
+
+    executeWithRetry(() => AdminGroupsSettings.Groups.patch(patch, groupEmail));
+    Logger.info('Group settings applied', {
+      email: groupEmail,
+      applied: patch
     });
 
   } catch (err) {

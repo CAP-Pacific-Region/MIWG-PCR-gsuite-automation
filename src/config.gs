@@ -3,14 +3,18 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Version: 1.2.0
- * Date: 2026-07-09
- * Changes: Added per-feature region flags (RUN_REGION_GROUP_CHATS,
- *   RUN_UNIT_VISIT_REPORT, RUN_SHARED_CONTACTS, RUN_AUTOMATION_CHAT_SPACES) to
- *   the profiles, and REGION_CAPWATCH_DATA_FOLDER_ID identity. Supports folding
- *   the region modules into the shared src/, gated off for the wing.
- *   (1.1.0: 'pacific' profile + profile-driven EXCLUDED_ORG_IDS/AEM_UNIT/org
- *   sync. 1.0.0: per-tenant config to Script Properties; INDEFINITE not LIFE.)
+ * Version: 1.3.0
+ * Date: 2026-07-13
+ * Changes: Added a per-profile CROSS_TENANT block (consumed by
+ *   cross-tenant-contacts/CrossTenantContacts.gs) selecting cross-tenant shared-
+ *   contact behavior — on for seniors/cadets, off for pacific.
+ *   (1.2.2: profile-driven SQUADRON_DISTRIBUTION_TOGGLES per tenant, so squadron
+ *   list creation is tenant-aware; cadets = all-hands + cadets + parents (no
+ *   .seniors / command-staff lists), prior toggles were hard-coded.
+ *   1.2.1: same, but cadets initially excluded .all; .all kept by request.
+ *   1.2.0: per-feature region flags + REGION_CAPWATCH_DATA_FOLDER_ID. 1.1.0:
+ *   'pacific' profile + profile-driven EXCLUDED_ORG_IDS/AEM_UNIT/org sync. 1.0.0:
+ *   per-tenant config to Script Properties; INDEFINITE not LIFE.)
  *   See PCR_CHANGELOG.md.
  ***********************************************/
 
@@ -112,6 +116,20 @@ const TENANT_PROFILES_ = {
       { suffix: 'seniors', name: 'Seniors', description: 'Senior members only', includeTypes: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'] },
       { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
     ],
+    // Which squadron distribution/command-staff lists this tenant creates
+    // (consumed by SquadronGroups.gs getSquadronDistributionToggles_). A full
+    // composite wing: every list type.
+    SQUADRON_DISTRIBUTION_TOGGLES: {
+      PUBLIC_CONTACT: false,
+      ALLHANDS: true,
+      CADETS: true,
+      SENIORS: true,
+      PARENTS: true,
+      COMMANDER: true,
+      DEPUTY_COMMANDER: true,
+      DEPUTY_COMMANDER_CADETS: true,
+      DEPUTY_COMMANDER_SENIORS: true
+    },
     // Cross-tenant Domain Shared Contacts (src/cross-tenant-contacts). The
     // seniors tenant publishes the CADET roster into its own GAL. Peer identity
     // + service-account creds are Script Properties (XT_PEER_*); see
@@ -138,9 +156,28 @@ const TENANT_PROFILES_ = {
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [
+      { suffix: 'allhands', name: 'All Hands', description: 'All cadets', includeTypes: ['CADET'] },
       { suffix: 'cadets', name: 'Cadets', description: 'Cadet members only', includeTypes: ['CADET'] },
       { suffix: 'parents', name: 'Parents & Guardians', description: 'Parent and guardian contacts for cadet members', isParentList: true }
     ],
+    // Cadets tenant = all-hands + cadets + parents lists. No senior-side lists:
+    //  - SENIORS: no senior members exist on this tenant.
+    //  - COMMANDER / DEPUTY_COMMANDER*: senior duty positions whose holders have
+    //    wing accounts, not cadet-tenant accounts, so the lists would be empty.
+    //  - ALLHANDS: kept on purpose. On a cadet-only tenant it is effectively a
+    //    duplicate of CADETS (both = all cadets), but the .all lists already
+    //    exist and are retained in case something references them.
+    SQUADRON_DISTRIBUTION_TOGGLES: {
+      PUBLIC_CONTACT: false,
+      ALLHANDS: true,
+      CADETS: true,
+      SENIORS: false,
+      PARENTS: true,
+      COMMANDER: false,
+      DEPUTY_COMMANDER: false,
+      DEPUTY_COMMANDER_CADETS: false,
+      DEPUTY_COMMANDER_SENIORS: false
+    },
     // Cross-tenant Domain Shared Contacts: the cadets tenant publishes the
     // SENIOR roster into its own GAL. Mirror image of the seniors profile.
     CROSS_TENANT: {
@@ -167,6 +204,19 @@ const TENANT_PROFILES_ = {
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [], // no subordinate squadrons
+    // Single-unit region HQ: squadron group sync is not triggered here, and there
+    // are no subordinate squadrons, so every squadron list type is off.
+    SQUADRON_DISTRIBUTION_TOGGLES: {
+      PUBLIC_CONTACT: false,
+      ALLHANDS: false,
+      CADETS: false,
+      SENIORS: false,
+      PARENTS: false,
+      COMMANDER: false,
+      DEPUTY_COMMANDER: false,
+      DEPUTY_COMMANDER_CADETS: false,
+      DEPUTY_COMMANDER_SENIORS: false
+    },
     // Region has no peer tenant to cross-publish; cross-tenant sync is off.
     CROSS_TENANT: {
       RUN_INBOUND: false,
@@ -659,6 +709,11 @@ const SQUADRON_GROUP_CONFIG = {
      * Distribution list types to create per squadron — selected by TENANT_PROFILE.
      * Seniors: all-hands / cadets / seniors / parents. Cadets: cadets / parents only.
      * (Member-type lists use 'INDEFINITE', not 'LIFE' — see TENANT_PROFILES_.)
+     *
+     * NOTE: this descriptor list is not currently consumed by SquadronGroups.gs;
+     * which lists get created is governed by PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES
+     * (see getSquadronDistributionToggles_). Keep the two in sync until they are
+     * consolidated.
      */
     TYPES: PROFILE_.SQUADRON_DISTRIBUTION_TYPES,
 
