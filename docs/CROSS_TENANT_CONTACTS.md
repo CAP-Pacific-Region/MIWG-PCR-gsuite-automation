@@ -172,11 +172,24 @@ project's existing CAPWATCH pull (ORGID 188 already includes both seniors and ca
 
 Then run **`validateCrossTenantConfig()`** — it must print `✅ Cross-tenant config OK`.
 
-### 3. Re-consent for the new scope
+### 3. Enable the Contacts API and re-consent
 
-After the shared `src/` is pushed, the added `m8/feeds` scope requires one re-authorization.
-Open the project editor and run any function once (e.g. `validateCrossTenantConfig`), or run
-`syncCrossTenantContacts` manually, and complete the OAuth consent when prompted.
+Two distinct things are required to reach this tenant's Domain Shared Contacts, and they are
+easy to confuse:
+
+1. **OAuth scope** (user consent) — the added `https://www.google.com/m8/feeds` scope. After
+   the shared `src/` is pushed, run any function once in the editor (e.g.
+   `validateCrossTenantConfig`) and complete the authorization prompt.
+2. **Contacts API enablement** (project level) — the legacy m8 feed is served by
+   `contacts.googleapis.com`, which must be **enabled in the GCP project behind this Apps
+   Script project**. The main automation didn't previously use shared contacts (pacific-only),
+   so it is off by default. Enable it: **Apps Script → Project Settings → note the GCP
+   project → Cloud Console → APIs & Services → Library → "Contacts API" → Enable**, or visit
+   the activation URL from the `SERVICE_DISABLED` error. Allow 1–3 minutes to propagate.
+
+Symptom if step 2 is skipped: `Peer Workspace email map built` succeeds, then
+`Managed shared-contact list failed … Contacts API … is disabled`. **Each project has its own
+GCP project — do this on seniors and cadets separately.**
 
 ### 4. Add triggers (Apps Script → Triggers → Add trigger)
 
