@@ -32,7 +32,9 @@
  * Requires (beyond the shared manifest): the legacy Domain Shared Contacts
  * scope  https://www.google.com/m8/feeds  (added to appsscript.json).
  *
- * Version: 0.1.0 (draft)
+ * Version: 0.1.1 (draft)
+ * 0.1.1: scope roster to peer types only — getMembers() merges the Manual
+ *   Members sheet unconditionally, which leaked non-peer accounts into the set.
  *************************************************************/
 
 // --- tuning (safe defaults; identical on every tenant) ----------------------
@@ -235,15 +237,23 @@ function xtBuildDesiredContacts_(cfg) {
   //    grades never match the cadet exclusion list).
   const roster = getMembers(cfg.peerTypes, true);
 
+  // getMembers() merges the tenant's "Manual Members" sheet UNCONDITIONALLY,
+  // after its type filter — so non-peer-type manual accounts (e.g. seniors) can
+  // leak into the roster. Keep only members whose type is actually a peer type,
+  // or they get published as bogus peer contacts and churn every run.
+  const peerTypeSet = {};
+  (cfg.peerTypes || []).forEach(t => { peerTypeSet[String(t).trim().toUpperCase()] = true; });
+
   // 2) Authoritative peer Workspace email (+ existence) by CAPID.
   const peerWsByCapid = xtPeerWorkspaceEmailByCapid_(cfg);
 
   const byCapid = {};
   const list = [];
-  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0 };
+  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0 };
 
   Object.keys(roster).forEach(capid => {
     const m = roster[capid];
+    if (!peerTypeSet[String(m.type || '').trim().toUpperCase()]) { stats.filteredType++; return; }
     const resolved = xtResolvePeerEmail_(m, cfg, peerWsByCapid);
 
     if (!resolved.email) { stats.dropped++; return; }         // no email & placeholders off
