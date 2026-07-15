@@ -1106,48 +1106,61 @@ function debugWhyPatron(capids) {
     }
 
     // Evaluate every CPP course, then judge on the LATEST expiry across all of
-    // them. Basic and Advanced are separate courses and either being current
-    // covers the member — an expired Basic alongside a current Advanced is a
-    // fully qualified member, not a lapsed one. Judging Basic alone would
-    // misread exactly that person.
-    let latestExpiry = null;
-    let coveredBy = '';
-    cppTraining.forEach(r => {
+    // them. Basic and Advanced are separate courses and EITHER being current
+    // covers the member — symmetrically. An expired Basic beside a current
+    // Advanced is a fully qualified member; so is an expired Advanced beside a
+    // current Basic. Judging any single course misreads whichever member holds
+    // the other one.
+    const evaluated = cppTraining.map(r => {
       const label = /advanced/i.test(String(r.TypeCrs)) ? 'ADVANCED' :
         (/basic/i.test(String(r.TypeCrs)) ? 'BASIC' : 'OTHER');
       const done = parseCapwatchDate_(r.Completed);
-      if (!done) {
-        console.log(`   [${label.padEnd(8)}] ${String(r.TypeCrs).padEnd(42)} completed "${r.Completed}" (UNREADABLE — cannot judge)`);
-        return;
-      }
+      if (!done) return { label: label, name: r.TypeCrs, unreadable: true };
+
       const expires = new Date(done.getTime());
       expires.setFullYear(expires.getFullYear() + CPP_VALIDITY_YEARS);
       const daysLeft = Math.floor((expires - now) / (1000 * 60 * 60 * 24));
-      if (!latestExpiry || expires > latestExpiry) {
-        latestExpiry = expires;
-        coveredBy = label;
+      return {
+        label: label, name: r.TypeCrs, done: done, expires: expires,
+        daysLeft: daysLeft, current: daysLeft >= 0
+      };
+    });
+
+    evaluated.forEach(e => {
+      if (e.unreadable) {
+        console.log(`   [${e.label.padEnd(8)}] ${String(e.name).padEnd(42)} completed "?" (UNREADABLE — cannot judge)`);
+        return;
       }
       console.log(
-        `   [${label.padEnd(8)}] ${String(r.TypeCrs).padEnd(42)} completed ${done.toISOString().slice(0, 10)} ` +
-        `-> expires ${expires.toISOString().slice(0, 10)} ` +
-        (daysLeft >= 0 ? `(CURRENT, ${daysLeft}d left)` : `(EXPIRED ${-daysLeft}d ago)`)
+        `   [${e.label.padEnd(8)}] ${String(e.name).padEnd(42)} completed ${e.done.toISOString().slice(0, 10)} ` +
+        `-> expires ${e.expires.toISOString().slice(0, 10)} ` +
+        (e.current ? `(CURRENT, ${e.daysLeft}d left)` : `(EXPIRED ${-e.daysLeft}d ago)`)
       );
     });
 
-    if (cppTraining.length) {
-      const covered = latestExpiry && latestExpiry >= now;
+    if (evaluated.length) {
+      const currentOnes = evaluated.filter(e => e.current);
+      const expiredOnes = evaluated.filter(e => e.expires && !e.current);
+      const unreadable = evaluated.filter(e => e.unreadable);
       console.log('');
-      if (covered) {
-        const daysLeft = Math.floor((latestExpiry - now) / (1000 * 60 * 60 * 24));
-        console.log(`   VERDICT: CPP COVERED until ${latestExpiry.toISOString().slice(0, 10)} (${daysLeft}d) by ${coveredBy}.`);
-        if (coveredBy === 'ADVANCED') {
-          console.log('   An expired Basic alongside a current Advanced is NOT a lapse.');
+
+      if (currentOnes.length) {
+        const best = currentOnes.reduce((a, b) => (b.expires > a.expires ? b : a));
+        console.log(`   VERDICT: CPP COVERED until ${best.expires.toISOString().slice(0, 10)} (${best.daysLeft}d) by ${best.label}.`);
+        if (expiredOnes.length) {
+          console.log(`   ${expiredOnes.map(e => e.label).join(', ')} expired — irrelevant while ${best.label} is current.`);
+          console.log('   Either course being current covers the member.');
         }
-      } else if (latestExpiry) {
-        const daysAgo = Math.floor((now - latestExpiry) / (1000 * 60 * 60 * 24));
-        console.log(`   VERDICT: CPP LAPSED ${daysAgo}d ago (latest of all courses, ${coveredBy}).`);
+      } else if (expiredOnes.length) {
+        const latest = expiredOnes.reduce((a, b) => (b.expires > a.expires ? b : a));
+        console.log(`   VERDICT: CPP LAPSED ${-latest.daysLeft}d ago. No course is current;`);
+        console.log(`   the most recent to lapse was ${latest.label} on ${latest.expires.toISOString().slice(0, 10)}.`);
       } else {
         console.log('   VERDICT: CPP UNKNOWN — rows exist but no readable completion date.');
+      }
+
+      if (unreadable.length && currentOnes.length === 0) {
+        console.log(`   CAUTION: ${unreadable.length} CPP row(s) unreadable — the member may in fact be covered.`);
       }
     }
 
