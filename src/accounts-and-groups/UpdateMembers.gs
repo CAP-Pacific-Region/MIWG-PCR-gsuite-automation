@@ -1,10 +1,15 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.12.0
+ * Version: 1.12.1
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.12.0)
- * Changes: Signature duty block now takes at most ONE duty per echelon before
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.12.1)
+ * Changes: ORG_NAME_EXPANSIONS gained SQD — a third CAPWATCH spelling of Squadron,
+ *   used by "FALLBROOK SENIOR SQD 87" — plus GP/GRP for Group, which appear nowhere
+ *   in CAPWATCH's org list today but are conventional, and CALIF -> California
+ *   ("CENTRAL CALIF GROUP 6"). Checked by rendering all 77 California orgs: every
+ *   remaining short word is a proper noun.
+ *   (1.12.0: signature duty block now takes at most ONE duty per echelon before
  *   filling the second slot — sorting on level alone let a member's two wing roles
  *   crowd their squadron command off the signature entirely. Ties within an echelon
  *   break on title seniority (dutyTitleRank_: command, then directors, then the
@@ -12,7 +17,7 @@
  *   eServices listed first. Wing/region orgs are named for the echelon, not the HQ
  *   unit: "CALIFORNIA WING HQ" -> "California Wing", "PACIFIC REGION CAP" ->
  *   "Pacific Region". Also HQ no longer title-cases to "Hq".
- *   (1.11.0: added previewSignatureForMember(), a read-only render of one member's
+ *   1.11.0: added previewSignatureForMember(), a read-only render of one member's
  *   signature to the log. There was no safe way to inspect a signature before it
  *   reached somebody — pushAllSignatures() writes to every member at once, and the
  *   only other path fires 5 minutes after an account is created. Set the CAPID in
@@ -2603,11 +2608,22 @@ function formatDutyTitle_(dutyId) {
  * "Wilson Sr" and does not become "Wilson Senior".
  */
 const ORG_NAME_EXPANSIONS = {
+  // Squadron has three spellings in CAPWATCH: SQDN (585), SQ (45) and SQD (1,
+  // "FALLBROOK SENIOR SQD 87"). Trailing periods are stripped before lookup, which
+  // covers "SQ." and "SQDN." too.
   SQ: 'Squadron',
+  SQD: 'Squadron',
   SQDN: 'Squadron',
+  // Precautionary: no GP/GRP appears in CAPWATCH's org list today, but the
+  // abbreviations are conventional and cost nothing to cover.
+  GP: 'Group',
+  GRP: 'Group',
   CDT: 'Cadet',
   COMP: 'Composite',
   SR: 'Senior',
+  // State name, not a unit type: "CENTRAL CALIF GROUP 6", "CALIF WING HQ SQ".
+  // Orgs already spelling out CALIFORNIA are unaffected — lookup is whole-word.
+  CALIF: 'California',
   // Not an expansion but a restoration: toTitleCase() lowercases before
   // capitalising, so the wing HQ unit ("CALIFORNIA WING HQ") came out as
   // "California Wing Hq".

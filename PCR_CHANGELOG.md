@@ -215,6 +215,23 @@ next to each entry below.
   > Consequence worth knowing: with the cap at two, a member holding wing **and** group
   > **and** squadron duties still loses the lowest — the two highest echelons win.
 
+- **`UpdateMembers.gs` (v1.12.1)** — `ORG_NAME_EXPANSIONS` gained `SQD` → Squadron,
+  `GP`/`GRP` → Group, and `CALIF` → California.
+
+  CAPWATCH spells Squadron three ways: `SQDN` (585 orgs), `SQ` (45) and `SQD` (1 —
+  "FALLBROOK SENIOR SQD 87", a California unit, which was rendering as "Fallbrook
+  Senior Sqd 87"). Trailing periods are stripped before lookup, covering `SQ.` and
+  `SQDN.` too. `GP`/`GRP` appear nowhere in CAPWATCH's org list today — all 147 groups
+  spell it out — but they are conventional and cost nothing to cover. `CALIF` fixes
+  "CENTRAL CALIF GROUP 6" → **Central California Group 6** and "CALIF WING HQ SQ" →
+  **California Wing HQ Squadron**; orgs already spelling out `CALIFORNIA` are
+  unaffected, since lookup is whole-word.
+
+  Verified by rendering **all 77 California orgs**: every remaining short word is a
+  proper noun (San, Los, Diego, Santa, Beale, Pancho …) and correctly untouched.
+  "Eugene L. Carnahan Cadet Squadron 85" keeps its initial, since the period is
+  stripped only for the lookup, not the output.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until
