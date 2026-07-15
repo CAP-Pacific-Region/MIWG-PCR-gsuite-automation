@@ -96,6 +96,37 @@ next to each entry below.
   Signature name lines now also include the member's **suffix** (`Maj. Isaac Wilson IV`),
   which `getSignatureName()` was dropping.
 
+- **`UpdateMembers.gs` (v1.8.0)** — `generateEmailSignature()` reconciled with the CAP
+  brand style guide. The guide itself lives behind a JS/auth wall on Frontify, so the
+  reference used was the template inside CAP's own signature generator
+  (`cap-brand-tools`, `signature-generator/script.js`), which emits the canonical block.
+
+  | Element | Was | Now |
+  |---|---|---|
+  | "Civil Air Patrol, U.S. Air Force Auxiliary" | `<h2>`, normal weight, `margin 0 0 20px` | `<p>`, **bold**, `margin 0 0 5px` |
+  | Duty block | all non-assistant duties, `line-height 12px`, `'Member'` when none | **max 2**, sorted highest→lowest org level, `line-height 14px`, **omitted** when none |
+  | Phone row | always emitted — a bare `(M)` when the member had no phone | omitted when there is no phone |
+  | Logo | no `width`/`height`/`alt`, negative margin | `width=200 height=42`, `display:block`, `alt` text |
+
+  Two latent bugs fell out of this. `getDutyBlock()` checked emptiness *before* filtering
+  assistants, so a member holding only assistant duties produced an **empty `<h2>`**; and
+  `'Member'` was never a duty assignment — the guide's generator simply drops the element.
+
+  Duty ordering uses CAPWATCH's `level` (`UNIT`/`GROUP`/`WING` per
+  [API_REFERENCE](docs/API_REFERENCE.md), plus `REGION`/`NAT` for the region tenant).
+  Unrecognized levels sort last rather than being guessed at; `Array.sort` is stable, so
+  they retain CAPWATCH's own order.
+
+  > Not changed: the logo still points at the Frontify CDN URL this repo has always used,
+  > **not** the `civilairpatrolmac.github.io` PNG the official generator now serves. Ours
+  > carries an embedded Frontify token; if that ever rotates, every signature breaks.
+  > Worth a deliberate decision about which host to depend on.
+  >
+  > Also not changed: the duty line is prefixed with `member.orgName` — the member's *home
+  > unit* — regardless of the level the duty is held at. A squadron member holding a
+  > wing-level duty therefore renders as "Squadron 123 Director of IT". The duty's real
+  > charter exists in `dutyPositions[].value` but not as a field. Pre-existing.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until

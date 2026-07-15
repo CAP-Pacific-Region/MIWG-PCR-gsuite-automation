@@ -1,16 +1,23 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.7.0
+ * Version: 1.8.0
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.7.0)
- * Changes: updateSignatureForAllAliases() now writes ONLY to Send-As identities on
- *   a domain this tenant owns (isOrgOwnedSendAs_). Its guard was a hard-coded
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.8.0)
+ * Changes: generateEmailSignature() reconciled with the CAP brand style guide's own
+ *   generator (cap-brand-tools): the "Civil Air Patrol, U.S. Air Force Auxiliary"
+ *   line is bold and 5px from the phones (was normal-weight with a 20px gap); the
+ *   duty block is capped at TWO assignments sorted highest-to-lowest org level, and
+ *   is omitted entirely when empty rather than printing 'Member' or an empty
+ *   heading; the phone row is omitted when the member has no phone rather than
+ *   printing a bare "(M)"; the logo carries width/height/alt and display:block.
+ *   (1.7.0: updateSignatureForAllAliases() now writes ONLY to Send-As identities on
+ *   a domain this tenant owns, via isOrgOwnedSendAs_. Its guard was a hard-coded
  *   "@pcrcap.org" check that shipped commented out, so it stamped the CAP signature
  *   onto every identity a member had — including personal accounts they added
  *   themselves. Signature name lines now include the member's suffix
- *   ("Maj. Isaac Wilson IV"); it was silently dropped.
- *   (1.6.0: new accounts get a REAL signature — runDelayedGmailSetup() rebuilt
+ *   "Maj. Isaac Wilson IV"; it was silently dropped.
+ *   1.6.0: new accounts get a REAL signature — runDelayedGmailSetup() rebuilt
  *   `{ capsn }` from its queued record and handed that to generateEmailSignature(),
  *   so every new account got a blank name, no phone, and a duty of "Member";
  *   queueForDelayedGmailSetup() now carries the fields the generator reads. Also
@@ -2344,14 +2351,45 @@ function getWingCode() {
   return CONFIG.WING.toLowerCase() + "wg";
 }
 
+/**
+ * Organizational level, highest first. The CAP style guide wants duty assignments
+ * "listed highest to lowest organizational level". CAPWATCH levels are documented
+ * as UNIT/GROUP/WING (docs/API_REFERENCE.md); REGION and NAT are included for the
+ * region tenant. Anything unrecognized sorts last rather than being guessed at —
+ * Array.sort is stable, so those keep CAPWATCH's own order among themselves.
+ */
+const DUTY_LEVEL_ORDER = { NAT: 0, NHQ: 0, REGION: 1, WING: 2, GROUP: 3, UNIT: 4 };
+
+function dutyLevelRank_(level) {
+  const rank = DUTY_LEVEL_ORDER[String(level || '').trim().toUpperCase()];
+  return rank === undefined ? 99 : rank;
+}
+
+/**
+ * The signature's duty line(s).
+ *
+ * Returns '' when there is nothing to show, and generateEmailSignature() then omits
+ * the element entirely — the style guide's own generator drops the block when the
+ * field is blank, rather than emitting an empty heading. This previously returned
+ * the literal 'Member', which is not a duty assignment; and because the emptiness
+ * check ran BEFORE the assistant filter, a member holding only assistant duties fell
+ * through to an empty heading anyway.
+ *
+ * Capped at two, per the style guide.
+ *
+ * @param {Object} member - CAPWATCH member object
+ * @returns {string} HTML, or '' if the member has no non-assistant duty position
+ */
 function getDutyBlock(member) {
-  if (!member.dutyPositions || member.dutyPositions.length === 0) {
-    return 'Member';
-  }
-  return member.dutyPositions
-    .filter(dp => !dp.assistant)
+  const positions = (member.dutyPositions || []).filter(dp => !dp.assistant);
+  if (positions.length === 0) return '';
+
+  return positions
+    .slice()
+    .sort((a, b) => dutyLevelRank_(a.level) - dutyLevelRank_(b.level))
+    .slice(0, 2)
     .map(dp => `${toTitleCase(member.orgName)} ${dp.id}`)
-    .join('<br>');
+    .join('<br />');
 }
 
 /**
@@ -2417,23 +2455,23 @@ function generateEmailSignature(member) {
   ${nameLine}
 </h1>
 
-<h2 style="font-size: 12px; line-height: 12px;
+${duty ? `<h2 style="font-size: 12px; line-height: 14px;
            font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
            color: #000000; font-weight: normal; margin: 0 0 5px;">
   ${duty}
-</h2>
-
-<h2 style="font-size: 12px; line-height: 12px;
-           font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
-           color: #000000; margin: 0 0 20px;">
-  Civil Air Patrol, U.S. Air Force Auxiliary
-</h2>
+</h2>` : ''}
 
 <p style="font-size: 12px; line-height: 12px;
           font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
+          color: #000000; font-weight: bold; margin: 0 0 5px;">
+  Civil Air Patrol, U.S. Air Force Auxiliary
+</p>
+
+${phoneFormatted ? `<p style="font-size: 12px; line-height: 12px;
+          font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
           color: #000000; font-weight: normal; margin: 0 0 5px;">
   (M) <a href="tel:+1${phoneDigits}" style="color: #000000; text-decoration: none;">${phoneFormatted}</a>
-</p>
+</p>` : ''}
 
 <p style="font-size: 12px; line-height: 12px;
           font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
@@ -2455,8 +2493,12 @@ function generateEmailSignature(member) {
 
 <a href="https://www.GoCivilAirPatrol.com">
   <img
-    style="margin: 15px 0 20px -5px;"
-    src="https://cdn-assets-cloud.frontify.com/s3/frontify-cloud-files-us/eyJwYXRoIjoiZnJvbnRpZnlcL2ZpbGVcLzFNOTF6UzJGRXByV0pNUjQ1cnkxLnBuZyJ9:frontify:kAS-l74of5IyRDi0IxD9lG5yNH6i-Zg30PGjGUjU8y0?width=200">
+    src="https://cdn-assets-cloud.frontify.com/s3/frontify-cloud-files-us/eyJwYXRoIjoiZnJvbnRpZnlcL2ZpbGVcLzFNOTF6UzJGRXByV0pNUjQ1cnkxLnBuZyJ9:frontify:kAS-l74of5IyRDi0IxD9lG5yNH6i-Zg30PGjGUjU8y0?width=200"
+    width="200"
+    height="42"
+    style="display:block; border:0; outline:none; text-decoration:none;
+           width:200px; max-width:200px; height:42px; margin: 15px 0 20px 0;"
+    alt="Civil Air Patrol Logo" />
 </a>
 
 <p style="font-size: 12px; line-height: 14px;
