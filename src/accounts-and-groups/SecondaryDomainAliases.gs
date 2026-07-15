@@ -6,12 +6,16 @@
  * curated opt-in list, not the whole roster — only listed accounts are touched.
  * Safe to run unattended on a daily trigger.
  * Author: Maj Isaac Wilson IV, California Wing
- * Version: 1.2.0
+ * Version: 1.2.1
  * Date: 2026-07-14
- * Changes: Let previewSecondaryDomainAliases() run before the secondary domain is
+ * Changes: Accept TENANT_SECONDARY_EMAIL_DOMAIN with or without a leading '@'. It
+ *   was set bare on the seniors tenant, and the derive step concatenates, so every
+ *   address came out as 'jane.doecawg.cap.gov' — no '@' at all. Caught by the first
+ *   live preview.
+ *   (1.2.0: let previewSecondaryDomainAliases() run before the secondary domain is
  *   verified (warn instead of bailing), so the list can be built and validated in
  *   advance; the real run still refuses.
- *   (1.1.0: made the run trigger-safe — batch the sheet write-back into one call,
+ *   1.1.0: made the run trigger-safe — batch the sheet write-back into one call,
  *   latch CONFLICT rows so they report once instead of every night, and take a
  *   script lock so a scheduled run and a manual run cannot overlap.
  *   1.0.0: initial version.)
@@ -84,10 +88,23 @@ function processSecondaryDomainAliases_(dryRun) {
   // expected state for a tenant that has no parallel domain (cadets, pacific) —
   // so this is a normal no-op, NOT an error. Logging it at ERROR would put a
   // permanent false alarm in that tenant's logs every night.
-  const domain = (CONFIG.SECONDARY_EMAIL_DOMAIN || '').trim();
-  if (!domain) {
+  const configured = (CONFIG.SECONDARY_EMAIL_DOMAIN || '').trim();
+  if (!configured) {
     Logger.info('Secondary-alias module not enabled for this tenant; skipping.', {
       hint: 'To enable, set TENANT_SECONDARY_EMAIL_DOMAIN in Script Properties, e.g. @cawg.cap.gov'
+    });
+    return;
+  }
+
+  // The property is typed by hand per tenant, so accept it with or without the
+  // leading '@' rather than trusting the format. Getting this wrong is silent and
+  // total: deriveSecondaryAlias_() concatenates, so a bare 'cawg.cap.gov' yields
+  // 'jane.doecawg.cap.gov' for every row — no '@' at all.
+  const domain = normalizeSecondaryDomain_(configured);
+  if (!domain) {
+    Logger.error('TENANT_SECONDARY_EMAIL_DOMAIN is not a usable domain.', {
+      configured: configured,
+      hint: 'Expected something like "@cawg.cap.gov" or "cawg.cap.gov".'
     });
     return;
   }
@@ -257,7 +274,23 @@ function shouldSkipLatched_(priorStatus, aliasEmail) {
   return priorStatus.toLowerCase().indexOf(aliasEmail) !== -1;
 }
 
-/** jane.doe@cawgcap.org + @cawg.cap.gov -> jane.doe@cawg.cap.gov */
+/**
+ * Canonicalizes the configured secondary domain to a single leading-'@' form, so
+ * both "@cawg.cap.gov" and "cawg.cap.gov" work. Returns '' for anything that
+ * cannot be a domain, which the caller reports rather than building addresses from.
+ */
+function normalizeSecondaryDomain_(configured) {
+  const bare = String(configured || '').trim().toLowerCase().replace(/^@+/, '');
+  // A stray interior '@' ("user@cawg.cap.gov") or a dotless value ("cawg") is a
+  // typo, not a domain — refuse instead of minting 34 bad addresses from it.
+  if (!bare || bare.indexOf('@') !== -1 || bare.indexOf('.') === -1) return '';
+  return '@' + bare;
+}
+
+/**
+ * jane.doe@cawgcap.org + @cawg.cap.gov -> jane.doe@cawg.cap.gov
+ * secondaryDomain must already be normalized (leading '@').
+ */
 function deriveSecondaryAlias_(primaryEmail, secondaryDomain) {
   const at = primaryEmail.indexOf('@');
   if (at <= 0) return '';

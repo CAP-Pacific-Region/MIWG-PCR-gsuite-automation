@@ -247,7 +247,7 @@ function setupTenantConfig() {
   const values = {
     TENANT_DOMAIN: '',                     // e.g. cawgcap.org  (cadets: cawgcadets.org)
     TENANT_EMAIL_DOMAIN: '',               // e.g. @cawgcap.org
-    TENANT_SECONDARY_EMAIL_DOMAIN: '',     // e.g. @cawg.cap.gov; '' unless the tenant has a verified secondary domain
+    TENANT_SECONDARY_EMAIL_DOMAIN: '',     // e.g. @cawg.cap.gov (bare 'cawg.cap.gov' also accepted); '' unless the tenant has a verified secondary domain
     TENANT_CAPWATCH_ORGID: '',             // e.g. 188
     TENANT_WING: '',                       // e.g. CA
     TENANT_REGION: '',                     // '' unless this project is a Region-level pull

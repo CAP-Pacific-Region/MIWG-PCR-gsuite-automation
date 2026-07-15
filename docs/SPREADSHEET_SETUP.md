@@ -141,9 +141,10 @@ have one needs a row added by hand.
 
 Prerequisites: the secondary domain must be **added and verified** in the tenant
 (Admin console > Domains > Manage domains), and `TENANT_SECONDARY_EMAIL_DOMAIN` must be
-set as a Script Property (leading `@` included). `addSecondaryDomainAliases()` refuses to
-run otherwise — Google rejects an alias on an unverified domain, so there is no way to
-pre-create the addresses and have them activate later.
+set as a Script Property — either `@cawg.cap.gov` or `cawg.cap.gov`; both are accepted.
+`addSecondaryDomainAliases()` refuses to run otherwise — Google rejects an alias on an
+unverified domain, so there is no way to pre-create the addresses and have them activate
+later.
 
 **You can still build the list in advance.** `previewSecondaryDomainAliases()` runs even
 while the domain is pending verification (it warns, then continues), because it writes

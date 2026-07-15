@@ -14,7 +14,7 @@ next to each entry below.
 
 ### Added
 
-- **`SecondaryDomainAliases.gs` (v1.2.0)** — new module giving accounts a second
+- **`SecondaryDomainAliases.gs` (v1.2.1)** — new module giving accounts a second
   address that keeps the local part of their primary but swaps in a secondary
   domain (`jane.doe@cawgcap.org` → `jane.doe@cawg.cap.gov`), as a **directory
   alias** via `AdminDirectory.Users.Aliases.insert`. Driven by a new, optional
