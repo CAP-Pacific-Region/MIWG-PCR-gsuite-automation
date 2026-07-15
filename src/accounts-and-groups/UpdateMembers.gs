@@ -1,10 +1,19 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.4.5
- * Date: 2026-07-09
+ * Version: 1.5.0
+ * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Changes: AdminDirectory.Users.list standardized to customer:"my_customer";
- *   testImpersonationToken uses console.log (Logger is overridden). See PCR_CHANGELOG.md.
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0)
+ * Changes: updateGmailSendAsDisplayName() now mirrors the display name onto the
+ *   user's org-owned ALIAS Send-As identities too (step 3), not just
+ *   sendAs/{primaryEmail} — so an address on the secondary domain no longer keeps
+ *   whatever Gmail auto-assigned and go stale on promotion. Only identities on
+ *   CONFIG.EMAIL_DOMAIN / CONFIG.SECONDARY_EMAIL_DOMAIN are touched; a member's
+ *   personal Send-As is never renamed. Patches only when the name differs, so a
+ *   settled roster costs one list call per user and no writes.
+ *   (1.4.5: AdminDirectory.Users.list standardized to customer:"my_customer";
+ *   testImpersonationToken uses console.log (Logger is overridden).)
+ *   See PCR_CHANGELOG.md.
  *
  * Description:
  * - Added CADET_LITE filtering logic and configuration controls.
@@ -2101,6 +2110,121 @@ function updateGmailSendAsDisplayName(primaryEmail, displayName) {
       error: e.message
     });
   }
+
+  //
+  // ---------------------------------------------------------
+  //  STEP 3 — PATCH ORG-OWNED ALIAS SEND-AS IDENTITIES
+  // ---------------------------------------------------------
+  //
+  // Step 2 only reaches sendAs/{primaryEmail}. Every other identity — notably a
+  // member's address on the secondary domain — keeps whatever display name Gmail
+  // auto-assigned when the alias was created, and so goes stale the moment the
+  // member is promoted. Mirror the primary's name onto them.
+  //
+  updateSendAsDisplayNameForOrgAliases_(primaryEmail, displayName, accessToken);
+}
+
+/**
+ * Mirrors a display name onto the user's alias Send-As identities that sit on a
+ * domain this organization owns.
+ *
+ * Deliberately skips anything NOT on an org domain: users add their own personal
+ * addresses as Send-As identities, and renaming someone's private Gmail to their
+ * CAP rank would be both wrong and intrusive. This is the same concern that left
+ * the domain filter commented out in updateSignatureForAllAliases().
+ *
+ * Patches only when the name actually differs, so a settled roster costs one list
+ * call per user and no writes.
+ *
+ * @param {string} primaryEmail - User's primary email (already patched in step 2)
+ * @param {string} displayName - Display name to mirror
+ * @param {string} accessToken - Impersonated token for this user
+ */
+function updateSendAsDisplayNameForOrgAliases_(primaryEmail, displayName, accessToken) {
+  try {
+    const listUrl =
+      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(primaryEmail)}/settings/sendAs`;
+
+    const listResponse = UrlFetchApp.fetch(listUrl, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + accessToken },
+      muteHttpExceptions: true
+    });
+
+    if (listResponse.getResponseCode() !== 200) {
+      Logger.warn('Could not list Send-As identities', {
+        user: primaryEmail,
+        code: listResponse.getResponseCode()
+      });
+      return;
+    }
+
+    const identities = JSON.parse(listResponse.getContentText()).sendAs || [];
+
+    identities.forEach(identity => {
+      const aliasEmail = String(identity.sendAsEmail || '');
+
+      // The primary is step 2's job.
+      if (aliasEmail.toLowerCase() === primaryEmail.toLowerCase()) return;
+      if (!isOrgOwnedSendAs_(aliasEmail)) return;
+      if (identity.displayName === displayName) return;  // already correct
+
+      const patchUrl =
+        `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(primaryEmail)}/settings/sendAs/${encodeURIComponent(aliasEmail)}`;
+
+      const resp = UrlFetchApp.fetch(patchUrl, {
+        method: 'patch',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + accessToken },
+        payload: JSON.stringify({ displayName: displayName }),
+        muteHttpExceptions: true
+      });
+
+      const code = resp.getResponseCode();
+      if (code < 200 || code >= 300) {
+        Logger.warn('Alias Send-As display name update failed', {
+          user: primaryEmail,
+          alias: aliasEmail,
+          code: code,
+          response: resp.getContentText()
+        });
+        return;
+      }
+
+      Logger.info('Alias Send-As display name updated', {
+        user: primaryEmail,
+        alias: aliasEmail,
+        from: identity.displayName || '',
+        to: displayName
+      });
+    });
+
+  } catch (e) {
+    Logger.error('Alias Send-As display name sync threw exception', {
+      user: primaryEmail,
+      error: e.message
+    });
+  }
+}
+
+/**
+ * True if a Send-As address sits on a domain this tenant hands out — its primary
+ * email domain, or the secondary domain if one is configured.
+ *
+ * Accepts TENANT_SECONDARY_EMAIL_DOMAIN with or without a leading '@'; it is set
+ * bare on at least one tenant.
+ */
+function isOrgOwnedSendAs_(sendAsEmail) {
+  const email = String(sendAsEmail || '').trim().toLowerCase();
+  const at = email.lastIndexOf('@');
+  if (at < 0) return false;
+  const domain = email.slice(at + 1);
+  if (!domain) return false;
+
+  return [CONFIG.EMAIL_DOMAIN, CONFIG.SECONDARY_EMAIL_DOMAIN]
+    .map(d => String(d || '').trim().toLowerCase().replace(/^@+/, ''))
+    .filter(Boolean)
+    .indexOf(domain) !== -1;
 }
 
 /**

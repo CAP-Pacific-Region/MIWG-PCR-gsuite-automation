@@ -40,6 +40,28 @@ next to each entry below.
   `TENANT_SECONDARY_EMAIL_DOMAIN` Script Property and wired into
   `setupTenantConfig()`. Blank on cadets and pacific.
 
+### Fixed
+
+- **`UpdateMembers.gs` (v1.5.0)** — `updateGmailSendAsDisplayName()` patched only
+  `sendAs/{primaryEmail}`, so every *alias* Send-As identity kept whatever display
+  name Gmail auto-assigned when the alias was created and went stale the moment the
+  member was promoted. It now mirrors the name onto the user's org-owned alias
+  identities as well (new step 3 + `updateSendAsDisplayNameForOrgAliases_()`), which
+  fixes both callers — new-user setup and the `updateAllSendAsNames()` backfill.
+
+  Only identities on `CONFIG.EMAIL_DOMAIN` / `CONFIG.SECONDARY_EMAIL_DOMAIN` are
+  touched (`isOrgOwnedSendAs_()`, exact domain match): members add their own personal
+  addresses as Send-As identities, and renaming someone's private Gmail to their CAP
+  rank would be wrong. This is the concern that left the domain filter commented out
+  in `updateSignatureForAllAliases()`. Patches only when the name differs, so a
+  settled roster costs one list call per user and no writes.
+
+  > ⚠️ The code half is inert on its own. `updateAllSendAsNames()` is the only bulk
+  > caller and **was never on the nightly chain**, so promotions did not reach the
+  > Gmail Send-As name for *anyone* — primary included — except when someone ran the
+  > backfill by hand. It is now listed in [ADMIN_GUIDE §8](docs/ADMIN_GUIDE.md) at
+  > 8–9 AM; **the trigger must still be created per tenant.**
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until
