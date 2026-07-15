@@ -388,6 +388,7 @@ function migrateOneTransition_(row, started, opts) {
 
   let pageToken = row.LastCursor || '';
   let imported = Number(row.MessagesMigrated) || 0;
+  const skipped = [];
 
   Logger.info('Migrating mailbox', {
     capid: row.CAPID,
@@ -418,9 +419,33 @@ function migrateOneTransition_(row, started, opts) {
     const page = listSourceMessages_(row.CadetEmail, sourceToken, pageToken, query);
 
     for (const msg of page.messages) {
-      const raw = getSourceMessageRaw_(row.CadetEmail, sourceToken, msg.id);
-      importToDestination_(row.SeniorEmail, destToken, raw, labelId);
-      imported++;
+      try {
+        const raw = getSourceMessageRaw_(row.CadetEmail, sourceToken, msg.id);
+        importToDestination_(row.SeniorEmail, destToken, raw, labelId);
+        imported++;
+
+      } catch (e) {
+        const message = e && e.message ? e.message : String(e);
+
+        // Only size failures are skippable. Anything else is a real fault and
+        // must stop the run rather than quietly leave gaps in someone's mail.
+        if (message.indexOf(MIGRATE_TOO_LARGE_) < 0) throw e;
+
+        // One message too big to move must not cost the other 1858. Skip it,
+        // but record it loudly: this is mail that will NOT reach the
+        // destination, and the source is going to be deleted.
+        const detail = describeMessage_(row.CadetEmail, sourceToken, msg.id);
+        skipped.push(detail);
+
+        Logger.error('Message too large to migrate — SKIPPED, will not survive deletion', {
+          capid: row.CAPID,
+          messageId: msg.id,
+          subject: detail.subject,
+          from: detail.from,
+          date: detail.date,
+          sizeEstimate: detail.sizeEstimate
+        });
+      }
     }
 
     // Only now is the page fully imported, so the cursor may safely advance.
@@ -446,6 +471,25 @@ function migrateOneTransition_(row, started, opts) {
   setTransitionField_(row._rowNumber, 'MigratedDate', migratedAt.toISOString());
   setTransitionField_(row._rowNumber, 'MessagesMigrated', imported);
   setTransitionField_(row._rowNumber, 'LastCursor', '');
+
+  // Skipped messages are mail that will NOT be in the destination when the
+  // source is deleted. Recording them with a marker that whyNotCloseable_()
+  // refuses on: the account cannot be closed until a human has dealt with them
+  // and cleared it. Silently deleting the source would destroy the only copy of
+  // exactly the mail we already know we could not move.
+  if (skipped.length) {
+    const summary = skipped
+      .map(s => `[${s.sizeEstimate}] ${s.date} "${s.subject}" from ${s.from} (id ${s.id})`)
+      .join(' | ');
+
+    setTransitionField_(row._rowNumber, 'Notes',
+      `SKIPPED ${skipped.length} message(s) too large to migrate — DO NOT DELETE ` +
+      `until handled manually: ${summary}`);
+
+    Logger.error('Migration finished with skipped messages — deletion is blocked', {
+      capid: row.CAPID, skipped: skipped.length
+    });
+  }
 
   if (isCatchUp) {
     Logger.info('Catch-up sweep complete', {
@@ -785,6 +829,45 @@ function getSourceMessageRaw_(user, token, id) {
 }
 
 /**
+ * Fetches enough about a message to identify it by hand later.
+ *
+ * Only called for messages that failed to migrate, so the extra round trip costs
+ * nothing in the normal path. format=metadata returns headers without the body,
+ * so it works even when the full message is far too large to fetch.
+ *
+ * @param {string} user
+ * @param {string} token
+ * @param {string} id
+ * @returns {{id: string, subject: string, from: string, date: string, sizeEstimate: string}}
+ */
+function describeMessage_(user, token, id) {
+  const fallback = { id: id, subject: '(unknown)', from: '', date: '', sizeEstimate: '' };
+
+  try {
+    const url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' +
+      encodeURIComponent(id) +
+      '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date';
+
+    const body = gmailFetch_(url, { method: 'get', token: token }, 'describe message ' + id);
+    const headers = {};
+    ((body.payload && body.payload.headers) || []).forEach(h => {
+      headers[String(h.name || '').toLowerCase()] = h.value;
+    });
+
+    return {
+      id: id,
+      subject: headers.subject || '(no subject)',
+      from: headers.from || '',
+      date: headers.date || '',
+      sizeEstimate: formatBytes_(Number(body.sizeEstimate) || 0)
+    };
+
+  } catch (e) {
+    return fallback;
+  }
+}
+
+/**
  * Imports one raw message into the destination mailbox.
  *
  * internalDateSource=dateHeader keeps the original sent date, so migrated mail
@@ -862,6 +945,20 @@ const MIGRATE_MAX_ATTEMPTS_ = 5;
 const MIGRATE_BACKOFF_BASE_MS_ = 2000;
 
 /**
+ * UrlFetchApp's hard response cap. Gmail returns raw messages as base64 inside
+ * JSON, inflating them ~33%, so a message over roughly 37MB overflows this and
+ * comes back truncated — a 200 with a severed body.
+ */
+const MIGRATE_RESPONSE_CAP_BYTES_ = 50 * 1024 * 1024;
+
+/**
+ * Marker on errors caused by a message too large to fetch. Callers key off this
+ * to skip the message rather than retry it: unlike a 429, the size will never
+ * change, so retrying only burns the budget and fails identically.
+ */
+const MIGRATE_TOO_LARGE_ = '[TOO_LARGE]';
+
+/**
  * One Gmail REST call, with retry on transient failures.
  *
  * Deliberately NOT the shared executeWithRetry(). That helper is built for
@@ -905,7 +1002,22 @@ function gmailFetch_(url, opts, what) {
     const text = resp.getContentText();
 
     if (code >= 200 && code < 300) {
-      return text ? JSON.parse(text) : {};
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch (parseErr) {
+        // A 200 whose body will not parse means UrlFetchApp truncated it at its
+        // 50MB response cap — Gmail returns raw messages as base64 inside JSON,
+        // which inflates ~33%, so a ~37MB message with attachments overflows.
+        // Surfaced as a typed error because the caller can skip one oversized
+        // message but must not treat it as a transient failure and retry it
+        // forever: the size will not change.
+        if (text.length >= MIGRATE_RESPONSE_CAP_BYTES_) {
+          throw new Error(MIGRATE_TOO_LARGE_ + ` Gmail ${what}: response hit the ` +
+            `${formatBytes_(text.length)} UrlFetchApp cap and was truncated.`);
+        }
+        throw new Error(`Gmail ${what}: unparseable response (${parseErr.message})`);
+      }
     }
 
     lastError = `Gmail ${what} failed (${code}): ${text}`;
@@ -1217,13 +1329,23 @@ function markTransitionMigrated(capid, migratedDateIso, note) {
  * has looked — but that left no way back once the cause was fixed. Use after
  * addressing whatever the Notes column reports.
  *
- * Also clears LastCursor: a row that failed mid-mailbox has an untrustworthy
- * cursor, and re-importing from the start risks duplicates where resuming from a
- * bad cursor risks silently skipping mail. Duplicates are recoverable.
+ * @param {boolean} [keepCursor=false] - resume where it stopped instead of
+ *   starting over.
+ *
+ *   The default discards the cursor because a row that died mid-mailbox may have
+ *   a cursor that no longer means anything, and re-importing from the start
+ *   costs duplicates while trusting a bad cursor silently skips mail. Duplicates
+ *   are recoverable; skipped mail is not.
+ *
+ *   Pass true when the failure had nothing to do with the cursor — a single
+ *   unfetchable message, a scope that was missing and has since been granted —
+ *   and starting over would re-import everything already moved. Look at the
+ *   Notes and MessagesMigrated before deciding: at 500+ imported the cost of
+ *   guessing wrong in this direction is real.
  *
  * @returns {{reset: number}}
  */
-function resetFailedTransitions() {
+function resetFailedTransitions(keepCursor) {
   const rows = readTransitions_();
   let reset = 0;
 
@@ -1232,14 +1354,19 @@ function resetFailedTransitions() {
     if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.FAILED) continue;
 
     setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.PENDING);
-    setTransitionField_(row._rowNumber, 'LastCursor', '');
+    if (!keepCursor) setTransitionField_(row._rowNumber, 'LastCursor', '');
     setTransitionField_(row._rowNumber, 'Notes',
-      `Reset to PENDING ${new Date().toISOString()} (was: ${row.Notes || 'no note'})`);
+      `Reset to PENDING ${new Date().toISOString()}` +
+      (keepCursor ? ` (resuming at cursor, ${row.MessagesMigrated || 0} already imported)` : ' (restarting)') +
+      ` (was: ${row.Notes || 'no note'})`);
 
-    Logger.info('Transition row reset for retry', { capid: capid, name: row.Name });
+    Logger.info('Transition row reset for retry', {
+      capid: capid, name: row.Name, keepCursor: !!keepCursor,
+      alreadyImported: Number(row.MessagesMigrated) || 0
+    });
     reset++;
   }
 
-  Logger.info('Failed transitions reset', { reset: reset });
+  Logger.info('Failed transitions reset', { reset: reset, keepCursor: !!keepCursor });
   return { reset: reset };
 }

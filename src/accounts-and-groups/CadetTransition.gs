@@ -418,6 +418,20 @@ function eachDirectoryUser_(callback) {
 }
 
 /**
+ * Human-readable byte count. Shared by the migration (reporting messages too
+ * large to move) and the Drive module (reporting what a copy would shift).
+ *
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes_(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return (bytes / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + units[i];
+}
+
+/**
  * Extracts a CAPID from a directory user.
  *
  * externalIds is the only source. Other call sites fall back to user.employeeId,

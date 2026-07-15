@@ -128,10 +128,11 @@ function whyNotCloseable_(row, now) {
     return 'already closed on ' + row.ForwardGroupCreated;
   }
 
-  // A catch-up that failed means mail is known to exist in the source and not in
-  // the destination. Deleting now would destroy exactly that mail.
+  // Mail known to exist in the source and not in the destination — a failed
+  // catch-up, or messages too large to fetch. Deleting now destroys precisely
+  // the mail we already know did not make it across.
   if (String(row.Notes || '').indexOf('DO NOT DELETE') > -1) {
-    return 'catch-up failed — mail may be unmigrated (see Notes)';
+    return 'mail is known to be unmigrated (see Notes) — handle it, then clear the note';
   }
 
   if (TRANSITION_CONFIG.REQUIRE_MIGRATION_BEFORE_DELETE && !row.MessagesMigrated) {
