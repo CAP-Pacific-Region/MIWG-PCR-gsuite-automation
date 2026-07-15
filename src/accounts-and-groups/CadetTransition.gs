@@ -282,9 +282,9 @@ function detectCadetTransitions() {
 /**
  * Joins first and last into a display name, collapsing internal whitespace.
  *
- * CAPWATCH name fields carry stray padding — one live record produced
- * "Michael  Murray" from a trailing space on the first name. Cosmetic (the Name
- * column is human reference only), but it makes the sheet look broken.
+ * CAPWATCH name fields carry stray padding — a trailing space on a first name
+ * yields a doubled space in the join. Cosmetic (the Name column is human
+ * reference only), but it makes the sheet look broken.
  *
  * @param {string} first
  * @param {string} last
