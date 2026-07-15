@@ -60,6 +60,35 @@ const MIGRATE_DEST_SCOPES_ =
   'https://www.googleapis.com/auth/gmail.insert ' +
   'https://www.googleapis.com/auth/gmail.labels';
 
+/**
+ * Read scope for INSPECTING the destination — deliberately separate from
+ * MIGRATE_DEST_SCOPES_ and deliberately minimal.
+ *
+ * gmail.metadata grants headers, counts and profile but NOT message bodies,
+ * which is all a duplicate check needs. gmail.readonly would also work and would
+ * additionally hand the peer SA the contents of every senior mailbox — too much
+ * standing privilege for a sanity check, especially on an SA whose key is still
+ * unrotated.
+ *
+ * Kept out of the migration token on purpose: a token requesting scopes that are
+ * not ALL granted fails outright, so folding this in would mean a missing
+ * metadata grant breaks migration itself. Inspection fails soft instead.
+ */
+const MIGRATE_INSPECT_SCOPE_ = 'https://www.googleapis.com/auth/gmail.metadata';
+
+/**
+ * Block migration if the destination already holds at least this share of the
+ * source's message count — the signature of mail already moved by other means.
+ *
+ * A senior mailbox is never empty (welcome mail, whatever has arrived since), so
+ * an absolute count proves nothing; the ratio is what matters. Paired with
+ * MIGRATE_DUPLICATE_GUARD_MIN_ so a nearly-empty source cannot trip it.
+ */
+const MIGRATE_DUPLICATE_GUARD_RATIO_ = 0.5;
+
+/** Destination must hold at least this many messages before the ratio applies. */
+const MIGRATE_DUPLICATE_GUARD_MIN_ = 100;
+
 /** Continuation trigger handler name. */
 const MIGRATE_CONTINUATION_FN_ = 'continueCadetTransitionMigration';
 
@@ -131,6 +160,49 @@ function migrateCadetTransitions() {
 }
 
 /**
+ * Migrates ONE member, by CAPID. Everything else is left alone.
+ *
+ * For proving the pipeline on a single real mailbox before turning it loose on
+ * the queue. Identical code path to migrateCadetTransitions() — same import,
+ * same resumability, same completion email — just scoped to one row, so a defect
+ * costs one mailbox to unpick instead of several.
+ *
+ * @param {string} capid
+ * @param {boolean} [notify=true] - pass false to move the mail without emailing
+ *   the member and their commander, for a first run you want to inspect quietly
+ * @returns {{complete: boolean, imported: number}}
+ */
+function migrateSingleTransition(capid, notify) {
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    throw new Error('Not the source tenant');
+  }
+
+  const rows = readTransitions_();
+  const row = rows[String(capid)];
+  if (!row) throw new Error('No transition row for CAPID ' + capid);
+
+  if (!isMigratable_(row)) {
+    throw new Error(`CAPID ${capid} is not migratable: ` +
+      (row.SeniorEmail ? 'status is ' + row.MigrationStatus : 'no destination account'));
+  }
+
+  Logger.info('Single-member migration starting', {
+    capid: capid, name: row.Name, from: row.CadetEmail, to: row.SeniorEmail,
+    notify: notify !== false
+  });
+
+  const started = new Date();
+  try {
+    return migrateOneTransition_(row, started, '', notify !== false);
+  } catch (e) {
+    setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.FAILED);
+    setTransitionField_(row._rowNumber, 'Notes',
+      `Failed ${new Date().toISOString()}: ${e && e.message ? e.message : String(e)}`);
+    throw e;
+  }
+}
+
+/**
  * Continuation trigger target. Deletes the one-shot trigger that fired it, then
  * resumes.
  *
@@ -173,9 +245,10 @@ function isMigratable_(row) {
  * @param {Date} started - pass start, for the shared time budget
  * @param {string} [query] - Gmail search to limit the set; used by the catch-up
  *   pass to pick up only what arrived since the last run
+ * @param {boolean} [notify=true] - send the completion email
  * @returns {{complete: boolean, imported: number}}
  */
-function migrateOneTransition_(row, started, query) {
+function migrateOneTransition_(row, started, query, notify) {
   const cfg = getCrossTenantConfig_();
 
   const sourceToken = getImpersonatedToken_(
@@ -186,6 +259,38 @@ function migrateOneTransition_(row, started, query) {
   // admin-level cross-user access — an admin token cannot write into someone
   // else's mailbox — so the third argument is what makes this work at all.
   const destToken = xtPeerToken_(MIGRATE_DEST_SCOPES_, cfg, row.SeniorEmail);
+
+  // Duplicate guard — only on a FRESH start.
+  //
+  // Skipped on catch-up, where the destination is expected to already hold the
+  // bulk of the mail — that is the point of that pass.
+  //
+  // Skipped on resume, and that one is not obvious: this function is re-entered
+  // once per continuation, and a large mailbox takes ~18 of them. Partway
+  // through, the destination legitimately holds half the source, which is
+  // exactly what the guard looks for — so it would kill a migration that is
+  // working correctly, the further along the more certainly. A row with a cursor
+  // or a nonzero count has already passed this check on its first run.
+  const isResume = !!row.LastCursor || !!(Number(row.MessagesMigrated) || 0);
+
+  if (!query && !isResume) {
+    const destCount = destinationMessageCount_(row.SeniorEmail, cfg);
+    const srcCount = sourceMessageCount_(row.CadetEmail);
+
+    if (looksAlreadyMigrated_(destCount, srcCount)) {
+      throw new Error(
+        `Destination already holds ${destCount} messages against a source of ` +
+        `${srcCount} — this mail looks like it has already been moved. Importing ` +
+        `would duplicate it. If this is wrong, migrate with the guard bypassed; ` +
+        `if it is right, set MigrationStatus to COMPLETE and skip this row.`
+      );
+    }
+    if (destCount !== null) {
+      Logger.info('Duplicate guard passed', {
+        capid: row.CAPID, destCount: destCount, sourceCount: srcCount
+      });
+    }
+  }
 
   const labelId = ensureDestinationLabel_(row.SeniorEmail, destToken);
 
@@ -269,6 +374,11 @@ function migrateOneTransition_(row, started, query) {
     imported: imported,
     deleteAfter: deleteAfter.toISOString()
   });
+
+  if (notify === false) {
+    Logger.info('Notification suppressed for this run', { capid: row.CAPID });
+    return { complete: true, imported: imported };
+  }
 
   // Send-failure must not undo a good migration, so this is caught rather than
   // thrown: the mail is already safely across, and marking the row FAILED over
@@ -386,6 +496,75 @@ function sendTransitionCompleteEmail_(row, messageCount, deleteAfter) {
  */
 function formatTransitionDate_(date) {
   return Utilities.formatDate(date, Session.getScriptTimeZone(), 'd MMMM yyyy');
+}
+
+// ============================================================================
+// DESTINATION INSPECTION
+// ============================================================================
+
+/**
+ * Message count already in the destination mailbox.
+ *
+ * Fails SOFT: returns null when the metadata scope is not granted, so a missing
+ * grant degrades the duplicate guard to a warning rather than blocking every
+ * migration. null means "unknown", which callers must not confuse with 0.
+ *
+ * @param {string} seniorEmail
+ * @param {Object} cfg - from getCrossTenantConfig_()
+ * @returns {?number} count, or null if it could not be determined
+ */
+function destinationMessageCount_(seniorEmail, cfg) {
+  try {
+    const token = xtPeerToken_(MIGRATE_INSPECT_SCOPE_, cfg, seniorEmail);
+    const profile = gmailFetch_(
+      'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+      { method: 'get', token: token },
+      'destination profile for ' + seniorEmail
+    );
+    return Number(profile.messagesTotal) || 0;
+
+  } catch (e) {
+    Logger.warn('Could not read destination message count — duplicate guard inactive', {
+      seniorEmail: seniorEmail,
+      hint: 'add ' + MIGRATE_INSPECT_SCOPE_ + ' to the peer SA DWD grant',
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+    return null;
+  }
+}
+
+/**
+ * Decides whether the destination looks like it already holds this mail.
+ *
+ * Ratio rather than absolute count: a senior mailbox always has some mail, so
+ * "not empty" proves nothing, whereas "already holds half as much as the source"
+ * is hard to explain except by a migration that already happened.
+ *
+ * @param {?number} destCount - null when unknown
+ * @param {number} sourceCount
+ * @returns {boolean}
+ */
+function looksAlreadyMigrated_(destCount, sourceCount) {
+  if (destCount === null) return false;              // unknown is not evidence
+  if (destCount < MIGRATE_DUPLICATE_GUARD_MIN_) return false;
+  if (!sourceCount) return false;
+  return destCount >= sourceCount * MIGRATE_DUPLICATE_GUARD_RATIO_;
+}
+
+/**
+ * Source mailbox message count.
+ *
+ * @param {string} cadetEmail
+ * @returns {number}
+ */
+function sourceMessageCount_(cadetEmail) {
+  const token = getImpersonatedToken_(cadetEmail, MIGRATE_SOURCE_SCOPE_);
+  const profile = gmailFetch_(
+    'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+    { method: 'get', token: token },
+    'source profile for ' + cadetEmail
+  );
+  return Number(profile.messagesTotal) || 0;
 }
 
 // ============================================================================
@@ -667,13 +846,26 @@ function previewCadetTransitionMigration() {
         'destination labels for ' + row.SeniorEmail
       );
 
-      const already = (destLabels.labels || [])
-        .some(l => l.name === MIGRATE_LABEL_NAME_);
+      const hasLabel = (destLabels.labels || []).some(l => l.name === MIGRATE_LABEL_NAME_);
+      const srcCount = Number(profile.messagesTotal) || 0;
+      const destCount = destinationMessageCount_(row.SeniorEmail, cfg);
+
+      let verdict;
+      if (destCount === null) {
+        verdict = 'dest OK (count unavailable — grant ' + MIGRATE_INSPECT_SCOPE_ +
+          ' to enable the duplicate guard)';
+      } else if (looksAlreadyMigrated_(destCount, srcCount)) {
+        verdict = `WOULD BE BLOCKED — dest already holds ${destCount} vs source ${srcCount}. ` +
+          'Looks already migrated; importing would duplicate.';
+      } else {
+        verdict = `dest OK (${destCount} already there)`;
+      }
+      if (hasLabel) verdict += ' [migration label already present]';
 
       console.log(`${capid} | ${row.Name} | ${row.NewType} | ` +
-        `${row.CadetEmail} -> ${row.SeniorEmail} | ${profile.messagesTotal} messages ` +
-        `| dest OK${already ? ' (already has the migration label — previously migrated?)' : ''}`);
-      total += Number(profile.messagesTotal) || 0;
+        `${row.CadetEmail} -> ${row.SeniorEmail} | ${srcCount} messages | ${verdict}`);
+
+      if (!looksAlreadyMigrated_(destCount, srcCount)) total += srcCount;
 
     } catch (e) {
       console.log(`${capid} | ${row.Name} | ERROR: ${e && e.message ? e.message : String(e)}`);
