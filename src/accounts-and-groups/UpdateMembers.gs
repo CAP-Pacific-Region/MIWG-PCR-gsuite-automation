@@ -1,23 +1,25 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.6.0
+ * Version: 1.7.0
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.6.0)
- * Changes: New accounts now get a REAL signature. runDelayedGmailSetup() rebuilt
- *   `{ capsn }` from its queued record and passed that to generateEmailSignature(),
- *   so every new account received a signature with a blank name, no phone and a
- *   duty of "Member"; queueForDelayedGmailSetup() now carries the member fields the
- *   generator reads. Ungraded seniors (CAPWATCH rank 'SM', which the CAP style guide
- *   does not permit as a grade and which rendered literally as "SM Jane Doe") are now
- *   shown as "Jane M. Doe" via getSignatureName() until their first promotion.
- *   (1.5.0: updateGmailSendAsDisplayName() now mirrors the display name onto the
- *   user's org-owned ALIAS Send-As identities too (step 3), not just
- *   sendAs/{primaryEmail} — so an address on the secondary domain no longer keeps
- *   whatever Gmail auto-assigned and go stale on promotion. Only identities on
- *   CONFIG.EMAIL_DOMAIN / CONFIG.SECONDARY_EMAIL_DOMAIN are touched; a member's
- *   personal Send-As is never renamed. Patches only when the name differs, so a
- *   settled roster costs one list call per user and no writes.
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.7.0)
+ * Changes: updateSignatureForAllAliases() now writes ONLY to Send-As identities on
+ *   a domain this tenant owns (isOrgOwnedSendAs_). Its guard was a hard-coded
+ *   "@pcrcap.org" check that shipped commented out, so it stamped the CAP signature
+ *   onto every identity a member had — including personal accounts they added
+ *   themselves. Signature name lines now include the member's suffix
+ *   ("Maj. Isaac Wilson IV"); it was silently dropped.
+ *   (1.6.0: new accounts get a REAL signature — runDelayedGmailSetup() rebuilt
+ *   `{ capsn }` from its queued record and handed that to generateEmailSignature(),
+ *   so every new account got a blank name, no phone, and a duty of "Member";
+ *   queueForDelayedGmailSetup() now carries the fields the generator reads. Also
+ *   ungraded seniors, CAPWATCH rank 'SM', rendered literally as "SM Jane Doe" —
+ *   getSignatureName() shows them as "Jane M. Doe" until their first promotion.
+ *   1.5.0: updateGmailSendAsDisplayName() mirrors the display name onto org-owned
+ *   ALIAS Send-As identities too (step 3), not just sendAs/{primaryEmail}, so a
+ *   secondary-domain address no longer goes stale on promotion; patches only when
+ *   the name differs.
  *   1.4.5: AdminDirectory.Users.list standardized to customer:"my_customer";
  *   testImpersonationToken uses console.log — Logger is overridden.)
  *   See PCR_CHANGELOG.md.
@@ -2369,13 +2371,14 @@ function getDutyBlock(member) {
 function getSignatureName(member) {
   const first = String(member.firstName || '').trim();
   const last = String(member.lastName || '').trim();
+  const suffix = String(member.suffix || '').trim();
 
   if (isUngradedRank_(member.rank)) {
     const initial = String(member.middleName || '').trim().charAt(0);
-    return [first, initial ? initial + '.' : '', last].filter(Boolean).join(' ');
+    return [first, initial ? initial + '.' : '', last, suffix].filter(Boolean).join(' ');
   }
 
-  return [getPublicRank(member.rank), first, last].filter(Boolean).join(' ');
+  return [getPublicRank(member.rank), first, last, suffix].filter(Boolean).join(' ');
 }
 
 /**
@@ -2910,11 +2913,24 @@ function updateSignatureForAllAliases(primaryEmail, signatureHTML) {
     identities.forEach(identity => {
       const aliasEmail = identity.sendAsEmail;
 
-      // 👉 Only update signatures for @pcrcap.org
-      //if (!aliasEmail.toLowerCase().endsWith("@pcrcap.org")) {
-      //  Logger.info("Skipping non-org alias", { alias: aliasEmail });
-      //  return;
-      //}
+      // Only ever write to addresses this organization owns. Members add their
+      // own personal accounts as Send-As identities, and stamping a CAP signature
+      // onto someone's private mail would be a real intrusion. This function
+      // patches whatever the list returns, so the guard has to live here.
+      //
+      // Replaces a hard-coded `endsWith("@pcrcap.org")` check that shipped
+      // COMMENTED OUT and so protected nobody. Even enabled it was wrong here: it
+      // named the Pacific tenant's domain, which on seniors or cadets matches
+      // nothing and would have skipped every identity — and it allows exactly one
+      // domain, so the secondary-domain aliases would never get a signature.
+      // isOrgOwnedSendAs_() reads this tenant's own domains from CONFIG.
+      if (!isOrgOwnedSendAs_(aliasEmail)) {
+        Logger.info('Skipping non-org Send-As identity', {
+          user: primaryEmail,
+          alias: aliasEmail
+        });
+        return;
+      }
 
       const apiUrl =
         `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(primaryEmail)}/settings/sendAs/${encodeURIComponent(aliasEmail)}`;

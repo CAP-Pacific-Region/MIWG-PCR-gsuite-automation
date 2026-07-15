@@ -82,6 +82,20 @@ next to each entry below.
   > Existing users are deliberately untouched: `pushAllSignatures()` remains manual
   > and off the §8 schedule, by request. Only newly created accounts get a signature.
 
+- **`UpdateMembers.gs` (v1.7.0)** — `updateSignatureForAllAliases()` wrote to **every**
+  Send-As identity a member had, including personal accounts they had added themselves:
+  the only guard was a hard-coded `endsWith("@pcrcap.org")` check that shipped
+  **commented out**. It now writes only to identities on a domain this tenant owns, via
+  the same `isOrgOwnedSendAs_()` used by the display-name sync.
+
+  Note the old check was doubly wrong for this repo even if it had been enabled: it
+  named the **Pacific** tenant's domain, so on seniors or cadets it would have matched
+  nothing and skipped every identity — and it permits exactly one domain, so
+  secondary-domain aliases would never receive a signature.
+
+  Signature name lines now also include the member's **suffix** (`Maj. Isaac Wilson IV`),
+  which `getSignatureName()` was dropping.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until
