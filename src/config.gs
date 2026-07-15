@@ -661,11 +661,31 @@ const TRANSITION_CONFIG = {
   HOLD_DAYS: 90,
 
   /**
+   * Days after a VERIFIED migration before the cadet account is deleted and the
+   * forwarding group takes its address.
+   *
+   * HOLD_DAYS exists to wait out National's fingerprint processing — i.e. for
+   * members who may yet convert. Once someone has converted and their mail is
+   * across, that purpose is served and the remaining wait is pure cost: a Google
+   * Group cannot share an address with a User, so the forward cannot exist until
+   * the account is gone. Waiting the full 90 days would leave the old address
+   * dead that whole time.
+   *
+   * The 14-day buffer is there to catch a migration that reported success but
+   * was not, while the source mailbox still exists to re-run from. Deletion is
+   * permanent on this edition.
+   */
+  POST_MIGRATION_DELETE_DAYS: 14,
+
+  /**
    * Months the old cadet address forwards to the new senior address after the
    * cadet account is deleted. Implemented as a Group at the old address, which
    * costs no license seat (unlike keeping the account alive).
    */
   FORWARD_GROUP_MONTHS: 12,
+
+  /** Subject of the transition-complete notification. */
+  EMAIL_SUBJECT: 'Your CAP email has moved to your senior account',
 
   /**
    * When true, refuse to delete a cadet account whose migration has not

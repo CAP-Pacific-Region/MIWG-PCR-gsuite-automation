@@ -208,18 +208,136 @@ function migrateOneTransition_(row, started) {
 
   } while (pageToken);
 
+  const migratedAt = new Date();
+
+  // The 90-day hold from detection was there to wait out National's fingerprint
+  // processing — i.e. for members who might yet convert. This one has converted
+  // and their mail is across, so that purpose is served. Pull the deletion in:
+  // the forwarding group cannot take the old address until the account is gone,
+  // so a longer wait just keeps the old address dead for no benefit. The
+  // remaining buffer is to catch a migration that reported success but was not.
+  const deleteAfter = new Date(migratedAt);
+  deleteAfter.setDate(deleteAfter.getDate() + TRANSITION_CONFIG.POST_MIGRATION_DELETE_DAYS);
+
   setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.COMPLETE);
-  setTransitionField_(row._rowNumber, 'MigratedDate', new Date().toISOString());
+  setTransitionField_(row._rowNumber, 'MigratedDate', migratedAt.toISOString());
+  setTransitionField_(row._rowNumber, 'MessagesMigrated', imported);
+  setTransitionField_(row._rowNumber, 'DeleteAfter', deleteAfter.toISOString());
   setTransitionField_(row._rowNumber, 'LastCursor', '');
 
   Logger.info('Mailbox migration complete', {
     capid: row.CAPID,
     from: row.CadetEmail,
     to: row.SeniorEmail,
-    imported: imported
+    imported: imported,
+    deleteAfter: deleteAfter.toISOString()
   });
 
+  // Send-failure must not undo a good migration, so this is caught rather than
+  // thrown: the mail is already safely across, and marking the row FAILED over
+  // an email would block the deletion and re-run the whole import.
+  try {
+    sendTransitionCompleteEmail_(row, imported, deleteAfter);
+  } catch (e) {
+    Logger.error('Transition complete, but notification failed', {
+      capid: row.CAPID,
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+    setTransitionField_(row._rowNumber, 'Notes',
+      `Migrated OK; notification failed ${new Date().toISOString()}: ${e && e.message ? e.message : String(e)}`);
+  }
+
   return { complete: true, imported: imported };
+}
+
+// ============================================================================
+// NOTIFICATION
+// ============================================================================
+
+/**
+ * Tells the member their mail has moved and their old address is going away.
+ *
+ * Goes to their new senior mailbox AND their CAPWATCH personal address: the
+ * senior account may not have been logged into yet, and the whole point is to
+ * reach them in time to warn their contacts. Their old cadet address is
+ * suspended and cannot receive, so it is not an option. Commander is CC'd, as
+ * the retention emails do.
+ *
+ * @param {Object} row - Transitions row
+ * @param {number} messageCount - messages imported
+ * @param {Date} deleteAfter - when the cadet account will be deleted
+ */
+function sendTransitionCompleteEmail_(row, messageCount, deleteAfter) {
+  const capid = String(row.CAPID);
+
+  // Rank/orgid are not on the sheet — pull them from CAPWATCH at send time
+  // rather than widening the schema for two fields used in one place.
+  const memberData = parseFile('Member');
+  let rank = '';
+  let lastName = row.Name || '';
+  let orgid = '';
+  for (let i = 0; i < memberData.length; i++) {
+    if (String(memberData[i][0] || '').trim() === capid) {
+      lastName = memberData[i][2] || lastName;
+      rank = memberData[i][14] || '';
+      orgid = memberData[i][11] || '';
+      break;
+    }
+  }
+
+  const personalEmail = createEmailMap()[capid] || '';
+  const commander = orgid ? getCommanderInfo(orgid) : null;
+
+  const recipients = [row.SeniorEmail, personalEmail].filter(Boolean);
+  if (!recipients.length) {
+    throw new Error('No deliverable address for CAPID ' + capid);
+  }
+
+  // Full slash-prefixed name: subfoldered templates deploy with the folder in
+  // the literal filename, and HtmlService needs it exactly.
+  const htmlBody = HtmlService.createHtmlOutputFromFile(
+    'recruiting-and-retention/TransitionCompleteEmail'
+  )
+    .getContent()
+    .replace(/{{rank}}/g, rank || 'Senior Member')
+    .replace(/{{lastName}}/g, lastName)
+    .replace(/{{seniorEmail}}/g, row.SeniorEmail)
+    .replace(/{{cadetEmail}}/g, row.CadetEmail)
+    .replace(/{{messageCount}}/g, String(messageCount))
+    .replace(/{{deleteDate}}/g, formatTransitionDate_(deleteAfter));
+
+  executeWithRetry(() =>
+    GmailApp.sendEmail(
+      recipients.join(','),
+      TRANSITION_CONFIG.EMAIL_SUBJECT,
+      htmlBody,
+      {
+        htmlBody: htmlBody,
+        cc: commander && commander.email ? commander.email : '',
+        bcc: ITSUPPORT_EMAIL,
+        replyTo: ITSUPPORT_EMAIL,
+        from: AUTOMATION_SENDER_EMAIL,
+        name: SENDER_NAME
+      }
+    )
+  );
+
+  Logger.info('Transition complete email sent', {
+    capid: capid,
+    to: recipients.join(','),
+    commanderCc: commander && commander.email ? commander.email : 'none',
+    messageCount: messageCount
+  });
+}
+
+/**
+ * Formats a date for members to read, not for machines to parse.
+ *
+ * @param {Date} date
+ * @returns {string} e.g. "29 July 2026"
+ */
+function formatTransitionDate_(date) {
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'd MMMM yyyy');
 }
 
 // ============================================================================
