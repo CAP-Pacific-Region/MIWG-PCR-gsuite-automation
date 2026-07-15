@@ -965,16 +965,27 @@ function readCapwatchRowsForCapids_(folder, filename, capids) {
  *
  * deleteIneligibleSuspendedUsers() never auto-deletes a current member, so
  * PATRON/ACTIVE accounts land in the needs-a-human bucket holding a seat with no
- * information attached. Type alone does not say why — and the why decides the
- * call. A senior usually drops to PATRON because a required qualification
- * lapsed, most often Cadet Protection training, which expires one year after
- * completion. Someone who simply needs to retake CPP is likely to convert back
- * to SENIOR, and deleting their mailbox first would be exactly wrong.
+ * information attached. Type alone does not say why, and the why decides the
+ * call: someone who merely needs to retake a course will convert back to SENIOR
+ * — reactivateRenewedMembers() then unsuspends them — so reclaiming their
+ * mailbox first destroys the mail of someone on their way back.
  *
- * CAPWATCH records this in two places, both carrying an explicit Expiration:
- *   MbrTasks        + Tasks         (TaskID -> TaskName)
- *   MbrAchievements + Achievements  (AchvID -> Achv name)
- * Training.txt has completions but no expiry.
+ * A common cause is lapsed Cadet Protection training, which is valid for
+ * CPP_VALIDITY_YEARS from completion. Two things about that, both learned the
+ * hard way against live data on 2026-07-15:
+ *
+ *   - CPP is recorded in Training.txt as TypeCrs "Cadet Protection - ...", NOT
+ *     in MbrTasks or MbrAchievements. Tasks.txt's only match, "ST CPPT", is a
+ *     specialty-track item. Training.txt has no Expiration column, so validity
+ *     is computed from Completed rather than read.
+ *   - Basic and Advanced are separate courses and EITHER being current covers
+ *     the member. An expired Basic beside a current Advanced is a fully
+ *     qualified member; judging Basic alone misreads them as lapsed. Hence the
+ *     verdict is taken from the latest expiry across all CPP courses.
+ *
+ * CPP does not, by itself, explain PATRON — one live PATRON had a CURRENT Basic,
+ * another had no training at all. Output is a hypothesis to check in eServices,
+ * never a finding, and nothing in this codebase acts on it.
  *
  * Resolves every column BY NAME from each file's header rather than by position
  * — the Member.txt Expiration column sat unverified at index 16 for months.
@@ -1093,21 +1104,52 @@ function debugWhyPatron(capids) {
     if (!cppTraining.length) {
       console.log('   NONE. No Cadet Protection course on record at all.');
     }
+
+    // Evaluate every CPP course, then judge on the LATEST expiry across all of
+    // them. Basic and Advanced are separate courses and either being current
+    // covers the member — an expired Basic alongside a current Advanced is a
+    // fully qualified member, not a lapsed one. Judging Basic alone would
+    // misread exactly that person.
+    let latestExpiry = null;
+    let coveredBy = '';
     cppTraining.forEach(r => {
+      const label = /advanced/i.test(String(r.TypeCrs)) ? 'ADVANCED' :
+        (/basic/i.test(String(r.TypeCrs)) ? 'BASIC' : 'OTHER');
       const done = parseCapwatchDate_(r.Completed);
       if (!done) {
-        console.log(`   ${String(r.TypeCrs).padEnd(42)} completed "${r.Completed}" (unreadable)`);
+        console.log(`   [${label.padEnd(8)}] ${String(r.TypeCrs).padEnd(42)} completed "${r.Completed}" (UNREADABLE — cannot judge)`);
         return;
       }
       const expires = new Date(done.getTime());
       expires.setFullYear(expires.getFullYear() + CPP_VALIDITY_YEARS);
       const daysLeft = Math.floor((expires - now) / (1000 * 60 * 60 * 24));
+      if (!latestExpiry || expires > latestExpiry) {
+        latestExpiry = expires;
+        coveredBy = label;
+      }
       console.log(
-        `   ${String(r.TypeCrs).padEnd(42)} completed ${done.toISOString().slice(0, 10)} ` +
+        `   [${label.padEnd(8)}] ${String(r.TypeCrs).padEnd(42)} completed ${done.toISOString().slice(0, 10)} ` +
         `-> expires ${expires.toISOString().slice(0, 10)} ` +
         (daysLeft >= 0 ? `(CURRENT, ${daysLeft}d left)` : `(EXPIRED ${-daysLeft}d ago)`)
       );
     });
+
+    if (cppTraining.length) {
+      const covered = latestExpiry && latestExpiry >= now;
+      console.log('');
+      if (covered) {
+        const daysLeft = Math.floor((latestExpiry - now) / (1000 * 60 * 60 * 24));
+        console.log(`   VERDICT: CPP COVERED until ${latestExpiry.toISOString().slice(0, 10)} (${daysLeft}d) by ${coveredBy}.`);
+        if (coveredBy === 'ADVANCED') {
+          console.log('   An expired Basic alongside a current Advanced is NOT a lapse.');
+        }
+      } else if (latestExpiry) {
+        const daysAgo = Math.floor((now - latestExpiry) / (1000 * 60 * 60 * 24));
+        console.log(`   VERDICT: CPP LAPSED ${daysAgo}d ago (latest of all courses, ${coveredBy}).`);
+      } else {
+        console.log('   VERDICT: CPP UNKNOWN — rows exist but no readable completion date.');
+      }
+    }
 
     // Also surface any task/achievement the catalogues flagged as CPP-ish.
     const cppRows = mbrTasks.filter(r =>
@@ -1132,16 +1174,22 @@ function debugWhyPatron(capids) {
   });
 
   console.log('\n' + '='.repeat(72));
-  console.log('No changes made.');
+  console.log('No changes made. Nothing in this codebase acts on CPP — deletion keys on');
+  console.log('Type/MbrStatus, and a PATRON who is ACTIVE is never auto-deleted. This is');
+  console.log('context for a human, not a rule.');
   console.log('');
-  console.log('Reading this: a CURRENT or recently-EXPIRED Cadet Protection course means the');
-  console.log('member is a senior who needs to retake it, will likely convert back to SENIOR,');
-  console.log('and whose mailbox should NOT be reclaimed — reactivateRenewedMembers() will');
-  console.log('unsuspend them automatically when their type flips. NO CPP row at all, with no');
-  console.log('other training either, is a different person: someone who never started.');
+  console.log('Read the CPP VERDICT, never a single course. Basic and Advanced are separate,');
+  console.log('and either being current covers the member: an expired Basic next to a current');
+  console.log('Advanced is a fully qualified member. Judging Basic alone gets that person');
+  console.log('exactly wrong.');
   console.log('');
-  console.log('Note the EXPIRED lists exclude CAPWATCH 1900 dates, which are its null marker');
-  console.log('for "no expiry", not a date in the past.');
+  console.log('And CPP does not, on its own, explain PATRON. Observed 2026-07-15: CAPID 634025');
+  console.log('is PATRON with a CURRENT Basic, so something else moved him; CAPID 762848 is');
+  console.log('PATRON with no training of any kind, which reads as never-started rather than');
+  console.log('lapsed. Treat a lapsed CPP as a hypothesis to check in eServices, not a finding.');
+  console.log('');
+  console.log('EXPIRED lists exclude CAPWATCH 1900 dates — its null marker for "no expiry",');
+  console.log('not a date in the past.');
 }
 
 /**
