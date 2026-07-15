@@ -44,6 +44,22 @@ const MIGRATE_SOFT_TIME_LIMIT_MS_ = 4.5 * 60 * 1000;
 /** Label applied to migrated mail in the destination mailbox. */
 const MIGRATE_LABEL_NAME_ = 'Migrated from cadets';
 
+/** Scope needed on the SOURCE (cadets) SA's DWD grant. */
+const MIGRATE_SOURCE_SCOPE_ = 'https://www.googleapis.com/auth/gmail.readonly';
+
+/**
+ * Scopes needed on the PEER (seniors) SA's DWD grant, space separated.
+ *
+ * Two are required and it is not obvious why: gmail.insert authorizes
+ * messages.import but NOT the labels API, and gmail.labels authorizes
+ * labels.list/create but NOT importing. Requesting only the first silently
+ * costs the label — ensureDestinationLabel_() catches the failure and imports
+ * unlabelled, so it looks like it worked.
+ */
+const MIGRATE_DEST_SCOPES_ =
+  'https://www.googleapis.com/auth/gmail.insert ' +
+  'https://www.googleapis.com/auth/gmail.labels';
+
 /** Continuation trigger handler name. */
 const MIGRATE_CONTINUATION_FN_ = 'continueCadetTransitionMigration';
 
@@ -163,9 +179,11 @@ function migrateOneTransition_(row, started) {
   const sourceToken = getImpersonatedToken_(
     row.CadetEmail, 'https://www.googleapis.com/auth/gmail.readonly'
   );
-  const destToken = xtPeerToken_(
-    'https://www.googleapis.com/auth/gmail.insert', cfg
-  );
+
+  // Impersonate the MEMBER on the peer side, not the peer admin. Gmail has no
+  // admin-level cross-user access — an admin token cannot write into someone
+  // else's mailbox — so the third argument is what makes this work at all.
+  const destToken = xtPeerToken_(MIGRATE_DEST_SCOPES_, cfg, row.SeniorEmail);
 
   const labelId = ensureDestinationLabel_(row.SeniorEmail, destToken);
 
@@ -585,21 +603,34 @@ function previewCadetTransitionMigration() {
     }
 
     try {
-      const srcToken = getImpersonatedToken_(
-        row.CadetEmail, 'https://www.googleapis.com/auth/gmail.readonly'
-      );
+      const srcToken = getImpersonatedToken_(row.CadetEmail, MIGRATE_SOURCE_SCOPE_);
       const profile = gmailFetch_(
         'https://gmail.googleapis.com/gmail/v1/users/me/profile',
         { method: 'get', token: srcToken },
         'profile for ' + row.CadetEmail
       );
 
-      // Prove the destination credential too — a token minted here beats
-      // discovering the grant is missing mid-import.
-      xtPeerToken_('https://www.googleapis.com/auth/gmail.insert', cfg);
+      // Prove the DESTINATION credential the same way — impersonating the member
+      // and actually touching their mailbox. Merely minting a token proves only
+      // that the scope is granted, which is how the admin-subject bug survived
+      // the first version of this preview: the token minted fine and the import
+      // was rejected anyway, because Gmail has no admin-level cross-user access.
+      const destToken = xtPeerToken_(MIGRATE_DEST_SCOPES_, cfg, row.SeniorEmail);
+      const destProfile = gmailFetch_(
+        'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+        { method: 'get', token: destToken },
+        'destination profile for ' + row.SeniorEmail
+      );
+
+      if (String(destProfile.emailAddress || '').toLowerCase() !==
+          String(row.SeniorEmail).toLowerCase()) {
+        throw new Error(`Destination token opened ${destProfile.emailAddress}, ` +
+          `not ${row.SeniorEmail} — impersonation is not honoring the subject`);
+      }
 
       console.log(`${capid} | ${row.Name} | ${row.NewType} | ` +
-        `${row.CadetEmail} -> ${row.SeniorEmail} | ${profile.messagesTotal} messages`);
+        `${row.CadetEmail} -> ${row.SeniorEmail} | ${profile.messagesTotal} messages ` +
+        `| dest OK (${destProfile.messagesTotal} already there)`);
       total += Number(profile.messagesTotal) || 0;
 
     } catch (e) {
@@ -610,4 +641,38 @@ function previewCadetTransitionMigration() {
   console.log('');
   console.log('Total messages to migrate: ' + total);
   console.log('Nothing was imported — this is a preview.');
+}
+
+/**
+ * Clears FAILED rows back to PENDING so migration will retry them.
+ *
+ * FAILED is terminal by design — it blocks both retry and deletion until a human
+ * has looked — but that left no way back once the cause was fixed. Use after
+ * addressing whatever the Notes column reports.
+ *
+ * Also clears LastCursor: a row that failed mid-mailbox has an untrustworthy
+ * cursor, and re-importing from the start risks duplicates where resuming from a
+ * bad cursor risks silently skipping mail. Duplicates are recoverable.
+ *
+ * @returns {{reset: number}}
+ */
+function resetFailedTransitions() {
+  const rows = readTransitions_();
+  let reset = 0;
+
+  for (const capid in rows) {
+    const row = rows[capid];
+    if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.FAILED) continue;
+
+    setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.PENDING);
+    setTransitionField_(row._rowNumber, 'LastCursor', '');
+    setTransitionField_(row._rowNumber, 'Notes',
+      `Reset to PENDING ${new Date().toISOString()} (was: ${row.Notes || 'no note'})`);
+
+    Logger.info('Transition row reset for retry', { capid: capid, name: row.Name });
+    reset++;
+  }
+
+  Logger.info('Failed transitions reset', { reset: reset });
+  return { reset: reset };
 }
