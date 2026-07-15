@@ -1120,6 +1120,48 @@ function previewIneligibleSuspendedDeletion() {
 }
 
 /**
+ * LIVE. Permanently deletes the accounts previewIneligibleSuspendedDeletion()
+ * lists as past grace. There is no archive and no undo on this edition.
+ *
+ * Exists because the Apps Script editor's Run button passes NO arguments, so
+ * picking deleteIneligibleSuspendedUsers from the dropdown always gives a dry
+ * run — you cannot arm it from the UI, and hand-editing the default on the
+ * function that does the deleting, moments before running it, is not a
+ * procedure anyone should rely on.
+ *
+ * Named LIVE_* so it sorts under L in the function dropdown, away from the
+ * preview and the dry-run entry it would otherwise sit next to.
+ *
+ * Run previewIneligibleSuspendedDeletion() first and read the list. This deletes
+ * exactly what that preview showed under "WOULD DELETE".
+ *
+ * @param {Object} [e] - Trigger event. Present only when fired by a trigger,
+ *   which is refused: this is a manual, reviewed action. The monthly reaper is
+ *   armed by flipping the dryRun flag in manageLicenseLifecycle(), not by
+ *   scheduling this.
+ * @returns {Object} See deleteIneligibleSuspendedUsers()
+ */
+function LIVE_deleteIneligibleSuspendedUsers(e) {
+  if (e) {
+    throw new Error(
+      'LIVE_deleteIneligibleSuspendedUsers is manual-only and was invoked by a ' +
+      'trigger. Nothing was deleted. To run the reaper on a schedule, set ' +
+      'manageLicenseLifecycle() to call deleteIneligibleSuspendedUsers(false) ' +
+      'and trigger that instead — it reports into the monthly email.'
+    );
+  }
+
+  console.log('\n=== LIVE — accounts below will be PERMANENTLY deleted ===');
+  console.log('No Archived User licenses on this edition: no archive, no undo.\n');
+  Logger.warn('Manual LIVE deletion invoked', {
+    function: 'LIVE_deleteIneligibleSuspendedUsers',
+    by: Session.getActiveUser().getEmail()
+  });
+
+  return deleteIneligibleSuspendedUsers(false);
+}
+
+/**
  * Sends email report of license management actions
  *
  * @param {Object} summary - Summary object with reactivated, archived, and deleted arrays
@@ -2102,6 +2144,45 @@ function deleteIneligibleWorkspaceUsers(dryRun = true) {
   });
 
   return results;
+}
+
+/**
+ * LIVE. Permanently deletes the accounts deleteIneligibleWorkspaceUsers()
+ * lists — the ad-hoc bulk path, unrelated to the monthly reaper's grace period.
+ * This is the function that deleted 257 accounts in June 2026.
+ *
+ * Same reason as LIVE_deleteIneligibleSuspendedUsers: the editor's Run button
+ * passes no arguments, so deleteIneligibleWorkspaceUsers always dry-runs from
+ * the dropdown and there has never been a way to arm it without editing code.
+ *
+ * Run deleteIneligibleWorkspaceUsers() (dry, from the dropdown) first and read
+ * the list. Honours DELETE_AUDIT_EXCEPTIONS and only ever touches accounts that
+ * are already suspended.
+ *
+ * @param {Object} [e] - Trigger event. Present only when fired by a trigger,
+ *   which is refused — this path has no grace period at all and is never safe to
+ *   schedule.
+ * @returns {Array<Object>} See deleteIneligibleWorkspaceUsers()
+ */
+function LIVE_deleteIneligibleWorkspaceUsers(e) {
+  if (e) {
+    throw new Error(
+      'LIVE_deleteIneligibleWorkspaceUsers is manual-only and was invoked by a ' +
+      'trigger. Nothing was deleted. This path applies no grace period — it ' +
+      'deletes every suspended account the audit flags, immediately — and must ' +
+      'never run unattended. For scheduled reclamation use the monthly ' +
+      'lifecycle, which measures a 30-day grace from CAPWATCH expiry.'
+    );
+  }
+
+  console.log('\n=== LIVE — accounts below will be PERMANENTLY deleted ===');
+  console.log('No Archived User licenses on this edition: no archive, no undo.\n');
+  Logger.warn('Manual LIVE deletion invoked', {
+    function: 'LIVE_deleteIneligibleWorkspaceUsers',
+    by: Session.getActiveUser().getEmail()
+  });
+
+  return deleteIneligibleWorkspaceUsers(false);
 }
 
 /**
