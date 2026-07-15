@@ -54,11 +54,46 @@ next to each entry below.
   sign in — so a no-record account that was alive *after* the oldest lapse the
   extract still retains did not lapse at all. A **wing transfer** looks exactly
   like this: leave CAWG and you vanish from our extract while remaining a current
-  member elsewhere. A live dry run surfaced one (last login 26 days ago), which
-  the rule would otherwise have deleted. Those accounts are now held for review.
-  The window boundary is derived from the data each run rather than hardcoded, so
-  it tracks CAPWATCH rather than assuming. `lastLoginTime` never sets the grace
-  period, but it is used here to falsify it.
+  member elsewhere. A live dry run surfaced one (CAPID 697618, last login 26 days
+  prior, confirmed transferred to Nevada Wing), which the rule would otherwise
+  have deleted. The window boundary is derived from the data each run rather than
+  hardcoded, so it tracks CAPWATCH rather than assuming. `lastLoginTime` never
+  sets the grace period, but it is used here to falsify it.
+
+### Added
+
+- **`ManageLicenses.gs`** — the **departure register**, giving members who leave
+  the wing the same grace as members who lapse.
+
+  No departure date is reachable, which was checked rather than assumed.
+  Workspace records no suspension time. CAPWATCH *does* publish transfer dates in
+  `MbrTransfer.txt` (`CAPID`, `TransferDate`, `ToORGID`, `FromORGID`), and an
+  authoritative date would have beaten any proxy — but the table is **inbound
+  only**: every `ToORGID` is a CAWG org, and the wing-scoped extract drops
+  departing members wholesale, transfer row included. The live case (CAPID 697618,
+  confirmed transferred to Nevada Wing on 07-02) appears in none of its 1368 rows.
+  `debugCapwatchTransferFile()` re-checks this cheaply; if CAPWATCH ever carries
+  outbound transfers, `TransferDate` should replace the register outright.
+
+  `lastLoginTime` is not a stand-in either — someone who transfers today after six
+  quiet months would read as six months elapsed and be deleted at once, which is
+  the exact mistake the expiry basis exists to undo (the live case had last logged
+  in 26 days before a departure that was hours old; a login-based timer would have
+  left him 4 days instead of 30).
+
+  So the timer runs from when the job **first saw them gone**. A transfer suspends
+  them on the next sync, so first sighting lands within a sync cycle of the real
+  departure, and any error runs long rather than short. State lives in a Script
+  Property (`LICENSE_DEPARTED_FIRST_SEEN`, CAPID → ISO date) because `clasp push`
+  overwrites code and would otherwise reset every timer on each deploy. The
+  register is rewritten each live run from whoever is still departed, so returners
+  prune themselves; it is written *before* deletions, so a mid-run crash cannot
+  silently hand everyone a fresh 30 days; and **dry runs never write it**, so a
+  preview cannot start a deletion clock. An unreadable register restarts timers
+  rather than expiring them. `resetDepartedRegister()` clears it by hand.
+
+  Worth noting the backstop: a member wrongly caught here spends 30 days suspended
+  before anything irreversible happens, and a locked-out member complains.
 
   The function now **defaults to a dry run** and returns a result object
   (`candidates` / `withinGrace` / `activeIneligible` / `unknownExpiry`) rather than

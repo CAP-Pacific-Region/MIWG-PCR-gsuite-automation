@@ -1,9 +1,14 @@
 /**
  * License Lifecycle Management Module
  *
- * Version: 1.1.0
+ * Version: 1.2.0
  * Date: 2026-07-15
- * Changes: 1.1.0 — deleteIneligibleSuspendedUsers() repaired. It had never once
+ * Changes: 1.2.0 — members who leave the wing get the same 30-day grace as
+ *   members who lapse, timed from first sighting via a departure register in a
+ *   Script Property. No real departure date is reachable: MbrTransfer.txt is
+ *   inbound-only and a departing member is dropped from the wing-scoped extract
+ *   entirely. Added debugCapwatchTransferFile() recording that finding.
+ *   1.1.0 — deleteIneligibleSuspendedUsers() repaired. It had never once
  *   run: its field selector asked for employeeId, which is not a Directory User
  *   field, so every call 400'd on its first page and manageLicenseLifecycle()
  *   filed the error into the monthly report. Its grace period also measured days
@@ -460,19 +465,38 @@ function deleteLongArchivedUsers(activeCapsns) {
  *                               - the account being alive after that boundary,
  *                                 which is impossible for someone who lapsed
  *                                 before it, since lapsing gets you suspended and
- *                                 a suspended account cannot sign in. A wing
- *                                 transfer looks exactly like this. Held for
- *                                 review rather than deleted.
+ *                                 a suspended account cannot sign in. That is a
+ *                                 wing transfer — see below.
+ *   left the wing          -> deleted, but only after the same grace as a lapse,
+ *                             timed from when this job FIRST SAW them gone
+ *                             (the departure register, a Script Property). No
+ *                             departure date is reachable: Workspace records no
+ *                             suspension time, and CAPWATCH's MbrTransfer.txt is
+ *                             inbound-only, so a member who leaves takes their
+ *                             transfer row with them — see the register's own
+ *                             docs for the evidence.
+ *                             lastActivity is not a stand-in — someone who
+ *                             transfers today after six quiet months would read
+ *                             as six months elapsed and die immediately, which is
+ *                             the very mistake the expiry basis exists to undo.
+ *                             A transfer suspends them on the next sync, so first
+ *                             sighting is within a sync cycle of the real
+ *                             departure and errs long. Their 30 suspended days
+ *                             are also the backstop: a member wrongly caught here
+ *                             is locked out and will say so.
  *
- * @param {boolean} dryRun - When true (default), no accounts are deleted.
+ * @param {boolean} dryRun - When true (default), no accounts are deleted and the
+ *   departure register is not written — so a dry run never starts a deletion
+ *   clock. Timers begin on the first live run.
  * @returns {Object} { dryRun, graceDays, memberRows, oldestRetainedLapse,
  *   deleted, candidates, withinGrace, activeIneligible, unknownExpiry,
- *   contradicted }
+ *   departedWithinGrace }
  */
 function deleteIneligibleSuspendedUsers(dryRun = true) {
   Logger.info('Starting deleteIneligibleSuspendedUsers', { dryRun: dryRun });
 
   const graceDays = LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE;
+  const now = new Date();
 
   // Build eligibility lookup: CAPID -> {status, type, expiration}
   // [16] Expiration, [21] Type, [24] MbrStatus — verified against the Member.txt
@@ -555,7 +579,12 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
   const withinGrace = [];       // lapsed recently — spared, will age in
   const activeIneligible = [];  // current members, ineligible by type — never auto-deleted
   const unknownExpiry = [];     // lapsed but undateable — held for review
-  const contradicted = [];      // no CAPWATCH record, but demonstrably alive since — held
+  const departedWithinGrace = []; // left the wing recently — timer running
+
+  // Departure register: CAPID -> when we first saw them gone. Rebuilt each run
+  // from who is still departed, so returners drop out and stop being tracked.
+  const departedRegister = readDepartedRegister_();
+  const departedSeenThisRun = {};
   let nextPageToken = '';
 
   do {
@@ -643,18 +672,44 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
         //
         // That claim is checkable. Lapsing gets you suspended on the next sync,
         // and a suspended account cannot sign in — so if this account was still
-        // alive after that boundary, it did not lapse before it, and something
-        // else removed them from our extract (a wing transfer leaves CAPWATCH
-        // silent while the member stays perfectly current elsewhere). Deleting on
-        // a falsified premise is how you destroy a live mailbox, so hand it to a
-        // human. lastActivity is the account's newest sign of life: last login,
-        // or creation for an account never signed into.
+        // alive after that boundary, it did not lapse before it. It left the wing
+        // (a transfer leaves CAPWATCH silent while the member stays perfectly
+        // current elsewhere). lastActivity is the account's newest sign of life:
+        // last login, or creation for an account never signed into.
         if (oldestRetainedLapse && lastActivity > oldestRetainedLapse) {
-          record.reason = 'no CAPWATCH record, but alive after the extract window';
-          contradicted.push(record);
-          continue;
+          // A departure gets the same grace as a lapse — but it cannot be dated
+          // the same way. There is no departure date anywhere: not in CAPWATCH,
+          // which simply goes quiet, and not in Workspace, which records no
+          // suspension time. lastActivity is NOT a substitute; someone who
+          // transfers today after six quiet months would read as six months
+          // elapsed and be deleted immediately — the same mistake the expiry
+          // basis exists to undo.
+          //
+          // So date it from when we first SAW them gone. A transfer suspends them
+          // on the next sync, so first sighting lands within a sync cycle of the
+          // real departure, and any error runs long rather than short.
+          const priorSighting = departedRegister[capid] ?
+            new Date(departedRegister[capid]) : null;
+          const firstSeen = (priorSighting && !isNaN(priorSighting.getTime())) ?
+            priorSighting : now;
+
+          departedSeenThisRun[capid] = firstSeen.toISOString();
+
+          const daysSinceFirstSeen =
+            Math.floor((now - firstSeen) / (1000 * 60 * 60 * 24));
+          record.firstSeenDeparted = firstSeen.toISOString().slice(0, 10);
+          record.daysSinceFirstSeen = daysSinceFirstSeen;
+          record.reason = 'left the wing (no CAPWATCH record, alive after window)';
+
+          if (daysSinceFirstSeen < graceDays) {
+            departedWithinGrace.push(record);
+            continue;
+          }
+          record.basis =
+            `left the wing, first seen gone ${daysSinceFirstSeen}d ago (${record.firstSeenDeparted})`;
+        } else {
+          record.basis = 'no CAPWATCH record — lapsed beyond the extract window';
         }
-        record.basis = 'no CAPWATCH record — lapsed beyond the extract window';
       }
 
       candidates.push(record);
@@ -695,13 +750,17 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
     `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} ${c.reason.padEnd(24)} ${c.email}`
   ));
 
-  if (contradicted.length > 0) {
-    console.log(`\n-- SPARED, no CAPWATCH record but alive since the extract window — needs a human (${contradicted.length}) --`);
-    console.log(`   (extract retains lapses back to ${oldestRetainedLapse ? oldestRetainedLapse.toISOString().slice(0, 10) : '?'}; these signed in after that,`);
-    console.log('    so they did not lapse — likely transferred out of the wing.)');
-    contradicted.forEach(c => console.log(
-      `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} last active ${String(c.daysSinceActivity) + 'd ago'} ${c.email}`
+  if (departedWithinGrace.length > 0) {
+    console.log(`\n-- SPARED, left the wing, timer running (${departedWithinGrace.length}) --`);
+    console.log(`   (absent from CAPWATCH but alive after ${oldestRetainedLapse ? oldestRetainedLapse.toISOString().slice(0, 10) : '?'}, so they transferred`);
+    console.log('    rather than lapsed. Timer runs from when we first saw them gone.)');
+    departedWithinGrace.forEach(c => console.log(
+      `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} gone since ${c.firstSeenDeparted} (${c.daysSinceFirstSeen}d), deletable in ${graceDays - c.daysSinceFirstSeen}d`
     ));
+    if (dryRun) {
+      console.log('   NOTE: dry runs do not write the register, so a first sighting is not');
+      console.log('   recorded until a live run. These timers start then.');
+    }
   }
 
   if (unknownExpiry.length > 0) {
@@ -721,7 +780,7 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
     withinGrace: withinGrace,
     activeIneligible: activeIneligible,
     unknownExpiry: unknownExpiry,
-    contradicted: contradicted,
+    departedWithinGrace: departedWithinGrace,
     deleted: []
   };
 
@@ -732,11 +791,17 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
       withinGrace: withinGrace.length,
       activeIneligible: activeIneligible.length,
       unknownExpiry: unknownExpiry.length,
-      contradicted: contradicted.length,
+      departedWithinGrace: departedWithinGrace.length,
       graceDays: graceDays
     });
     return summary;
   }
+
+  // Record sightings BEFORE deleting. A crash mid-deletion must not lose the
+  // register and hand everyone a fresh 30 days on the next run. Written only on
+  // live runs: a dry run that started a real deletion clock would be a dry run
+  // with consequences. Replaces rather than merges, so returners are pruned.
+  writeDepartedRegister_(departedSeenThisRun);
 
   candidates.forEach(c => {
     try {
@@ -769,6 +834,170 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
   });
 
   return summary;
+}
+
+/**
+ * Script Property holding the departure register: CAPID -> ISO date this
+ * account was first seen absent from CAPWATCH while demonstrably still alive
+ * (i.e. left the wing rather than lapsed).
+ *
+ * WHY A REGISTER AND NOT A REAL DATE. CAPWATCH does publish transfer dates —
+ * MbrTransfer.txt carries CAPID, TransferDate, ToORGID, FromORGID — and an
+ * authoritative date would beat this proxy outright, as Member.txt's Expiration
+ * column does for lapses. It does not work here: the extract is wing-scoped and
+ * the table is INBOUND ONLY. Every row's ToORGID is a CAWG org; it records people
+ * arriving, never leaving. A member who transfers out is dropped from our extract
+ * wholesale, transfer row included. Verified 2026-07-15 against the live
+ * departure case (CAPID 697618, confirmed transferred to Nevada Wing on 07-02):
+ * 1368 rows, 891 distinct CAPIDs, and he is in none of them.
+ * See debugCapwatchTransferFile() to re-check if CAPWATCH ever changes.
+ *
+ * So the departure date genuinely exists nowhere we can reach, and first sighting
+ * is the best honest substitute.
+ *
+ * A Script Property rather than anything in source, because `clasp push`
+ * overwrites code and would reset every timer on each deploy. It is also per
+ * tenant, which is correct — a departure is a departure from THIS wing.
+ */
+const DEPARTED_REGISTER_PROPERTY = 'LICENSE_DEPARTED_FIRST_SEEN';
+
+/**
+ * Reads the departure register.
+ *
+ * Fails toward keeping accounts: an unreadable register returns empty, which
+ * restarts everyone's timer rather than expiring it. Losing 30 days of waiting
+ * costs a few suspended seats; getting it wrong the other way deletes mail.
+ *
+ * @returns {Object<string, string>} CAPID -> ISO date first seen departed
+ */
+function readDepartedRegister_() {
+  try {
+    const raw = PropertiesService.getScriptProperties()
+      .getProperty(DEPARTED_REGISTER_PROPERTY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (e) {
+    Logger.warn('Departure register unreadable — every departure timer restarts this run', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+    return {};
+  }
+}
+
+/**
+ * Replaces the departure register with exactly the accounts seen departed this
+ * run, which prunes anyone who has since returned, renewed, or been deleted.
+ *
+ * @param {Object<string, string>} register - CAPID -> ISO date first seen
+ * @returns {void}
+ */
+function writeDepartedRegister_(register) {
+  PropertiesService.getScriptProperties()
+    .setProperty(DEPARTED_REGISTER_PROPERTY, JSON.stringify(register));
+}
+
+/**
+ * Clears the departure register, restarting every departure timer.
+ * Manual escape hatch — use if the register is ever suspected wrong.
+ *
+ * @returns {void}
+ */
+function resetDepartedRegister() {
+  PropertiesService.getScriptProperties().deleteProperty(DEPARTED_REGISTER_PROPERTY);
+  Logger.info('Departure register cleared — all departure timers restart from the next live run');
+  console.log('Departure register cleared.');
+}
+
+/**
+ * Read-only diagnostic for CAPWATCH MbrTransfer.txt.
+ *
+ * A member who transfers to another wing goes silent in our Member.txt, which
+ * looks identical to lapsing long ago. MbrTransfer.txt carries real transfer
+ * dates and would beat the departure register outright — but it cannot date a
+ * departure, because it is INBOUND ONLY. Answered 2026-07-15:
+ *
+ *   1. Present?          yes — 1368 rows, 891 distinct CAPIDs.
+ *   2. Columns?          CAPID, TransferDate, ToORGID, FromORGID, Status, ...
+ *   3. Outbound rows?    NO. Every ToORGID is a CAWG org; the table records
+ *                        arrivals only. The live departure case (CAPID 697618,
+ *                        confirmed transferred to Nevada Wing 07-02) appears
+ *                        nowhere in it — the wing-scoped extract drops departing
+ *                        members entirely, transfer row and all.
+ *
+ * Kept so the finding can be re-checked cheaply if CAPWATCH ever starts carrying
+ * outbound transfers, which would let the departure register be deleted.
+ *
+ * Makes no changes.
+ *
+ * @param {Array<string>} sampleCapids - CAPIDs to look for (default: the live
+ *   departure case, CAPID 697618, confirmed transferred to Nevada Wing 2026-07-02)
+ * @returns {void}
+ */
+function debugCapwatchTransferFile(sampleCapids) {
+  const samples = sampleCapids || ['697618'];
+
+  const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+
+  console.log('\n=== 1. Files present in the CAPWATCH data folder ===\n');
+  const names = [];
+  const it = folder.getFiles();
+  while (it.hasNext()) names.push(it.next().getName());
+  names.sort().forEach(n => console.log(`  ${n}`));
+
+  const transferFiles = folder.getFilesByName('MbrTransfer.txt');
+  if (!transferFiles.hasNext()) {
+    console.log('\nMbrTransfer.txt is NOT in the folder — the CAPWATCH download does');
+    console.log('not currently fetch it. Nothing else here can run.');
+    return;
+  }
+
+  const rows = Utilities.parseCsv(transferFiles.next().getBlob().getDataAsString());
+  if (!rows || rows.length < 2) {
+    console.log('\nMbrTransfer.txt is present but empty.');
+    return;
+  }
+
+  const header = rows[0];
+  const data = rows.slice(1);
+
+  console.log('\n=== 2. MbrTransfer.txt header (index: name) ===\n');
+  header.forEach((h, i) => console.log(`[${String(i).padStart(2)}] ${h}`));
+  console.log(`\nTotal columns: ${header.length}   Total data rows: ${data.length}`);
+
+  console.log('\n=== 3. First 3 rows, labelled ===\n');
+  data.slice(0, 3).forEach((row, n) => {
+    console.log(`-- row ${n + 1} --`);
+    header.forEach((h, i) => console.log(`   ${String(h).padEnd(24)} = "${row[i]}"`));
+    console.log('');
+  });
+
+  console.log('=== 4. The departure case: does an outbound transfer survive here? ===\n');
+  samples.forEach(capid => {
+    const matches = data.filter(r => String(r[0] || '').trim() === String(capid));
+    if (matches.length === 0) {
+      console.log(`CAPID ${capid}: NOT PRESENT — the expected result as of 2026-07-15.`);
+      console.log('  Outbound transfers do not survive our wing-scoped extract, so this file');
+      console.log('  cannot date a departure and the departure register stays necessary.');
+      return;
+    }
+    console.log(`CAPID ${capid}: ${matches.length} row(s) — an outbound transfer SURVIVES.`);
+    console.log('  This contradicts the 2026-07-15 finding: CAPWATCH may now carry outbound');
+    console.log('  transfers, in which case TransferDate should replace the register.');
+    matches.forEach((row, n) => {
+      console.log(`  -- row ${n + 1} --`);
+      header.forEach((h, i) => console.log(`     ${String(h).padEnd(24)} = "${row[i]}"`));
+    });
+  });
+
+  console.log('\n=== 5. How many suspended no-record accounts could this date? ===\n');
+  const capidsInTransfer = {};
+  data.forEach(r => {
+    const c = String(r[0] || '').trim();
+    if (c) capidsInTransfer[c] = (capidsInTransfer[c] || 0) + 1;
+  });
+  console.log(`Distinct CAPIDs in MbrTransfer.txt: ${Object.keys(capidsInTransfer).length}`);
+  console.log('(Cross-check these against the "left the wing" list from the dry run.)');
 }
 
 /**
@@ -980,9 +1209,35 @@ function sendLicenseManagementReport(summary) {
       htmlBody += `</table>`;
     }
 
-    const needsReview = ineligible.activeIneligible
-      .concat(ineligible.contradicted || [])
-      .concat(ineligible.unknownExpiry);
+    const departed = ineligible.departedWithinGrace || [];
+    if (departed.length > 0) {
+      htmlBody += `
+        <div class="summary">
+          <h2>Left the Wing — Not Deleted Yet (${departed.length})</h2>
+          <p>These accounts are absent from CAPWATCH but were signed into more recently than the
+          oldest lapse the extract still retains (${ineligible.oldestRetainedLapse || 'unknown'}),
+          so they did not lapse — they transferred out and remain current members elsewhere.
+          They get the same ${ineligible.graceDays}-day grace as a lapse, timed from when this
+          job first saw them gone, because no departure date exists in either CAPWATCH or
+          Workspace.</p>
+        </div>
+        <table>
+          <tr><th>Name</th><th>CAPID</th><th>First Seen Gone</th><th>Deletable In</th></tr>
+      `;
+      departed.forEach(c => {
+        htmlBody += `
+          <tr>
+            <td>${c.name}</td>
+            <td>${c.capsn}</td>
+            <td>${c.firstSeenDeparted} (${c.daysSinceFirstSeen} days)</td>
+            <td>${ineligible.graceDays - c.daysSinceFirstSeen} days</td>
+          </tr>
+        `;
+      });
+      htmlBody += `</table>`;
+    }
+
+    const needsReview = ineligible.activeIneligible.concat(ineligible.unknownExpiry);
     if (needsReview.length > 0) {
       htmlBody += `
         <div class="warning">
@@ -991,11 +1246,7 @@ function sendLicenseManagementReport(summary) {
           someone decides. Add them to the Manual Members sheet to keep them, or delete them by
           hand.</p>
           <p><em>Ineligible by type</em> (e.g. PATRON) are current members whose expiry lies in the
-          future, so there is no lapse date to measure a grace period from.
-          <em>No CAPWATCH record, but alive after the extract window</em> means the account was
-          signed into more recently than the oldest lapse CAPWATCH still retains
-          (${ineligible.oldestRetainedLapse || 'unknown'}) — so they did not lapse, and most
-          likely transferred out of the wing while remaining a current member elsewhere.</p>
+          future, so there is no lapse date to measure a grace period from.</p>
         </div>
         <table>
           <tr><th>Name</th><th>CAPID</th><th>CAPWATCH</th><th>Email</th></tr>
