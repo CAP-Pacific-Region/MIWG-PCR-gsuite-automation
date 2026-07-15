@@ -955,6 +955,80 @@ function catchUpTransitionMail() {
 }
 
 /**
+ * Records a mailbox as already migrated by other means, so the automation skips
+ * the import but still runs the rest of the lifecycle over it.
+ *
+ * For mail moved by hand before this module existed. Sets the row up exactly as
+ * a real migration would, so catch-up, deletion and the forwarding group all
+ * behave normally — doing this by editing the sheet is easy to get subtly wrong,
+ * because MigratedDate and DeleteAfter have to agree.
+ *
+ * @param {string} capid
+ * @param {string} migratedDateIso - when the manual migration happened. THIS
+ *   MATTERS: catch-up sweeps everything after it, so it is the boundary between
+ *   "already copied" and "still to copy".
+ *
+ *   Err EARLY. Too early re-imports mail that is already there, costing
+ *   duplicates the member can delete. Too late silently skips mail that arrived
+ *   after the manual copy but before this row was marked, and that mail dies
+ *   permanently when the account is deleted. If you cannot remember when you did
+ *   it, guess generously in the early direction.
+ *
+ * @param {string} [note]
+ * @returns {{capid: string, migratedDate: string, deleteAfter: string}}
+ */
+function markTransitionMigrated(capid, migratedDateIso, note) {
+  if (!migratedDateIso) {
+    throw new Error('migratedDateIso is required — it is the boundary catch-up ' +
+      'sweeps from. Guess early rather than late: too early costs duplicates, ' +
+      'too late loses mail permanently.');
+  }
+
+  const migratedAt = new Date(migratedDateIso);
+  if (isNaN(migratedAt.getTime())) {
+    throw new Error('Unparseable migratedDateIso: ' + migratedDateIso);
+  }
+  if (migratedAt > new Date()) {
+    throw new Error('migratedDateIso is in the future: ' + migratedDateIso);
+  }
+
+  const rows = readTransitions_();
+  const row = rows[String(capid)];
+  if (!row) throw new Error('No transition row for CAPID ' + capid);
+
+  // Deletion is measured from NOW, not from the manual migration: the 14 days
+  // exist to give the member time to notice missing mail after being told, and
+  // they are being told now.
+  const deleteAfter = new Date();
+  deleteAfter.setDate(deleteAfter.getDate() + TRANSITION_CONFIG.POST_MIGRATION_DELETE_DAYS);
+
+  setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.COMPLETE);
+  setTransitionField_(row._rowNumber, 'MigratedDate', migratedAt.toISOString());
+  setTransitionField_(row._rowNumber, 'DeleteAfter', deleteAfter.toISOString());
+  setTransitionField_(row._rowNumber, 'LastCursor', '');
+  setTransitionField_(row._rowNumber, 'Notes',
+    `Migrated manually, recorded ${new Date().toISOString()}` + (note ? ': ' + note : ''));
+
+  Logger.info('Transition marked as manually migrated', {
+    capid: capid,
+    name: row.Name,
+    migratedDate: migratedAt.toISOString(),
+    deleteAfter: deleteAfter.toISOString()
+  });
+
+  console.log(`Marked ${capid} (${row.Name}) COMPLETE.`);
+  console.log(`  Catch-up will sweep everything after ${migratedAt.toISOString()}.`);
+  console.log(`  No completion email was sent — send one, or tell them yourself,`);
+  console.log(`  before the account is deleted after ${deleteAfter.toISOString()}.`);
+
+  return {
+    capid: String(capid),
+    migratedDate: migratedAt.toISOString(),
+    deleteAfter: deleteAfter.toISOString()
+  };
+}
+
+/**
  * Clears FAILED rows back to PENDING so migration will retry them.
  *
  * FAILED is terminal by design — it blocks both retry and deletion until a human
