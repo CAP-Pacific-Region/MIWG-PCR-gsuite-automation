@@ -117,15 +117,31 @@ next to each entry below.
   Unrecognized levels sort last rather than being guessed at; `Array.sort` is stable, so
   they retain CAPWATCH's own order.
 
-  > Not changed: the logo still points at the Frontify CDN URL this repo has always used,
-  > **not** the `civilairpatrolmac.github.io` PNG the official generator now serves. Ours
-  > carries an embedded Frontify token; if that ever rotates, every signature breaks.
-  > Worth a deliberate decision about which host to depend on.
-  >
-  > Also not changed: the duty line is prefixed with `member.orgName` — the member's *home
-  > unit* — regardless of the level the duty is held at. A squadron member holding a
-  > wing-level duty therefore renders as "Squadron 123 Director of IT". The duty's real
-  > charter exists in `dutyPositions[].value` but not as a field. Pre-existing.
+  > Both open items from this entry — the logo host and the duty line's org prefix — are
+  > resolved in v1.9.0 below.
+
+- **`UpdateMembers.gs` (v1.9.0)** — signature duty lines named the **wrong org**. They
+  were prefixed with `member.orgName`, the member's *home unit*, regardless of where the
+  duty is actually held: a squadron member with a wing-level duty read "San Jose Sr Sqdn
+  80 Director of IT". `addDutyPositions()` and `addCadetDutyPositions()` now carry the
+  duty's own `orgName` (from the org that duty record points at), and `getDutyBlock()`
+  uses it, falling back to the home unit.
+
+  Unit names are also expanded for display by `formatOrgName_()`:
+  `SAN JOSE SR SQDN 80` → **San Jose Senior Squadron 80**. Expansions: `Sq`/`Sqdn` →
+  Squadron, `Cdt` → Cadet, `Comp` → Composite, `Sr` → Senior. Matching ignores case and
+  a trailing period, and is **scoped to org names only** — it never runs over a person's
+  name, so a member whose suffix is `Sr` stays "Vance Sr" rather than "Vance Senior".
+
+  **Logo moved off the Frontify CDN token URL** to the copy served alongside CAP's own
+  generator (`cap-brand-tools.netlify.app/.../LogoNoAux.png`) — a 2000×415 master
+  rendered to 200×42, so it stays sharp on high-DPI displays.
+
+  > ⚠️ Explicitly **not** the generator's own `LOGO_URL_OUTPUT`
+  > (`civilairpatrolmac.github.io/CAP-Brand-Tools/...`): that URL **404s**, as does the
+  > whole GitHub Pages site. Signatures produced by CAP's official tool therefore have a
+  > broken logo. Verify any replacement with a HEAD request — a dead URL here is silent
+  > in the logs and only shows up as a broken image in mail that has already been sent.
 
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record

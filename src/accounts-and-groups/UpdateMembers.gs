@@ -1,17 +1,26 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.8.0
+ * Version: 1.9.0
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.8.0)
- * Changes: generateEmailSignature() reconciled with the CAP brand style guide's own
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.9.0)
+ * Changes: Signature duty lines now name the org the duty is actually HELD at rather
+ *   than the member's home unit — a squadron member with a wing duty read "San Jose
+ *   Sr Sqdn 80 Director of IT". addDutyPositions()/addCadetDutyPositions() now carry
+ *   the duty's orgName. Unit names are expanded for display via formatOrgName_():
+ *   "SAN JOSE SR SQDN 80" -> "San Jose Senior Squadron 80" (Sq/Sqdn/Cdt/Comp/Sr).
+ *   Expansion is scoped to org names only, so a member whose SUFFIX is "Sr" stays
+ *   "Vance Sr". Logo moved off the Frontify CDN token URL to the copy served with
+ *   CAP's own generator (2000x415 master, crisper on high-DPI). NOT the generator's
+ *   LOGO_URL_OUTPUT — that GitHub Pages URL 404s.
+ *   (1.8.0: generateEmailSignature() reconciled with the CAP brand style guide's own
  *   generator (cap-brand-tools): the "Civil Air Patrol, U.S. Air Force Auxiliary"
  *   line is bold and 5px from the phones (was normal-weight with a 20px gap); the
  *   duty block is capped at TWO assignments sorted highest-to-lowest org level, and
  *   is omitted entirely when empty rather than printing 'Member' or an empty
  *   heading; the phone row is omitted when the member has no phone rather than
  *   printing a bare "(M)"; the logo carries width/height/alt and display:block.
- *   (1.7.0: updateSignatureForAllAliases() now writes ONLY to Send-As identities on
+ *   1.7.0: updateSignatureForAllAliases() now writes ONLY to Send-As identities on
  *   a domain this tenant owns, via isOrgOwnedSendAs_. Its guard was a hard-coded
  *   "@pcrcap.org" check that shipped commented out, so it stamped the CAP signature
  *   onto every identity a member had — including personal accounts they added
@@ -546,12 +555,17 @@ function addDutyPositions(members, dutyPositionData, squadrons) {
     if (members[dutyPositionData[i][0]]) {
       let dutyPositionID = dutyPositionData[i][1].trim();
       const indicator = dutyPositionData[i][4] == '1' ? ' (A)' : ' (P)';
-      const charter = squadrons[dutyPositionData[i][7]] ? squadrons[dutyPositionData[i][7]].charter : 'Unknown';
+      const dutyOrg = squadrons[dutyPositionData[i][7]];
+      const charter = dutyOrg ? dutyOrg.charter : 'Unknown';
       members[dutyPositionData[i][0]].dutyPositions.push({
         value: dutyPositionID + indicator + ' (' + charter + ')',
         id: dutyPositionID,
         level: dutyPositionData[i][3],
-        assistant: dutyPositionData[i][4] == '1'
+        assistant: dutyPositionData[i][4] == '1',
+        // The org this duty is actually held at, which is NOT necessarily the
+        // member's home unit — a squadron member can hold a wing-level duty.
+        // Signatures name the duty's org, so they need it here.
+        orgName: dutyOrg ? dutyOrg.name : ''
       });
       members[dutyPositionData[i][0]].dutyPositionIds.push(dutyPositionID);
       members[dutyPositionData[i][0]].dutyPositionIdsAndLevel.push(
@@ -664,7 +678,9 @@ function addCadetDutyPositions(members, cadetDutyPositionData, squadrons) {
       value: value,
       id: dutyId,
       level: level,
-      assistant: isAsst
+      assistant: isAsst,
+      // See addDutyPositions(): the duty's own org, not the member's home unit.
+      orgName: squadron ? squadron.name : ''
     });
 
     // Keep these in sync with seniors too
@@ -2352,6 +2368,25 @@ function getWingCode() {
 }
 
 /**
+ * Logo used in the email signature, hot-linked from every member's mail client.
+ *
+ * This is the copy served alongside CAP's own signature generator. It is a 2000x415
+ * master rendered down to 200x42 by the <img> attributes, so it stays sharp on
+ * high-DPI displays where a 200px-wide asset looks soft.
+ *
+ * NOT the generator's own LOGO_URL_OUTPUT constant — that points at
+ * civilairpatrolmac.github.io/CAP-Brand-Tools/..., which 404s (the whole GitHub
+ * Pages site does), so signatures built with the official tool have a broken image.
+ * The previous URL here was a Frontify CDN link carrying an embedded token; it
+ * resolves today, but a token rotation would break every signature at once.
+ *
+ * Verify with a HEAD request before changing it. A dead URL here is invisible in
+ * the logs and shows up only as a broken image in already-sent mail.
+ */
+const CAP_SIGNATURE_LOGO_URL =
+  'https://cap-brand-tools.netlify.app/signature-generator/LogoNoAux.png';
+
+/**
  * Organizational level, highest first. The CAP style guide wants duty assignments
  * "listed highest to lowest organizational level". CAPWATCH levels are documented
  * as UNIT/GROUP/WING (docs/API_REFERENCE.md); REGION and NAT are included for the
@@ -2388,8 +2423,44 @@ function getDutyBlock(member) {
     .slice()
     .sort((a, b) => dutyLevelRank_(a.level) - dutyLevelRank_(b.level))
     .slice(0, 2)
-    .map(dp => `${toTitleCase(member.orgName)} ${dp.id}`)
+    // Name the org the duty is held at, falling back to the member's home unit
+    // for duty records that predate orgName being carried (see addDutyPositions).
+    .map(dp => `${formatOrgName_(dp.orgName || member.orgName)} ${dp.id}`)
     .join('<br />');
+}
+
+/**
+ * CAPWATCH unit-name abbreviations, expanded for display.
+ *
+ * Keys are compared upper-cased and stripped of a trailing period, so "Sqdn",
+ * "SQDN" and "Sqdn." all match. Deliberately scoped to ORG NAMES only — it is
+ * never run over a person's name, so a member whose suffix is "Sr" stays
+ * "Wilson Sr" and does not become "Wilson Senior".
+ */
+const ORG_NAME_EXPANSIONS = {
+  SQ: 'Squadron',
+  SQDN: 'Squadron',
+  CDT: 'Cadet',
+  COMP: 'Composite',
+  SR: 'Senior'
+};
+
+/**
+ * Title-cases a CAPWATCH unit name and expands its abbreviations:
+ * "SAN JOSE SR SQDN 80" -> "San Jose Senior Squadron 80".
+ *
+ * @param {string} orgName - Raw CAPWATCH unit name
+ * @returns {string} Display form
+ */
+function formatOrgName_(orgName) {
+  return toTitleCase(String(orgName || ''))
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => {
+      const key = word.replace(/\.$/, '').toUpperCase();
+      return ORG_NAME_EXPANSIONS[key] || word;
+    })
+    .join(' ');
 }
 
 /**
@@ -2493,7 +2564,7 @@ ${phoneFormatted ? `<p style="font-size: 12px; line-height: 12px;
 
 <a href="https://www.GoCivilAirPatrol.com">
   <img
-    src="https://cdn-assets-cloud.frontify.com/s3/frontify-cloud-files-us/eyJwYXRoIjoiZnJvbnRpZnlcL2ZpbGVcLzFNOTF6UzJGRXByV0pNUjQ1cnkxLnBuZyJ9:frontify:kAS-l74of5IyRDi0IxD9lG5yNH6i-Zg30PGjGUjU8y0?width=200"
+    src="${CAP_SIGNATURE_LOGO_URL}"
     width="200"
     height="42"
     style="display:block; border:0; outline:none; text-decoration:none;
