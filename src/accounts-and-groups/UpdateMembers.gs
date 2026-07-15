@@ -1,18 +1,25 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.5.0
+ * Version: 1.6.0
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0)
- * Changes: updateGmailSendAsDisplayName() now mirrors the display name onto the
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.6.0)
+ * Changes: New accounts now get a REAL signature. runDelayedGmailSetup() rebuilt
+ *   `{ capsn }` from its queued record and passed that to generateEmailSignature(),
+ *   so every new account received a signature with a blank name, no phone and a
+ *   duty of "Member"; queueForDelayedGmailSetup() now carries the member fields the
+ *   generator reads. Ungraded seniors (CAPWATCH rank 'SM', which the CAP style guide
+ *   does not permit as a grade and which rendered literally as "SM Jane Doe") are now
+ *   shown as "Jane M. Doe" via getSignatureName() until their first promotion.
+ *   (1.5.0: updateGmailSendAsDisplayName() now mirrors the display name onto the
  *   user's org-owned ALIAS Send-As identities too (step 3), not just
  *   sendAs/{primaryEmail} — so an address on the secondary domain no longer keeps
  *   whatever Gmail auto-assigned and go stale on promotion. Only identities on
  *   CONFIG.EMAIL_DOMAIN / CONFIG.SECONDARY_EMAIL_DOMAIN are touched; a member's
  *   personal Send-As is never renamed. Patches only when the name differs, so a
  *   settled roster costs one list call per user and no writes.
- *   (1.4.5: AdminDirectory.Users.list standardized to customer:"my_customer";
- *   testImpersonationToken uses console.log (Logger is overridden).)
+ *   1.4.5: AdminDirectory.Users.list standardized to customer:"my_customer";
+ *   testImpersonationToken uses console.log — Logger is overridden.)
  *   See PCR_CHANGELOG.md.
  *
  * Description:
@@ -2346,6 +2353,41 @@ function getDutyBlock(member) {
 }
 
 /**
+ * Builds the signature's name line.
+ *
+ * A senior member awaiting their first promotion carries CAPWATCH rank 'SM'.
+ * getPublicRank() has no mapping for it, so it used to render literally as
+ * "SM Jane Doe" — and the CAP style guide does not permit 'SM' as a grade
+ * designation at all. Show those members by name with a middle initial instead
+ * ("Jane M. Doe"); once promoted, the normal grade + name form takes over and the
+ * initial drops off ("2nd Lt. Jane Doe"), which is the convention the style guide's
+ * own generator follows.
+ *
+ * @param {Object} member - CAPWATCH member object
+ * @returns {string} e.g. "Maj. Jane Doe", or ungraded, "Jane M. Doe"
+ */
+function getSignatureName(member) {
+  const first = String(member.firstName || '').trim();
+  const last = String(member.lastName || '').trim();
+
+  if (isUngradedRank_(member.rank)) {
+    const initial = String(member.middleName || '').trim().charAt(0);
+    return [first, initial ? initial + '.' : '', last].filter(Boolean).join(' ');
+  }
+
+  return [getPublicRank(member.rank), first, last].filter(Boolean).join(' ');
+}
+
+/**
+ * True for a member with no grade to display. CAPWATCH uses 'SM' for a senior
+ * member who has not been promoted yet; a blank Rank column means the same thing.
+ */
+function isUngradedRank_(rank) {
+  const r = String(rank || '').trim().toUpperCase();
+  return r === '' || r === 'SM';
+}
+
+/**
  * Generates an HTML email signature for a member using the standard CAP template.
  * This produces a Gmail-ready HTML block that can be pasted into the user's signature settings
  * or pushed programmatically.
@@ -2354,9 +2396,7 @@ function getDutyBlock(member) {
  * @returns {string} HTML signature block
  */
 function generateEmailSignature(member) {
-  const rank = getPublicRank(member.rank);
-  const first = member.firstName || '';
-  const last = member.lastName || '';
+  const nameLine = getSignatureName(member);
   const duty = getDutyBlock(member);
   const wingCode = getWingCode(member);
   const phoneDigits = member.phone ? member.phone.replace(/\D/g, '').slice(-10) : '';
@@ -2371,7 +2411,7 @@ function generateEmailSignature(member) {
 <h1 style="font-size: 12px; line-height: 12px;
            font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
            color: #001871; font-weight: bold; margin: 0 0 5px;">
-  ${rank} ${first} ${last}
+  ${nameLine}
 </h1>
 
 <h2 style="font-size: 12px; line-height: 12px;
@@ -2503,7 +2543,26 @@ function queueForDelayedGmailSetup(email, displayName, member) {
 
   PropertiesService.getScriptProperties().setProperty(
     'gmailsetup_' + script.getUniqueId(),
-    JSON.stringify({ email: email, displayName: displayName, capsn: member.capsn })
+    JSON.stringify({
+      email: email,
+      displayName: displayName,
+      capsn: member.capsn,
+      // Everything generateEmailSignature() reads, carried across to the trigger.
+      // runDelayedGmailSetup() used to rebuild `{ capsn }` from this record and
+      // hand THAT to the generator, so every new account got a signature with a
+      // blank name, no phone, and a duty of "Member".
+      signatureMember: {
+        capsn: member.capsn,
+        rank: member.rank,
+        firstName: member.firstName,
+        middleName: member.middleName,
+        lastName: member.lastName,
+        suffix: member.suffix,
+        phone: member.phone,
+        orgName: member.orgName,
+        dutyPositions: member.dutyPositions
+      }
+    })
   );
 }
 
@@ -2523,11 +2582,20 @@ function runDelayedGmailSetup(e) {
         try {
           updateGmailSendAsDisplayName(data.email, data.displayName);
 
-          const member = { capsn: data.capsn };
-          const signature = generateEmailSignature(member);
-          updateSignatureForAllAliases(data.email, signature);
+          // Records queued by an older version carry no signatureMember. Don't
+          // fall back to `{ capsn }` — that IS the bug that shipped blank
+          // signatures. Skip the signature and say so; the account still gets
+          // its Send-As display name, and the member can use the CAP generator.
+          if (data.signatureMember) {
+            const signature = generateEmailSignature(data.signatureMember);
+            updateSignatureForAllAliases(data.email, signature);
+          } else {
+            Logger.warn('Delayed Gmail setup: record predates the signature fix; ' +
+              'skipping signature rather than pushing a blank one.', { email: data.email });
+          }
 
-          Logger.info("Delayed Gmail setup completed", data);
+          // Log the identifier only — data now carries the member's phone.
+          Logger.info("Delayed Gmail setup completed", { email: data.email });
 
         } catch (err) {
           Logger.error("Delayed Gmail setup failed", {

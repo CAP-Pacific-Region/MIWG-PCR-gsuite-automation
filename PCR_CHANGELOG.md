@@ -62,6 +62,26 @@ next to each entry below.
   > backfill by hand. It is now listed in [ADMIN_GUIDE §8](docs/ADMIN_GUIDE.md) at
   > 8–9 AM; **the trigger must still be created per tenant.**
 
+- **`UpdateMembers.gs` (v1.6.0)** — new accounts received a **blank signature**.
+  `runDelayedGmailSetup()` rebuilt `{ capsn }` from its queued Script Properties
+  record and handed that to `generateEmailSignature()`, which therefore rendered an
+  empty name line, an empty `(M)` phone row, and a duty of "Member" — then pushed it
+  to the account five minutes after creation, on every tenant.
+  `queueForDelayedGmailSetup()` now carries the fields the generator reads
+  (`signatureMember`). Records queued by the older code have no such field; rather
+  than reproduce the bug they are skipped with a warning, and the account still gets
+  its Send-As display name.
+
+  Also: an ungraded senior (CAPWATCH rank `SM`) rendered literally as "SM Jane Doe".
+  The CAP style guide does not permit `SM` as a grade designation, and
+  `getPublicRank()` has no mapping for it, so it passed straight through. New
+  `getSignatureName()` shows ungraded members by name with a middle initial —
+  "Jane M. Doe" — until their first promotion, after which the normal grade + name
+  form resumes. A blank Rank column is treated the same way.
+
+  > Existing users are deliberately untouched: `pushAllSignatures()` remains manual
+  > and off the §8 schedule, by request. Only newly created accounts get a signature.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until
