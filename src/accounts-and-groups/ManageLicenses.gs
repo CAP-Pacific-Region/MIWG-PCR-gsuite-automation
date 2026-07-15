@@ -1153,9 +1153,12 @@ function LIVE_deleteIneligibleSuspendedUsers(e) {
 
   console.log('\n=== LIVE — accounts below will be PERMANENTLY deleted ===');
   console.log('No Archived User licenses on this edition: no archive, no undo.\n');
+  // Deliberately does not log the invoking user: Session.getActiveUser() needs
+  // the userinfo.email scope, which this manifest does not carry, and adding it
+  // would force every tenant to re-authorize for an audit line the Apps Script
+  // execution log already records. (It threw here on 2026-07-15.)
   Logger.warn('Manual LIVE deletion invoked', {
-    function: 'LIVE_deleteIneligibleSuspendedUsers',
-    by: Session.getActiveUser().getEmail()
+    function: 'LIVE_deleteIneligibleSuspendedUsers'
   });
 
   return deleteIneligibleSuspendedUsers(false);
@@ -2146,44 +2149,26 @@ function deleteIneligibleWorkspaceUsers(dryRun = true) {
   return results;
 }
 
-/**
- * LIVE. Permanently deletes the accounts deleteIneligibleWorkspaceUsers()
- * lists — the ad-hoc bulk path, unrelated to the monthly reaper's grace period.
- * This is the function that deleted 257 accounts in June 2026.
- *
- * Same reason as LIVE_deleteIneligibleSuspendedUsers: the editor's Run button
- * passes no arguments, so deleteIneligibleWorkspaceUsers always dry-runs from
- * the dropdown and there has never been a way to arm it without editing code.
- *
- * Run deleteIneligibleWorkspaceUsers() (dry, from the dropdown) first and read
- * the list. Honours DELETE_AUDIT_EXCEPTIONS and only ever touches accounts that
- * are already suspended.
- *
- * @param {Object} [e] - Trigger event. Present only when fired by a trigger,
- *   which is refused — this path has no grace period at all and is never safe to
- *   schedule.
- * @returns {Array<Object>} See deleteIneligibleWorkspaceUsers()
- */
-function LIVE_deleteIneligibleWorkspaceUsers(e) {
-  if (e) {
-    throw new Error(
-      'LIVE_deleteIneligibleWorkspaceUsers is manual-only and was invoked by a ' +
-      'trigger. Nothing was deleted. This path applies no grace period — it ' +
-      'deletes every suspended account the audit flags, immediately — and must ' +
-      'never run unattended. For scheduled reclamation use the monthly ' +
-      'lifecycle, which measures a 30-day grace from CAPWATCH expiry.'
-    );
-  }
-
-  console.log('\n=== LIVE — accounts below will be PERMANENTLY deleted ===');
-  console.log('No Archived User licenses on this edition: no archive, no undo.\n');
-  Logger.warn('Manual LIVE deletion invoked', {
-    function: 'LIVE_deleteIneligibleWorkspaceUsers',
-    by: Session.getActiveUser().getEmail()
-  });
-
-  return deleteIneligibleWorkspaceUsers(false);
-}
+// NOTE: deliberately NO LIVE_ wrapper for deleteIneligibleWorkspaceUsers().
+//
+// One was added on 2026-07-15 and removed the same hour. It sorted directly
+// beside LIVE_deleteIneligibleSuspendedUsers in the editor's dropdown —
+// "Suspended" and "Workspace", one scroll apart — and the first real use picked
+// the wrong one. It only failed because an unrelated missing OAuth scope threw
+// before the deletion ran; otherwise it would have deleted every suspended
+// account on the domain, including 35 members who had lapsed 15 days earlier and
+// were mid-grace, a member who had merely transferred to another wing, and two
+// current PATRONs.
+//
+// This path applies NO grace period and consults none of the transfer or expiry
+// logic: it deletes everything auditWorkspaceUsersForRemoval() flags that is
+// currently suspended. It is the right tool for a deliberate, reviewed bulk
+// cleanup (it took 257 accounts in June 2026) and the wrong tool for anything
+// routine — use the monthly lifecycle for that.
+//
+// Arming it should stay inconvenient. Call deleteIneligibleWorkspaceUsers(false)
+// from a scratch function you write at the time and delete afterwards; the
+// friction is the feature.
 
 /**
  * Manual function to reactivate a specific archived user
