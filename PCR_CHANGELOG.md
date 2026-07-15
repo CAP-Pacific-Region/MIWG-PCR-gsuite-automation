@@ -10,6 +10,115 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-15] — The ineligible-suspended reaper, repaired
+
+### Fixed
+
+- **`ManageLicenses.gs` (v1.1.0)** — `deleteIneligibleSuspendedUsers()` has never
+  deleted anything since it was added in June 2026. Its `fields` selector asked
+  for `employeeId`, which is **not** a field on the Admin SDK Directory User
+  resource (it belongs to the People API), so the API returned 400 `Invalid field
+  selection employeeId` and the function threw on its first page, every run.
+  `manageLicenseLifecycle()` wraps that call in try/catch and filed the error into
+  `summary.errors`, so it failed quietly into the monthly report for a month. The
+  June 2026 cleanup of 257 stale accounts was `deleteIneligibleWorkspaceUsers()`,
+  a different function.
+
+  Removing `employeeId` alone would have been dangerous, which is why it wasn't
+  done as a drive-by: the grace period measured **days since last login**, not
+  days since the member lapsed, and every suspended account was already past that
+  cutoff. The first successful run would have deleted the entire suspended
+  population at once, permanently — this edition has no Archived User licenses, so
+  there is no archive and no undo.
+
+  Grace is now measured from the member's **CAPWATCH `Expiration`** date
+  (`Member.txt` column 16, verified by name against the header — `parseFile()`
+  strips it, so the index had never been checked). `lastLoginTime` is retained for
+  human context only and drives no decision. Also fixed: Google returns
+  `lastLoginTime` as the **Unix epoch** for accounts that never signed in rather
+  than omitting the field, so the long-advertised `creationTime` fallback was dead
+  code and such accounts read as ~20649 days stale — an account created yesterday
+  and suspended today sorted as maximally stale.
+
+  Behaviour changes: a **current member is never auto-deleted**, even when
+  ineligible by type (a PATRON's expiry is in the future and cannot date their
+  conversion, so there is nothing safe to measure) — they are surfaced for a human
+  instead. **No CAPWATCH record** now means *deletable*: the extract retains only
+  a rolling window of expired members (~3 months observed — `EXPIRED` rows carry
+  just 3 distinct month-ends), so absence implies a lapse far beyond any grace
+  period. That inference is only sound on a complete extract, hence the new
+  `MIN_MEMBER_ROWS` guard.
+
+  It is also only sound if the member actually lapsed, and that is checkable:
+  lapsing gets you suspended on the next sync, and a suspended account cannot
+  sign in — so a no-record account that was alive *after* the oldest lapse the
+  extract still retains did not lapse at all. A **wing transfer** looks exactly
+  like this: leave CAWG and you vanish from our extract while remaining a current
+  member elsewhere. A live dry run surfaced one (CAPID 697618, last login 26 days
+  prior, confirmed transferred to Nevada Wing), which the rule would otherwise
+  have deleted. The window boundary is derived from the data each run rather than
+  hardcoded, so it tracks CAPWATCH rather than assuming. `lastLoginTime` never
+  sets the grace period, but it is used here to falsify it.
+
+### Added
+
+- **`ManageLicenses.gs`** — the **departure register**, giving members who leave
+  the wing the same grace as members who lapse.
+
+  No departure date is reachable, which was checked rather than assumed.
+  Workspace records no suspension time. CAPWATCH *does* publish transfer dates in
+  `MbrTransfer.txt` (`CAPID`, `TransferDate`, `ToORGID`, `FromORGID`), and an
+  authoritative date would have beaten any proxy — but the table is **inbound
+  only**: every `ToORGID` is a CAWG org, and the wing-scoped extract drops
+  departing members wholesale, transfer row included. The live case (CAPID 697618,
+  confirmed transferred to Nevada Wing on 07-02) appears in none of its 1368 rows.
+  `debugCapwatchTransferFile()` re-checks this cheaply; if CAPWATCH ever carries
+  outbound transfers, `TransferDate` should replace the register outright.
+
+  `lastLoginTime` is not a stand-in either — someone who transfers today after six
+  quiet months would read as six months elapsed and be deleted at once, which is
+  the exact mistake the expiry basis exists to undo (the live case had last logged
+  in 26 days before a departure that was hours old; a login-based timer would have
+  left him 4 days instead of 30).
+
+  So the timer runs from when the job **first saw them gone**. A transfer suspends
+  them on the next sync, so first sighting lands within a sync cycle of the real
+  departure, and any error runs long rather than short. State lives in a Script
+  Property (`LICENSE_DEPARTED_FIRST_SEEN`, CAPID → ISO date) because `clasp push`
+  overwrites code and would otherwise reset every timer on each deploy. The
+  register is rewritten each live run from whoever is still departed, so returners
+  prune themselves; it is written *before* deletions, so a mid-run crash cannot
+  silently hand everyone a fresh 30 days; and **dry runs never write it**, so a
+  preview cannot start a deletion clock. An unreadable register restarts timers
+  rather than expiring them. `resetDepartedRegister()` clears it by hand.
+
+  Worth noting the backstop: a member wrongly caught here spends 30 days suspended
+  before anything irreversible happens, and a locked-out member complains.
+
+  The function now **defaults to a dry run** and returns a result object
+  (`candidates` / `withinGrace` / `activeIneligible` / `unknownExpiry`) rather than
+  a bare array. `previewIneligibleSuspendedDeletion()` is a new entry point, also
+  wired into `previewLicenseLifecycle()`, which previously covered only
+  `previewArchival()` / `previewDeletion()` and left this path with no dry run at
+  all. `manageLicenseLifecycle()` still calls it in dry-run mode; the monthly
+  reaper is **not armed** until that flag is flipped. The report email reports
+  candidates, spared-within-grace, and needs-review separately, and no longer
+  claims deletions that did not happen.
+
+### Added
+
+- **`config.gs` (v1.5.0)** — `MIN_MEMBER_ROWS` (1000). `deleteIneligibleSuspendedUsers()`
+  treats a missing CAPWATCH record as proof of a long-ago lapse; a truncated
+  `Member.txt` would therefore make thousands of current members look deletable.
+  `parseFile()`'s fallback parser can quietly return a partial row set, so the
+  deletion path now refuses to run below this floor. The seniors extract carries
+  ~5,000 rows.
+
+- **`ManageLicenses.gs`** — `debugCapwatchMemberExpirationColumn()`, a read-only
+  diagnostic printing the `Member.txt` header, the distribution of expiration
+  values by member status, and raw rows for given CAPIDs. Written to verify the
+  column-16 index before an irreversible policy was built on it.
+
 ## [2026-07-14] — Secondary-domain aliases for listed accounts
 
 ### Added

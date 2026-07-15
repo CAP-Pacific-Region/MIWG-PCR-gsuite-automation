@@ -1,17 +1,32 @@
 /**
  * License Lifecycle Management Module
  *
- * Version: 1.0.0
- * Date: 2026-07-09
- * Changes: AdminDirectory.Users.list standardized to customer:"my_customer"
- *   (was domain — 400 Bad Request on the cadets tenant). See PCR_CHANGELOG.md.
+ * Version: 1.2.0
+ * Date: 2026-07-15
+ * Changes: 1.2.0 — members who leave the wing get the same 30-day grace as
+ *   members who lapse, timed from first sighting via a departure register in a
+ *   Script Property. No real departure date is reachable: MbrTransfer.txt is
+ *   inbound-only and a departing member is dropped from the wing-scoped extract
+ *   entirely. Added debugCapwatchTransferFile() recording that finding.
+ *   1.1.0 — deleteIneligibleSuspendedUsers() repaired. It had never once
+ *   run: its field selector asked for employeeId, which is not a Directory User
+ *   field, so every call 400'd on its first page and manageLicenseLifecycle()
+ *   filed the error into the monthly report. Its grace period also measured days
+ *   since last login rather than days since the member lapsed, and Google returns
+ *   lastLoginTime as the Unix epoch (not absent) for never-logged-in accounts, so
+ *   those read as ~20649 days stale. Grace is now measured from the CAPWATCH
+ *   Expiration column; current members are never auto-deleted; and the function
+ *   defaults to a dry run. See PCR_CHANGELOG.md.
+ *   1.0.0 — AdminDirectory.Users.list standardized to customer:"my_customer"
+ *   (was domain — 400 Bad Request on the cadets tenant).
  *
  * Manages Google Workspace license optimization and user account lifecycle:
  * - Auto-reactivates users who renewed their membership
  * - Archives users suspended for 1+ year who are inactive in CAPWATCH
  * - Deletes users archived for 5+ years who are inactive in CAPWATCH
+ * - Deletes suspended accounts of members who lapsed 30+ days ago
  * - Maintains license pool availability
- * 
+ *
  * RECOMMENDED SCHEDULE: Run monthly around the 15th
  * This avoids conflicts with beginning-of-month member sync and provides
  * buffer after renewal processing.
@@ -47,6 +62,7 @@ function manageLicenseLifecycle() {
     archived: [],
     deleted: [],
     deletedIneligible: [],
+    ineligibleResult: null,
     errors: [],
     startTime: start.toISOString()
   };
@@ -62,16 +78,22 @@ function manageLicenseLifecycle() {
     // Kept commented out since archiving is unavailable (step above no-ops).
     // summary.deleted = deleteLongArchivedUsers(activeCapsns);
 
-    // Step 3: Delete suspended ineligible users after 30-day grace period.
+    // Step 3: Report suspended ineligible users that are past the grace period.
     // Ineligible = suspended in Workspace AND not an eligible active CAPWATCH
-    // member (PATRON, lapsed, no record, etc.). Accounts become eligible
-    // again before deletion if the member's CAPWATCH type or status changes
-    // — reactivateRenewedMembers() handles that path and prevents deletion.
+    // member (lapsed, no record, etc.). Accounts become eligible again before
+    // deletion if the member's CAPWATCH type or status changes —
+    // reactivateRenewedMembers() handles that path and prevents deletion.
     //
     // Exception: members mid-transition to the senior tenant are skipped here.
     // CadetTransition.gs holds their mailbox open on its own 90-day clock and
     // deletes it once their mail has been migrated across.
-    summary.deletedIneligible = deleteIneligibleSuspendedUsers();
+    //
+    // STILL A DRY RUN. The grace period now measures the right thing (days since
+    // CAPWATCH expiry, not days since last login), so this list is a safe delete
+    // set — but nobody has watched it run live yet, and deletion is permanent on
+    // this edition. Flip to false to arm the monthly reaper.
+    summary.ineligibleResult = deleteIneligibleSuspendedUsers(true);
+    summary.deletedIneligible = summary.ineligibleResult.deleted;
 
   } catch (err) {
     Logger.error('License lifecycle management failed', err);
@@ -401,40 +423,125 @@ function deleteLongArchivedUsers(activeCapsns) {
 }
 
 /**
- * Deletes suspended Workspace accounts that are ineligible for a seat and
- * have been suspended for at least LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE
- * days (default 30).
+ * Deletes suspended Workspace accounts belonging to members who lapsed at least
+ * LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE days ago (default 30), freeing
+ * seats against the 2000-user domain cap.
  *
- * Ineligible = not an eligible active CAPWATCH member (not in
- * CONFIG.MEMBER_TYPES.ACTIVE with ACTIVE status) AND not a Manual Member.
- * This mirrors the criteria used by suspendExpiredMembers() /
- * auditWorkspaceUsersForRemoval() — the same population that gets suspended
- * immediately on determination of ineligibility.
+ * Defaults to a dry run. Pass dryRun=false to actually delete. Deletion is
+ * PERMANENT here: this edition has no Archived User licenses, so there is no
+ * archive and no undo beyond Google's ~20-day recovery window.
  *
- * If a member becomes eligible again BEFORE this threshold (e.g. a PATRON
- * upgrades to SENIOR), reactivateRenewedMembers() unsuspends them and they
- * never reach the delete threshold.
+ * THE GRACE PERIOD IS MEASURED FROM CAPWATCH EXPIRATION, not from lastLoginTime.
+ * The two are unrelated: someone who stopped reading their mail a year ago but
+ * renewed last month is a current member, while lastLoginTime says they are the
+ * stalest account on the domain. Workspace exposes no suspension timestamp, and
+ * suspension follows expiry on the next sync, so the Expiration column is the
+ * closest authoritative date to the event this grace period is actually about.
  *
- * Uses lastLoginTime as a proxy for when the account became inactive
- * (same approach as archiveLongSuspendedUsers). Accounts that never logged
- * in use creationTime as the fallback — these have no usage data to preserve
- * so immediate eligibility for deletion is acceptable.
+ * lastLoginTime never dates a lapse and so never drives the grace period — but
+ * it can DISPROVE one, and is used for exactly that in the no-record branch
+ * below. It is otherwise reported as context for a human reader.
  *
- * @returns {Array<Object>} Accounts that were deleted
+ * Decision order per suspended account:
+ *
+ *   Manual Member          -> never deleted (allow-list)
+ *   held for transition    -> never deleted (CadetTransition.gs owns the clock)
+ *   CADET                  -> skipped (separate domain, out of scope)
+ *   MbrStatus ACTIVE       -> never auto-deleted, even when ineligible by type.
+ *                             A PATRON is a current member; their expiry is in
+ *                             the future and cannot date their conversion, so
+ *                             there is nothing safe to measure. Surfaced for a
+ *                             human instead.
+ *   lapsed, expiry known   -> deleted once >= grace days past Expiration
+ *   lapsed, expiry absent  -> held and surfaced; cannot measure, so no deletion
+ *   no CAPWATCH record     -> deleted, but only if the claim survives a check.
+ *                             Member.txt retains a rolling window of lapsed
+ *                             members (~3 months observed), so falling out of it
+ *                             means lapsing before the oldest lapse it still
+ *                             carries — far beyond any 30-day grace. Two things
+ *                             can falsify that:
+ *                               - a short extract, which would make current
+ *                                 members look absent (MIN_MEMBER_ROWS guard);
+ *                               - the account being alive after that boundary,
+ *                                 which is impossible for someone who lapsed
+ *                                 before it, since lapsing gets you suspended and
+ *                                 a suspended account cannot sign in. That is a
+ *                                 wing transfer — see below.
+ *   left the wing          -> deleted, but only after the same grace as a lapse,
+ *                             timed from when this job FIRST SAW them gone
+ *                             (the departure register, a Script Property). No
+ *                             departure date is reachable: Workspace records no
+ *                             suspension time, and CAPWATCH's MbrTransfer.txt is
+ *                             inbound-only, so a member who leaves takes their
+ *                             transfer row with them — see the register's own
+ *                             docs for the evidence.
+ *                             lastActivity is not a stand-in — someone who
+ *                             transfers today after six quiet months would read
+ *                             as six months elapsed and die immediately, which is
+ *                             the very mistake the expiry basis exists to undo.
+ *                             A transfer suspends them on the next sync, so first
+ *                             sighting is within a sync cycle of the real
+ *                             departure and errs long. Their 30 suspended days
+ *                             are also the backstop: a member wrongly caught here
+ *                             is locked out and will say so.
+ *
+ * @param {boolean} dryRun - When true (default), no accounts are deleted and the
+ *   departure register is not written — so a dry run never starts a deletion
+ *   clock. Timers begin on the first live run.
+ * @returns {Object} { dryRun, graceDays, memberRows, oldestRetainedLapse,
+ *   deleted, candidates, withinGrace, activeIneligible, unknownExpiry,
+ *   departedWithinGrace }
  */
-function deleteIneligibleSuspendedUsers() {
-  Logger.info('Starting deletion of ineligible suspended users');
+function deleteIneligibleSuspendedUsers(dryRun = true) {
+  Logger.info('Starting deleteIneligibleSuspendedUsers', { dryRun: dryRun });
 
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE);
+  const graceDays = LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE;
+  const now = new Date();
 
-  // Build eligibility lookup: CAPID -> {status, type}
+  // Build eligibility lookup: CAPID -> {status, type, expiration}
+  // [16] Expiration, [21] Type, [24] MbrStatus — verified against the Member.txt
+  // header by debugCapwatchMemberExpirationColumn().
   const memberData = parseFile('Member');
+
+  // Oldest lapse still present in the extract, derived rather than assumed: the
+  // window has been ~3 months, but nothing guarantees CAPWATCH keeps it there.
+  // This is the boundary that gives "no CAPWATCH record" its meaning — you only
+  // fall out of Member.txt by lapsing before it.
+  let oldestRetainedLapse = null;
+
+  // A short Member.txt would make current members look like they have no
+  // CAPWATCH record and get them deleted. Refuse rather than guess.
+  if (!memberData || memberData.length < LICENSE_CONFIG.MIN_MEMBER_ROWS) {
+    throw new Error(
+      `deleteIneligibleSuspendedUsers: CAPWATCH Member data looks truncated ` +
+      `(${memberData ? memberData.length : 0} rows, expected at least ` +
+      `${LICENSE_CONFIG.MIN_MEMBER_ROWS}). Refusing to run: this function treats ` +
+      `a missing CAPWATCH record as proof a member lapsed long ago, which would ` +
+      `delete current members' accounts if the extract is incomplete.`
+    );
+  }
   const memberInfoByCapid = {};
   for (let i = 0; i < memberData.length; i++) {
     const capid = String(memberData[i][0] || '').trim();
-    if (capid) memberInfoByCapid[capid] = { status: memberData[i][24], type: memberData[i][21] };
+    if (!capid) continue;
+    memberInfoByCapid[capid] = {
+      status: memberData[i][24],
+      type: memberData[i][21],
+      expiration: memberData[i][16]
+    };
+
+    if (String(memberData[i][24] || '').trim().toUpperCase() !== 'ACTIVE') {
+      const lapsed = parseCapwatchDate_(memberData[i][16]);
+      if (lapsed && (!oldestRetainedLapse || lapsed < oldestRetainedLapse)) {
+        oldestRetainedLapse = lapsed;
+      }
+    }
   }
+  Logger.info('CAPWATCH extract window', {
+    memberRows: memberData.length,
+    oldestRetainedLapse: oldestRetainedLapse ?
+      oldestRetainedLapse.toISOString().slice(0, 10) : null
+  });
 
   // Manual Members allow-list — never delete these
   const manualCapids = {};
@@ -461,15 +568,23 @@ function deleteIneligibleSuspendedUsers() {
   }
 
   // CAPIDs mid-transition to the senior tenant. Their cadet mailbox is still the
-  // only copy of their mail until it is migrated, and this function's cutoff is
-  // derived from lastLoginTime (see below) — which a transitioning member is
-  // usually already past — so without this guard they would be deleted on the
-  // first run after their type flips. CadetTransition.gs deletes them instead,
-  // on its own authoritative clock, once the mail is safely across.
+  // only copy of their mail until it is migrated. A transitioning cadet's old
+  // type has lapsed, so the expiry clock below would happily reap them the first
+  // run after their type flips. CadetTransition.gs deletes them instead, on its
+  // own authoritative clock, once the mail is safely across.
   const heldForTransition = getHeldTransitionCapids();
 
   const eligibleTypes = CONFIG.MEMBER_TYPES.ACTIVE;
-  const deleted = [];
+  const candidates = [];        // past grace — will be deleted
+  const withinGrace = [];       // lapsed recently — spared, will age in
+  const activeIneligible = [];  // current members, ineligible by type — never auto-deleted
+  const unknownExpiry = [];     // lapsed but undateable — held for review
+  const departedWithinGrace = []; // left the wing recently — timer running
+
+  // Departure register: CAPID -> when we first saw them gone. Rebuilt each run
+  // from who is still departed, so returners drop out and stop being tracked.
+  const departedRegister = readDepartedRegister_();
+  const departedSeenThisRun = {};
   let nextPageToken = '';
 
   do {
@@ -477,22 +592,7 @@ function deleteIneligibleSuspendedUsers() {
       customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=true isAdmin=false',
-      // WARNING — this selector is BROKEN and that is currently load-bearing.
-      // employeeId is not a field on the Directory User resource (it belongs to
-      // the People API), so this returns 400 "Invalid field selection employeeId"
-      // and the whole function throws on its first page. It has done so on every
-      // run since it was added in June 2026; manageLicenseLifecycle() catches it
-      // into summary.errors, so it fails quietly and NO automated deletion has
-      // ever happened here. (The June cleanup of 257 stale accounts was
-      // deleteIneligibleWorkspaceUsers(), a different function.)
-      //
-      // Do NOT drop employeeId as a drive-by fix. A backlog of suspended
-      // ineligible accounts has been accumulating with nothing reaping it, and
-      // the cutoff below is a lastLoginTime proxy that every one of them is
-      // already past — so the first successful run would delete the entire
-      // backlog at once, permanently, with no grace and no dry-run available.
-      // Fixing this needs its own change with a preview in front of it.
-      fields: 'users(primaryEmail,name,orgUnitPath,suspended,externalIds,employeeId,creationTime,lastLoginTime),nextPageToken',
+      fields: 'users(primaryEmail,name,orgUnitPath,suspended,externalIds,creationTime,lastLoginTime),nextPageToken',
       pageToken: nextPageToken
     });
 
@@ -502,63 +602,869 @@ function deleteIneligibleSuspendedUsers() {
     for (const user of page.users) {
       const ids = user.externalIds || [];
       const capidExt = ids.find(id => id.type === 'organization');
-      const capid = capidExt ? String(capidExt.value || '').trim() :
-        String(user.employeeId || '').trim();
+      const capid = capidExt ? String(capidExt.value || '').trim() : '';
 
       if (!capid) continue;
       if (manualCapids[capid]) continue;
       if (heldForTransition[capid]) continue;
 
-      // Skip if eligible — means they should be reactivated, not deleted
       const info = memberInfoByCapid[capid];
-      if (info && info.status === 'ACTIVE' && eligibleTypes.indexOf(info.type) > -1) continue;
-      if (info && info.type === 'CADET') continue;
+      const type = info ? String(info.type || '').trim().toUpperCase() : '';
+      const status = info ? String(info.status || '').trim().toUpperCase() : '';
 
-      // Check suspension duration proxy
-      const lastActivity = user.lastLoginTime ?
-        new Date(user.lastLoginTime) : new Date(user.creationTime);
-      if (lastActivity >= cutoff) continue;
+      // Cadets live on a separate domain — out of scope here entirely.
+      if (type === 'CADET') continue;
 
-      try {
-        executeWithRetry(() => AdminDirectory.Users.remove(user.primaryEmail));
+      // lastLoginTime is reported for human context only; nothing below keys off
+      // it. A user who has never signed in comes back with lastLoginTime set to
+      // the Unix epoch rather than with the field absent, so test the value, not
+      // its presence — otherwise every such account reads as ~20649 days stale.
+      const lastLogin = user.lastLoginTime ? new Date(user.lastLoginTime) : null;
+      const neverLoggedIn = !lastLogin || lastLogin.getTime() <= 0;
+      const lastActivity = neverLoggedIn ? new Date(user.creationTime) : lastLogin;
 
-        const name = user.name && user.name.fullName ? user.name.fullName :
-          `${user.name.givenName} ${user.name.familyName}`;
-        deleted.push({
-          email: user.primaryEmail,
-          capsn: capid,
-          name: name,
-          orgUnitPath: user.orgUnitPath || '/',
-          lastActivity: lastActivity.toISOString(),
-          daysSinceActivity: Math.floor((new Date() - lastActivity) / (1000 * 60 * 60 * 24)),
-          deletedAt: new Date().toISOString()
-        });
+      const name = user.name && user.name.fullName ? user.name.fullName :
+        `${user.name.givenName} ${user.name.familyName}`;
+      const expiration = info ? parseCapwatchDate_(info.expiration) : null;
+      const daysSinceExpiration = expiration ?
+        Math.floor((new Date() - expiration) / (1000 * 60 * 60 * 24)) : null;
 
-        Logger.info('Ineligible suspended user deleted', {
-          email: user.primaryEmail,
-          capsn: capid,
-          daysSinceActivity: Math.floor((new Date() - lastActivity) / (1000 * 60 * 60 * 24))
-        });
+      const record = {
+        email: user.primaryEmail,
+        capsn: capid,
+        name: name,
+        orgUnitPath: user.orgUnitPath || '/',
+        neverLoggedIn: neverLoggedIn,
+        lastActivity: lastActivity.toISOString(),
+        daysSinceActivity: Math.floor((new Date() - lastActivity) / (1000 * 60 * 60 * 24)),
+        expiration: expiration ? expiration.toISOString().slice(0, 10) : null,
+        daysSinceExpiration: daysSinceExpiration,
+        reason: info ? `${type || '(blank)'} / ${status || '(blank)'}` : 'no CAPWATCH record',
+        deleted: false,
+        dryRun: dryRun
+      };
 
-        Utilities.sleep(100);
-
-      } catch (e) {
-        Logger.error('Failed to delete ineligible suspended user', {
-          email: user.primaryEmail,
-          capsn: capid,
-          errorMessage: e.message,
-          errorCode: e.details?.code
-        });
+      // A current member is never auto-deleted, whatever their type. Eligible
+      // ones shouldn't be suspended at all (reactivateRenewedMembers() unsuspends
+      // them); ineligible-by-type ones are real members whose expiry lies in the
+      // future and so cannot date the conversion that made them ineligible.
+      // There is nothing safe to measure, so a human decides.
+      if (status === 'ACTIVE') {
+        if (eligibleTypes.indexOf(type) === -1) activeIneligible.push(record);
+        continue;
       }
+
+      if (info) {
+        // Lapsed member with an unreadable Expiration — cannot measure the
+        // grace period, so hold rather than guess.
+        if (!expiration) {
+          unknownExpiry.push(record);
+          continue;
+        }
+        if (daysSinceExpiration < graceDays) {
+          withinGrace.push(record);
+          continue;
+        }
+        record.basis = `lapsed ${daysSinceExpiration}d ago (expired ${record.expiration})`;
+      } else {
+        // No CAPWATCH record. The claim is: they lapsed before
+        // oldestRetainedLapse, which is the only way to fall out of Member.txt.
+        //
+        // That claim is checkable. Lapsing gets you suspended on the next sync,
+        // and a suspended account cannot sign in — so if this account was still
+        // alive after that boundary, it did not lapse before it. It left the wing
+        // (a transfer leaves CAPWATCH silent while the member stays perfectly
+        // current elsewhere). lastActivity is the account's newest sign of life:
+        // last login, or creation for an account never signed into.
+        if (oldestRetainedLapse && lastActivity > oldestRetainedLapse) {
+          // A departure gets the same grace as a lapse — but it cannot be dated
+          // the same way. There is no departure date anywhere: not in CAPWATCH,
+          // which simply goes quiet, and not in Workspace, which records no
+          // suspension time. lastActivity is NOT a substitute; someone who
+          // transfers today after six quiet months would read as six months
+          // elapsed and be deleted immediately — the same mistake the expiry
+          // basis exists to undo.
+          //
+          // So date it from when we first SAW them gone. A transfer suspends them
+          // on the next sync, so first sighting lands within a sync cycle of the
+          // real departure, and any error runs long rather than short.
+          const priorSighting = departedRegister[capid] ?
+            new Date(departedRegister[capid]) : null;
+          const firstSeen = (priorSighting && !isNaN(priorSighting.getTime())) ?
+            priorSighting : now;
+
+          departedSeenThisRun[capid] = firstSeen.toISOString();
+
+          const daysSinceFirstSeen =
+            Math.floor((now - firstSeen) / (1000 * 60 * 60 * 24));
+          record.firstSeenDeparted = firstSeen.toISOString().slice(0, 10);
+          record.daysSinceFirstSeen = daysSinceFirstSeen;
+          record.reason = 'left the wing (no CAPWATCH record, alive after window)';
+
+          if (daysSinceFirstSeen < graceDays) {
+            departedWithinGrace.push(record);
+            continue;
+          }
+          record.basis =
+            `left the wing, first seen gone ${daysSinceFirstSeen}d ago (${record.firstSeenDeparted})`;
+        } else {
+          record.basis = 'no CAPWATCH record — lapsed beyond the extract window';
+        }
+      }
+
+      candidates.push(record);
     }
   } while (nextPageToken);
 
-  Logger.info('Deletion of ineligible suspended users completed', {
-    count: deleted.length,
-    graceDays: LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE
+  // Longest-lapsed first; no-record accounts (undateable, but lapsed beyond the
+  // extract window) sort ahead of everything with a date.
+  candidates.sort((a, b) => {
+    if (a.daysSinceExpiration === null && b.daysSinceExpiration === null) return 0;
+    if (a.daysSinceExpiration === null) return -1;
+    if (b.daysSinceExpiration === null) return 1;
+    return b.daysSinceExpiration - a.daysSinceExpiration;
+  });
+  withinGrace.sort((a, b) => b.daysSinceExpiration - a.daysSinceExpiration);
+
+  console.log(`\n=== ${dryRun ? 'DRY RUN - ' : ''}INELIGIBLE SUSPENDED DELETIONS ===\n`);
+  console.log(`Grace period: ${graceDays} days, measured from CAPWATCH expiry.`);
+  console.log(`Extract retains lapses back to ${oldestRetainedLapse ? oldestRetainedLapse.toISOString().slice(0, 10) : '(unknown)'}.`);
+  console.log('LAPSED = days since membership expired; "no record" = absent from the extract,');
+  console.log('         i.e. lapsed before that date. DAYS = days since last login (* = never');
+  console.log('         logged in); it never sets the grace period, but a no-record account');
+  console.log('         alive after the window is held rather than deleted.\n');
+
+  console.log(`-- ${dryRun ? 'WOULD DELETE' : 'DELETING'} (${candidates.length}) --`);
+  if (candidates.length === 0) console.log('    (none)');
+  candidates.forEach(c => console.log(
+    `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} ${(c.daysSinceExpiration === null ? 'no record' : String(c.daysSinceExpiration) + 'd').padEnd(10)} ${(String(c.daysSinceActivity) + (c.neverLoggedIn ? '*' : '')).padEnd(7)} ${c.email}`
+  ));
+
+  console.log(`\n-- SPARED, still within grace (${withinGrace.length}) --`);
+  withinGrace.forEach(c => console.log(
+    `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} lapsed ${c.daysSinceExpiration}d ago, deletable in ${graceDays - c.daysSinceExpiration}d`
+  ));
+
+  console.log(`\n-- SPARED, current member ineligible by type — needs a human (${activeIneligible.length}) --`);
+  activeIneligible.forEach(c => console.log(
+    `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} ${c.reason.padEnd(24)} ${c.email}`
+  ));
+
+  if (departedWithinGrace.length > 0) {
+    console.log(`\n-- SPARED, left the wing, timer running (${departedWithinGrace.length}) --`);
+    console.log(`   (absent from CAPWATCH but alive after ${oldestRetainedLapse ? oldestRetainedLapse.toISOString().slice(0, 10) : '?'}, so they transferred`);
+    console.log('    rather than lapsed. Timer runs from when we first saw them gone.)');
+    departedWithinGrace.forEach(c => console.log(
+      `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} gone since ${c.firstSeenDeparted} (${c.daysSinceFirstSeen}d), deletable in ${graceDays - c.daysSinceFirstSeen}d`
+    ));
+    if (dryRun) {
+      console.log('   NOTE: dry runs do not write the register, so a first sighting is not');
+      console.log('   recorded until a live run. These timers start then.');
+    }
+  }
+
+  if (unknownExpiry.length > 0) {
+    console.log(`\n-- SPARED, lapsed but expiration unreadable — needs a human (${unknownExpiry.length}) --`);
+    unknownExpiry.forEach(c => console.log(
+      `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} ${c.reason.padEnd(24)} ${c.email}`
+    ));
+  }
+
+  const summary = {
+    dryRun: dryRun,
+    graceDays: graceDays,
+    memberRows: memberData.length,
+    oldestRetainedLapse: oldestRetainedLapse ?
+      oldestRetainedLapse.toISOString().slice(0, 10) : null,
+    candidates: candidates,
+    withinGrace: withinGrace,
+    activeIneligible: activeIneligible,
+    unknownExpiry: unknownExpiry,
+    departedWithinGrace: departedWithinGrace,
+    deleted: []
+  };
+
+  if (dryRun) {
+    console.log(`\nDry run — nothing deleted. Call deleteIneligibleSuspendedUsers(false) to delete the ${candidates.length} above.\n`);
+    Logger.info('deleteIneligibleSuspendedUsers dry run completed', {
+      wouldDelete: candidates.length,
+      withinGrace: withinGrace.length,
+      activeIneligible: activeIneligible.length,
+      unknownExpiry: unknownExpiry.length,
+      departedWithinGrace: departedWithinGrace.length,
+      graceDays: graceDays
+    });
+    return summary;
+  }
+
+  // Record sightings BEFORE deleting. A crash mid-deletion must not lose the
+  // register and hand everyone a fresh 30 days on the next run. Written only on
+  // live runs: a dry run that started a real deletion clock would be a dry run
+  // with consequences. Replaces rather than merges, so returners are pruned.
+  writeDepartedRegister_(departedSeenThisRun);
+
+  candidates.forEach(c => {
+    try {
+      executeWithRetry(() => AdminDirectory.Users.remove(c.email));
+      c.deleted = true;
+      c.deletedAt = new Date().toISOString();
+      summary.deleted.push(c);
+      Logger.info('Ineligible suspended user deleted', {
+        email: c.email, capsn: c.capsn, basis: c.basis
+      });
+    } catch (e) {
+      c.errorMessage = e.message;
+      Logger.error('Failed to delete ineligible suspended user', {
+        email: c.email,
+        capsn: c.capsn,
+        errorMessage: e.message,
+        errorCode: e.details?.code
+      });
+    }
+    Utilities.sleep(100);
   });
 
-  return deleted;
+  console.log(`\nDeleted ${summary.deleted.length} of ${candidates.length}.\n`);
+  Logger.info('deleteIneligibleSuspendedUsers completed', {
+    deleted: summary.deleted.length,
+    failed: candidates.length - summary.deleted.length,
+    withinGrace: withinGrace.length,
+    activeIneligible: activeIneligible.length,
+    graceDays: graceDays
+  });
+
+  return summary;
+}
+
+/**
+ * Script Property holding the departure register: CAPID -> ISO date this
+ * account was first seen absent from CAPWATCH while demonstrably still alive
+ * (i.e. left the wing rather than lapsed).
+ *
+ * WHY A REGISTER AND NOT A REAL DATE. CAPWATCH does publish transfer dates —
+ * MbrTransfer.txt carries CAPID, TransferDate, ToORGID, FromORGID — and an
+ * authoritative date would beat this proxy outright, as Member.txt's Expiration
+ * column does for lapses. It does not work here: the extract is wing-scoped and
+ * the table is INBOUND ONLY. Every row's ToORGID is a CAWG org; it records people
+ * arriving, never leaving. A member who transfers out is dropped from our extract
+ * wholesale, transfer row included. Verified 2026-07-15 against the live
+ * departure case (CAPID 697618, confirmed transferred to Nevada Wing on 07-02):
+ * 1368 rows, 891 distinct CAPIDs, and he is in none of them.
+ * See debugCapwatchTransferFile() to re-check if CAPWATCH ever changes.
+ *
+ * So the departure date genuinely exists nowhere we can reach, and first sighting
+ * is the best honest substitute.
+ *
+ * A Script Property rather than anything in source, because `clasp push`
+ * overwrites code and would reset every timer on each deploy. It is also per
+ * tenant, which is correct — a departure is a departure from THIS wing.
+ */
+const DEPARTED_REGISTER_PROPERTY = 'LICENSE_DEPARTED_FIRST_SEEN';
+
+/**
+ * Reads the departure register.
+ *
+ * Fails toward keeping accounts: an unreadable register returns empty, which
+ * restarts everyone's timer rather than expiring it. Losing 30 days of waiting
+ * costs a few suspended seats; getting it wrong the other way deletes mail.
+ *
+ * @returns {Object<string, string>} CAPID -> ISO date first seen departed
+ */
+function readDepartedRegister_() {
+  try {
+    const raw = PropertiesService.getScriptProperties()
+      .getProperty(DEPARTED_REGISTER_PROPERTY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (e) {
+    Logger.warn('Departure register unreadable — every departure timer restarts this run', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+    return {};
+  }
+}
+
+/**
+ * Replaces the departure register with exactly the accounts seen departed this
+ * run, which prunes anyone who has since returned, renewed, or been deleted.
+ *
+ * @param {Object<string, string>} register - CAPID -> ISO date first seen
+ * @returns {void}
+ */
+function writeDepartedRegister_(register) {
+  PropertiesService.getScriptProperties()
+    .setProperty(DEPARTED_REGISTER_PROPERTY, JSON.stringify(register));
+}
+
+/**
+ * Clears the departure register, restarting every departure timer.
+ * Manual escape hatch — use if the register is ever suspected wrong.
+ *
+ * @returns {void}
+ */
+function resetDepartedRegister() {
+  PropertiesService.getScriptProperties().deleteProperty(DEPARTED_REGISTER_PROPERTY);
+  Logger.info('Departure register cleared — all departure timers restart from the next live run');
+  console.log('Departure register cleared.');
+}
+
+/**
+ * Years a Cadet Protection course stays valid, per CAP regulation. Training.txt
+ * records the completion but carries no Expiration column, so this is applied to
+ * Completed rather than read from the data.
+ */
+const CPP_VALIDITY_YEARS = 1;
+
+/**
+ * Reads a CAPWATCH file and returns only the rows belonging to the given CAPIDs,
+ * as objects keyed by header name.
+ *
+ * Member-scoped tables are large — MbrTasks carries a row per member per task,
+ * so tens of thousands for a wing this size — and readCapwatchTxt_() builds an
+ * object for every row in the file. Filter the raw array first and materialise
+ * only what was asked for; a diagnostic should not risk the 6-minute limit.
+ *
+ * Columns are resolved by header name, never by position.
+ *
+ * @param {Folder} folder - CAPWATCH data folder
+ * @param {string} filename - e.g. 'MbrTasks.txt'
+ * @param {Object<string, boolean>} capids - CAPID -> true, the rows to keep
+ * @returns {Array<Object>} Matching rows keyed by header name; [] if absent
+ */
+function readCapwatchRowsForCapids_(folder, filename, capids) {
+  const it = folder.getFilesByName(filename);
+  if (!it.hasNext()) return [];
+
+  const rows = Utilities.parseCsv(it.next().getBlob().getDataAsString());
+  if (!rows || rows.length < 2) return [];
+
+  const header = rows[0].map(h => String(h || '').trim());
+  const capidIdx = header.indexOf('CAPID');
+  if (capidIdx === -1) {
+    Logger.warn('CAPWATCH file has no CAPID column', { filename: filename });
+    return [];
+  }
+
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || !capids[String(row[capidIdx] || '').trim()]) continue;
+
+    const obj = {};
+    for (let c = 0; c < header.length; c++) {
+      if (header[c]) obj[header[c]] = row[c] === undefined ? '' : row[c];
+    }
+    out.push(obj);
+  }
+  return out;
+}
+
+/**
+ * Read-only diagnostic: why is a member PATRON?
+ *
+ * deleteIneligibleSuspendedUsers() never auto-deletes a current member, so
+ * PATRON/ACTIVE accounts land in the needs-a-human bucket holding a seat with no
+ * information attached. Type alone does not say why, and the why decides the
+ * call: someone who merely needs to retake a course will convert back to SENIOR
+ * — reactivateRenewedMembers() then unsuspends them — so reclaiming their
+ * mailbox first destroys the mail of someone on their way back.
+ *
+ * A common cause is lapsed Cadet Protection training, which is valid for
+ * CPP_VALIDITY_YEARS from completion. Two things about that, both learned the
+ * hard way against live data on 2026-07-15:
+ *
+ *   - CPP is recorded in Training.txt as TypeCrs "Cadet Protection - ...", NOT
+ *     in MbrTasks or MbrAchievements. Tasks.txt's only match, "ST CPPT", is a
+ *     specialty-track item. Training.txt has no Expiration column, so validity
+ *     is computed from Completed rather than read.
+ *   - Basic and Advanced are separate courses and EITHER being current covers
+ *     the member. An expired Basic beside a current Advanced is a fully
+ *     qualified member; judging Basic alone misreads them as lapsed. Hence the
+ *     verdict is taken from the latest expiry across all CPP courses.
+ *
+ * CPP does not, by itself, explain PATRON — one live PATRON had a CURRENT Basic,
+ * another had no training at all. Output is a hypothesis to check in eServices,
+ * never a finding, and nothing in this codebase acts on it.
+ *
+ * Resolves every column BY NAME from each file's header rather than by position
+ * — the Member.txt Expiration column sat unverified at index 16 for months.
+ *
+ * Makes no changes.
+ *
+ * @param {Array<string>} capids - CAPIDs to explain (default: the two
+ *   PATRON/ACTIVE accounts currently holding seats)
+ * @returns {void}
+ */
+function debugWhyPatron(capids) {
+  const samples = capids || ['762848', '634025'];
+  const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+  const now = new Date();
+
+  const wanted = {};
+  samples.forEach(c => { wanted[String(c).trim()] = true; });
+
+  // Find whatever CAPWATCH calls Cadet Protection, by name, in both catalogues.
+  const CPP = /cadet\s*protection|\bCPP\b|\bCPPT\b/i;
+
+  const tasks = readCapwatchTxtIfExists_(folder, 'Tasks.txt');
+  const cppTaskIds = {};
+  tasks.forEach(t => {
+    if (CPP.test(String(t.TaskName || ''))) cppTaskIds[String(t.TaskID || '').trim()] = t.TaskName;
+  });
+
+  const achvs = readCapwatchTxtIfExists_(folder, 'Achievements.txt');
+  const achvNameById = {};
+  const cppAchvIds = {};
+  achvs.forEach(a => {
+    const id = String(a.AchvID || '').trim();
+    const name = a.Achv || a.AchvName || a.Name || a.Description || '';
+    achvNameById[id] = name;
+    if (CPP.test(String(name))) cppAchvIds[id] = name;
+  });
+
+  console.log('\n=== Where Cadet Protection actually lives ===\n');
+  console.log(`Tasks.txt        : ${tasks.length} rows, ${Object.keys(cppTaskIds).length} match`);
+  Object.keys(cppTaskIds).forEach(id => console.log(`   TaskID ${id.padEnd(8)} ${cppTaskIds[id]}`));
+  console.log(`Achievements.txt : ${achvs.length} rows, ${Object.keys(cppAchvIds).length} match`);
+  Object.keys(cppAchvIds).forEach(id => console.log(`   AchvID ${id.padEnd(8)} ${cppAchvIds[id]}`));
+  console.log('\nCPP completions are recorded in Training.txt (TypeCrs), which has NO');
+  console.log(`Expiration column — so expiry is Completed + ${CPP_VALIDITY_YEARS} year per regulation,`);
+  console.log('computed here rather than read. Tasks/Achievements above are a different');
+  console.log('thing (e.g. "ST CPPT" is a specialty-track item, not the course).');
+
+  const taskNameById = {};
+  tasks.forEach(t => { taskNameById[String(t.TaskID || '').trim()] = t.TaskName; });
+
+  // Member-scoped tables only, filtered to the CAPIDs asked about.
+  const mbrTasks = readCapwatchRowsForCapids_(folder, 'MbrTasks.txt', wanted);
+  const mbrAchvs = readCapwatchRowsForCapids_(folder, 'MbrAchievements.txt', wanted);
+  const training = readCapwatchRowsForCapids_(folder, 'Training.txt', wanted);
+  const members = readCapwatchRowsForCapids_(folder, 'Member.txt', wanted);
+
+  console.log(`\nRows for the ${samples.length} CAPID(s) asked about: MbrTasks ${mbrTasks.length}, ` +
+    `MbrAchievements ${mbrAchvs.length}, Training ${training.length}`);
+  console.log('(Member-scoped files are filtered on read; these are not whole-file counts.)\n');
+
+  const fmt = (raw) => {
+    const d = parseCapwatchDate_(raw);
+    if (!d) return { text: String(raw || '(blank)'), expired: null, days: null };
+    const days = Math.floor((now - d) / (1000 * 60 * 60 * 24));
+    return {
+      text: `${d.toISOString().slice(0, 10)} (${days >= 0 ? days + 'd ago' : (-days) + 'd away'})`,
+      expired: days >= 0,
+      days: days
+    };
+  };
+
+  samples.forEach(capid => {
+    const key = String(capid).trim();
+    console.log('\n' + '='.repeat(72));
+    const m = members.find(r => String(r.CAPID || '').trim() === key);
+    if (m) {
+      console.log(`CAPID ${key} — ${m.NameFirst} ${m.NameLast}`);
+      console.log(`   Type "${m.Type}"   MbrStatus "${m.MbrStatus}"   Expiration ${m.Expiration}   Unit ${m.Wing}-${m.Unit}`);
+    } else {
+      console.log(`CAPID ${key} — no Member.txt row`);
+    }
+    console.log('='.repeat(72));
+
+    // Anything with an Expiration that has passed — the likely cause, whatever
+    // it is called.
+    const expiredTasks = mbrTasks.filter(r =>
+      String(r.CAPID || '').trim() === key && fmt(r.Expiration).expired === true);
+    const expiredAchvs = mbrAchvs.filter(r =>
+      String(r.CAPID || '').trim() === key && fmt(r.Expiration).expired === true);
+
+    console.log(`\n-- EXPIRED tasks (${expiredTasks.length}) --`);
+    expiredTasks
+      .sort((a, b) => fmt(b.Expiration).days - fmt(a.Expiration).days)
+      .forEach(r => {
+        const isCpp = cppTaskIds[String(r.TaskID || '').trim()] ? '  <== CADET PROTECTION' : '';
+        console.log(`   ${String(taskNameById[String(r.TaskID || '').trim()] || 'TaskID ' + r.TaskID).slice(0, 44).padEnd(46)} completed ${fmt(r.Completed).text.padEnd(22)} expired ${fmt(r.Expiration).text}${isCpp}`);
+      });
+    if (!expiredTasks.length) console.log('   (none)');
+
+    console.log(`\n-- EXPIRED achievements (${expiredAchvs.length}) --`);
+    expiredAchvs
+      .sort((a, b) => fmt(b.Expiration).days - fmt(a.Expiration).days)
+      .forEach(r => {
+        const id = String(r.AchvID || '').trim();
+        const isCpp = cppAchvIds[id] ? '  <== CADET PROTECTION' : '';
+        console.log(`   ${String(achvNameById[id] || 'AchvID ' + id).slice(0, 44).padEnd(46)} status ${String(r.Status || '').padEnd(12)} completed ${fmt(r.Completed).text.padEnd(22)} expired ${fmt(r.Expiration).text}${isCpp}`);
+      });
+    if (!expiredAchvs.length) console.log('   (none)');
+
+    // THE ANSWER, if there is one: Cadet Protection from Training.txt, with
+    // expiry computed from the regulation rather than read from a column.
+    const tr = training.filter(r => String(r.CAPID || '').trim() === key);
+    const cppTraining = tr.filter(r => CPP.test(String(r.TypeCrs || '')));
+
+    console.log(`\n-- CADET PROTECTION (${cppTraining.length} row(s)) --`);
+    if (!cppTraining.length) {
+      console.log('   NONE. No Cadet Protection course on record at all.');
+    }
+
+    // Evaluate every CPP course, then judge on the LATEST expiry across all of
+    // them. Basic and Advanced are separate courses and EITHER being current
+    // covers the member — symmetrically. An expired Basic beside a current
+    // Advanced is a fully qualified member; so is an expired Advanced beside a
+    // current Basic. Judging any single course misreads whichever member holds
+    // the other one.
+    const evaluated = cppTraining.map(r => {
+      const label = /advanced/i.test(String(r.TypeCrs)) ? 'ADVANCED' :
+        (/basic/i.test(String(r.TypeCrs)) ? 'BASIC' : 'OTHER');
+      const done = parseCapwatchDate_(r.Completed);
+      if (!done) return { label: label, name: r.TypeCrs, unreadable: true };
+
+      const expires = new Date(done.getTime());
+      expires.setFullYear(expires.getFullYear() + CPP_VALIDITY_YEARS);
+      const daysLeft = Math.floor((expires - now) / (1000 * 60 * 60 * 24));
+      return {
+        label: label, name: r.TypeCrs, done: done, expires: expires,
+        daysLeft: daysLeft, current: daysLeft >= 0
+      };
+    });
+
+    evaluated.forEach(e => {
+      if (e.unreadable) {
+        console.log(`   [${e.label.padEnd(8)}] ${String(e.name).padEnd(42)} completed "?" (UNREADABLE — cannot judge)`);
+        return;
+      }
+      console.log(
+        `   [${e.label.padEnd(8)}] ${String(e.name).padEnd(42)} completed ${e.done.toISOString().slice(0, 10)} ` +
+        `-> expires ${e.expires.toISOString().slice(0, 10)} ` +
+        (e.current ? `(CURRENT, ${e.daysLeft}d left)` : `(EXPIRED ${-e.daysLeft}d ago)`)
+      );
+    });
+
+    if (evaluated.length) {
+      const currentOnes = evaluated.filter(e => e.current);
+      const expiredOnes = evaluated.filter(e => e.expires && !e.current);
+      const unreadable = evaluated.filter(e => e.unreadable);
+      console.log('');
+
+      if (currentOnes.length) {
+        const best = currentOnes.reduce((a, b) => (b.expires > a.expires ? b : a));
+        console.log(`   VERDICT: CPP COVERED until ${best.expires.toISOString().slice(0, 10)} (${best.daysLeft}d) by ${best.label}.`);
+        if (expiredOnes.length) {
+          console.log(`   ${expiredOnes.map(e => e.label).join(', ')} expired — irrelevant while ${best.label} is current.`);
+          console.log('   Either course being current covers the member.');
+        }
+      } else if (expiredOnes.length) {
+        const latest = expiredOnes.reduce((a, b) => (b.expires > a.expires ? b : a));
+        console.log(`   VERDICT: CPP LAPSED ${-latest.daysLeft}d ago. No course is current;`);
+        console.log(`   the most recent to lapse was ${latest.label} on ${latest.expires.toISOString().slice(0, 10)}.`);
+      } else {
+        console.log('   VERDICT: CPP UNKNOWN — rows exist but no readable completion date.');
+      }
+
+      if (unreadable.length && currentOnes.length === 0) {
+        console.log(`   CAUTION: ${unreadable.length} CPP row(s) unreadable — the member may in fact be covered.`);
+      }
+    }
+
+    // Also surface any task/achievement the catalogues flagged as CPP-ish.
+    const cppRows = mbrTasks.filter(r =>
+      String(r.CAPID || '').trim() === key && cppTaskIds[String(r.TaskID || '').trim()]);
+    const cppAchvRows = mbrAchvs.filter(r =>
+      String(r.CAPID || '').trim() === key && cppAchvIds[String(r.AchvID || '').trim()]);
+    cppRows.forEach(r => console.log(
+      `   [task] ${String(taskNameById[String(r.TaskID || '').trim()]).padEnd(36)} status ${String(r.Status || '').padEnd(12)} expires ${fmt(r.Expiration).text}`
+    ));
+    cppAchvRows.forEach(r => console.log(
+      `   [achv] ${String(achvNameById[String(r.AchvID || '').trim()]).padEnd(36)} status ${String(r.Status || '').padEnd(12)} expires ${fmt(r.Expiration).text}`
+    ));
+
+    console.log(`\n-- All Training.txt rows (${tr.length}) --`);
+    tr.sort((a, b) => {
+      const da = parseCapwatchDate_(a.Completed), db = parseCapwatchDate_(b.Completed);
+      return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+    }).forEach(r => console.log(
+      `   ${String(r.TypeCrs || '').slice(0, 52).padEnd(54)} completed ${fmt(r.Completed).text}`
+    ));
+    if (!tr.length) console.log('   (none — no training of any kind on record)');
+  });
+
+  console.log('\n' + '='.repeat(72));
+  console.log('No changes made. Nothing in this codebase acts on CPP — deletion keys on');
+  console.log('Type/MbrStatus, and a PATRON who is ACTIVE is never auto-deleted. This is');
+  console.log('context for a human, not a rule.');
+  console.log('');
+  console.log('Read the CPP VERDICT, never a single course. Basic and Advanced are separate,');
+  console.log('and either being current covers the member: an expired Basic next to a current');
+  console.log('Advanced is a fully qualified member. Judging Basic alone gets that person');
+  console.log('exactly wrong.');
+  console.log('');
+  console.log('And CPP does not, on its own, explain PATRON. Observed 2026-07-15: CAPID 634025');
+  console.log('is PATRON with a CURRENT Basic, so something else moved him; CAPID 762848 is');
+  console.log('PATRON with no training of any kind, which reads as never-started rather than');
+  console.log('lapsed. Treat a lapsed CPP as a hypothesis to check in eServices, not a finding.');
+  console.log('');
+  console.log('EXPIRED lists exclude CAPWATCH 1900 dates — its null marker for "no expiry",');
+  console.log('not a date in the past.');
+}
+
+/**
+ * Read-only diagnostic for CAPWATCH MbrTransfer.txt.
+ *
+ * A member who transfers to another wing goes silent in our Member.txt, which
+ * looks identical to lapsing long ago. MbrTransfer.txt carries real transfer
+ * dates and would beat the departure register outright — but it cannot date a
+ * departure, because it is INBOUND ONLY. Answered 2026-07-15:
+ *
+ *   1. Present?          yes — 1368 rows, 891 distinct CAPIDs.
+ *   2. Columns?          CAPID, TransferDate, ToORGID, FromORGID, Status, ...
+ *   3. Outbound rows?    NO. Every ToORGID is a CAWG org; the table records
+ *                        arrivals only. The live departure case (CAPID 697618,
+ *                        confirmed transferred to Nevada Wing 07-02) appears
+ *                        nowhere in it — the wing-scoped extract drops departing
+ *                        members entirely, transfer row and all.
+ *
+ * Kept so the finding can be re-checked cheaply if CAPWATCH ever starts carrying
+ * outbound transfers, which would let the departure register be deleted.
+ *
+ * Makes no changes.
+ *
+ * @param {Array<string>} sampleCapids - CAPIDs to look for (default: the live
+ *   departure case, CAPID 697618, confirmed transferred to Nevada Wing 2026-07-02)
+ * @returns {void}
+ */
+function debugCapwatchTransferFile(sampleCapids) {
+  const samples = sampleCapids || ['697618'];
+
+  const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+
+  console.log('\n=== 1. Files present in the CAPWATCH data folder ===\n');
+  const names = [];
+  const it = folder.getFiles();
+  while (it.hasNext()) names.push(it.next().getName());
+  names.sort().forEach(n => console.log(`  ${n}`));
+
+  const transferFiles = folder.getFilesByName('MbrTransfer.txt');
+  if (!transferFiles.hasNext()) {
+    console.log('\nMbrTransfer.txt is NOT in the folder — the CAPWATCH download does');
+    console.log('not currently fetch it. Nothing else here can run.');
+    return;
+  }
+
+  const rows = Utilities.parseCsv(transferFiles.next().getBlob().getDataAsString());
+  if (!rows || rows.length < 2) {
+    console.log('\nMbrTransfer.txt is present but empty.');
+    return;
+  }
+
+  const header = rows[0];
+  const data = rows.slice(1);
+
+  console.log('\n=== 2. MbrTransfer.txt header (index: name) ===\n');
+  header.forEach((h, i) => console.log(`[${String(i).padStart(2)}] ${h}`));
+  console.log(`\nTotal columns: ${header.length}   Total data rows: ${data.length}`);
+
+  console.log('\n=== 3. First 3 rows, labelled ===\n');
+  data.slice(0, 3).forEach((row, n) => {
+    console.log(`-- row ${n + 1} --`);
+    header.forEach((h, i) => console.log(`   ${String(h).padEnd(24)} = "${row[i]}"`));
+    console.log('');
+  });
+
+  console.log('=== 4. The departure case: does an outbound transfer survive here? ===\n');
+  samples.forEach(capid => {
+    const matches = data.filter(r => String(r[0] || '').trim() === String(capid));
+    if (matches.length === 0) {
+      console.log(`CAPID ${capid}: NOT PRESENT — the expected result as of 2026-07-15.`);
+      console.log('  Outbound transfers do not survive our wing-scoped extract, so this file');
+      console.log('  cannot date a departure and the departure register stays necessary.');
+      return;
+    }
+    console.log(`CAPID ${capid}: ${matches.length} row(s) — an outbound transfer SURVIVES.`);
+    console.log('  This contradicts the 2026-07-15 finding: CAPWATCH may now carry outbound');
+    console.log('  transfers, in which case TransferDate should replace the register.');
+    matches.forEach((row, n) => {
+      console.log(`  -- row ${n + 1} --`);
+      header.forEach((h, i) => console.log(`     ${String(h).padEnd(24)} = "${row[i]}"`));
+    });
+  });
+
+  console.log('\n=== 5. How many suspended no-record accounts could this date? ===\n');
+  const capidsInTransfer = {};
+  data.forEach(r => {
+    const c = String(r[0] || '').trim();
+    if (c) capidsInTransfer[c] = (capidsInTransfer[c] || 0) + 1;
+  });
+  console.log(`Distinct CAPIDs in MbrTransfer.txt: ${Object.keys(capidsInTransfer).length}`);
+  console.log('(Cross-check these against the "left the wing" list from the dry run.)');
+}
+
+/**
+ * Read-only diagnostic for the CAPWATCH Member.txt expiration column.
+ *
+ * deleteIneligibleSuspendedUsers() reads column [16] as the membership
+ * expiration date, a positional index inherited from getExpiringMembers().
+ * parseFile() strips the header, so nothing in the codebase actually verifies
+ * that index. Before any deletion policy keys off it, this prints:
+ *
+ *   1. The real header, so [16] can be confirmed by name.
+ *   2. The distribution of expiration values by member status, to test whether
+ *      the extract only retains recently-expired members.
+ *   3. Raw rows for specific CAPIDs, to confirm column alignment end to end.
+ *
+ * Makes no changes and touches no accounts.
+ *
+ * @param {Array<string>} sampleCapids - CAPIDs to dump raw rows for
+ * @returns {void}
+ */
+function debugCapwatchMemberExpirationColumn(sampleCapids) {
+  const samples = sampleCapids || ['618863', '762848', '632609', '582442'];
+
+  const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+  const files = folder.getFilesByName('Member.txt');
+  if (!files.hasNext()) {
+    console.log('Member.txt not found in the CAPWATCH data folder.');
+    return;
+  }
+
+  const rows = Utilities.parseCsv(files.next().getBlob().getDataAsString());
+  if (!rows || rows.length < 2) {
+    console.log('Member.txt is empty or has no data rows.');
+    return;
+  }
+
+  const header = rows[0];
+  const data = rows.slice(1);
+
+  console.log('\n=== 1. Member.txt header (index: name) ===\n');
+  header.forEach((h, i) => {
+    const mark = (i === 16) ? '   <-- read as expiration' :
+      (i === 21) ? '   <-- read as type' :
+      (i === 24) ? '   <-- read as status' :
+      (i === 0) ? '   <-- read as CAPID' : '';
+    console.log(`[${String(i).padStart(2)}] ${String(h).padEnd(28)}${mark}`);
+  });
+  console.log(`\nTotal columns: ${header.length}   Total data rows: ${data.length}`);
+
+  console.log('\n=== 2. Expiration [16] distribution by status [24] ===\n');
+  const byStatus = {};
+  for (let i = 0; i < data.length; i++) {
+    const status = String(data[i][24] || '(blank)').trim();
+    const exp = String(data[i][16] || '(blank)').trim();
+    if (!byStatus[status]) byStatus[status] = {};
+    byStatus[status][exp] = (byStatus[status][exp] || 0) + 1;
+  }
+  Object.keys(byStatus).sort().forEach(status => {
+    const values = byStatus[status];
+    const distinct = Object.keys(values);
+    const total = distinct.reduce((sum, v) => sum + values[v], 0);
+    console.log(`-- status "${status}": ${total} rows, ${distinct.length} distinct expiration values`);
+    distinct
+      .sort((a, b) => values[b] - values[a])
+      .slice(0, 8)
+      .forEach(v => console.log(`     ${String(v).padEnd(14)} x${values[v]}`));
+    if (distinct.length > 8) console.log(`     ... and ${distinct.length - 8} more`);
+    console.log('');
+  });
+
+  console.log('=== 3. Raw rows for sample CAPIDs ===\n');
+  samples.forEach(capid => {
+    const row = data.find(r => String(r[0] || '').trim() === String(capid));
+    if (!row) {
+      console.log(`CAPID ${capid}: NOT PRESENT in Member.txt`);
+      return;
+    }
+    console.log(`CAPID ${capid}:`);
+    console.log(`     [16] expiration = "${row[16]}"`);
+    console.log(`     [21] type       = "${row[21]}"`);
+    console.log(`     [24] status     = "${row[24]}"`);
+    console.log('');
+  });
+}
+
+/**
+ * Parses a CAPWATCH date ("MM/DD/YYYY") into a Date.
+ *
+ * @param {string} value - Raw CAPWATCH date cell
+ * @returns {Date|null} Parsed date, or null if absent/unparseable
+ */
+function parseCapwatchDate_(value) {
+  const parts = String(value || '').trim().split('/');
+  if (parts.length !== 3) return null;
+
+  const month = parseInt(parts[0], 10);
+  const day = parseInt(parts[1], 10);
+  const year = parseInt(parts[2], 10);
+  if (isNaN(month) || isNaN(day) || isNaN(year)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  // CAPWATCH writes 1900 dates as its null: 01/01/1900 for "never"/"not set"
+  // (seen throughout MbrTasks.Expiration, MbrAchievements.Expiration and
+  // MbrTransfer.FromApprovalDate). Treat as absent, not as a date 126 years in
+  // the past — otherwise "no expiry" reads as "expired long ago", which is the
+  // wrong answer in the dangerous direction.
+  if (year <= 1900) return null;
+
+  const parsed = new Date(year, month - 1, day);
+  // Rejects overflow like 02/31 rolling into March.
+  if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day) {
+    return null;
+  }
+  return parsed;
+}
+
+/**
+ * Preview what deleteIneligibleSuspendedUsers() would delete, and who it would
+ * spare. Makes no changes. Kept for symmetry with previewArchival() /
+ * previewDeletion() and for running standalone from the Apps Script editor.
+ *
+ * @returns {Object} See deleteIneligibleSuspendedUsers()
+ */
+function previewIneligibleSuspendedDeletion() {
+  return deleteIneligibleSuspendedUsers(true);
+}
+
+/**
+ * LIVE. Permanently deletes the accounts previewIneligibleSuspendedDeletion()
+ * lists as past grace. There is no archive and no undo on this edition.
+ *
+ * Exists because the Apps Script editor's Run button passes NO arguments, so
+ * picking deleteIneligibleSuspendedUsers from the dropdown always gives a dry
+ * run — you cannot arm it from the UI, and hand-editing the default on the
+ * function that does the deleting, moments before running it, is not a
+ * procedure anyone should rely on.
+ *
+ * Named LIVE_* so it sorts under L in the function dropdown, away from the
+ * preview and the dry-run entry it would otherwise sit next to.
+ *
+ * Run previewIneligibleSuspendedDeletion() first and read the list. This deletes
+ * exactly what that preview showed under "WOULD DELETE".
+ *
+ * @param {Object} [e] - Trigger event. Present only when fired by a trigger,
+ *   which is refused: this is a manual, reviewed action. The monthly reaper is
+ *   armed by flipping the dryRun flag in manageLicenseLifecycle(), not by
+ *   scheduling this.
+ * @returns {Object} See deleteIneligibleSuspendedUsers()
+ */
+function LIVE_deleteIneligibleSuspendedUsers(e) {
+  if (e) {
+    throw new Error(
+      'LIVE_deleteIneligibleSuspendedUsers is manual-only and was invoked by a ' +
+      'trigger. Nothing was deleted. To run the reaper on a schedule, set ' +
+      'manageLicenseLifecycle() to call deleteIneligibleSuspendedUsers(false) ' +
+      'and trigger that instead — it reports into the monthly email.'
+    );
+  }
+
+  console.log('\n=== LIVE — accounts below will be PERMANENTLY deleted ===');
+  console.log('No Archived User licenses on this edition: no archive, no undo.\n');
+  // Deliberately does not log the invoking user: Session.getActiveUser() needs
+  // the userinfo.email scope, which this manifest does not carry, and adding it
+  // would force every tenant to re-authorize for an audit line the Apps Script
+  // execution log already records. (It threw here on 2026-07-15.)
+  Logger.warn('Manual LIVE deletion invoked', {
+    function: 'LIVE_deleteIneligibleSuspendedUsers'
+  });
+
+  return deleteIneligibleSuspendedUsers(false);
 }
 
 /**
@@ -592,10 +1498,120 @@ function sendLicenseManagementReport(summary) {
           <p><strong>Duration:</strong> ${Math.round(summary.duration / 1000)} seconds</p>
           <p><strong>Users Archived:</strong> ${summary.archived.length}</p>
           <p><strong>Users Deleted (long-archived):</strong> ${summary.deleted.length}</p>
-          <p><strong>Users Deleted (ineligible, 30-day):</strong> ${summary.deletedIneligible ? summary.deletedIneligible.length : 0}</p>
+          <p><strong>Users Deleted (ineligible, ${LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE}-day):</strong> ${summary.deletedIneligible ? summary.deletedIneligible.length : 0}</p>
           <p><strong>Errors:</strong> ${summary.errors.length}</p>
         </div>
   `;
+
+  const ineligible = summary.ineligibleResult;
+  if (ineligible) {
+    const previewOnly = ineligible.dryRun;
+
+    if (ineligible.candidates.length > 0) {
+      htmlBody += `
+        <div class="${previewOnly ? 'warning' : 'success'}">
+          <h2>Ineligible Suspended Accounts — ${previewOnly ? 'Would Be Deleted' : 'Deleted'} (${ineligible.candidates.length})</h2>
+          <p>${previewOnly
+            ? '<strong>Nothing was deleted.</strong> Automated deletion is not armed yet; this is what the reaper would take on its next live run.'
+            : 'These accounts were permanently deleted to free seats against the 2000-user cap.'}
+          Grace period is ${ineligible.graceDays} days measured from CAPWATCH membership expiry.
+          "No CAPWATCH record" means the member lapsed beyond the extract's ~3-month window.</p>
+        </div>
+        <table>
+          <tr><th>Name</th><th>CAPID</th><th>Lapsed</th><th>Email</th></tr>
+      `;
+      ineligible.candidates.forEach(c => {
+        htmlBody += `
+          <tr>
+            <td>${c.name}</td>
+            <td>${c.capsn}</td>
+            <td>${c.daysSinceExpiration === null ? 'no CAPWATCH record' : c.daysSinceExpiration + ' days ago'}</td>
+            <td>${c.email}</td>
+          </tr>
+        `;
+      });
+      htmlBody += `</table>`;
+    }
+
+    if (ineligible.withinGrace.length > 0) {
+      htmlBody += `
+        <div class="summary">
+          <h2>Within Grace — Not Deleted (${ineligible.withinGrace.length})</h2>
+          <p>These members lapsed less than ${ineligible.graceDays} days ago. They keep their
+          accounts until the grace period runs out, and will be reclaimed automatically if they
+          do not renew. Renewing restores eligibility and cancels the deletion.</p>
+        </div>
+        <table>
+          <tr><th>Name</th><th>CAPID</th><th>Lapsed</th><th>Deletable In</th></tr>
+      `;
+      ineligible.withinGrace.forEach(c => {
+        htmlBody += `
+          <tr>
+            <td>${c.name}</td>
+            <td>${c.capsn}</td>
+            <td>${c.daysSinceExpiration} days ago</td>
+            <td>${ineligible.graceDays - c.daysSinceExpiration} days</td>
+          </tr>
+        `;
+      });
+      htmlBody += `</table>`;
+    }
+
+    const departed = ineligible.departedWithinGrace || [];
+    if (departed.length > 0) {
+      htmlBody += `
+        <div class="summary">
+          <h2>Left the Wing — Not Deleted Yet (${departed.length})</h2>
+          <p>These accounts are absent from CAPWATCH but were signed into more recently than the
+          oldest lapse the extract still retains (${ineligible.oldestRetainedLapse || 'unknown'}),
+          so they did not lapse — they transferred out and remain current members elsewhere.
+          They get the same ${ineligible.graceDays}-day grace as a lapse, timed from when this
+          job first saw them gone, because no departure date exists in either CAPWATCH or
+          Workspace.</p>
+        </div>
+        <table>
+          <tr><th>Name</th><th>CAPID</th><th>First Seen Gone</th><th>Deletable In</th></tr>
+      `;
+      departed.forEach(c => {
+        htmlBody += `
+          <tr>
+            <td>${c.name}</td>
+            <td>${c.capsn}</td>
+            <td>${c.firstSeenDeparted} (${c.daysSinceFirstSeen} days)</td>
+            <td>${ineligible.graceDays - c.daysSinceFirstSeen} days</td>
+          </tr>
+        `;
+      });
+      htmlBody += `</table>`;
+    }
+
+    const needsReview = ineligible.activeIneligible.concat(ineligible.unknownExpiry);
+    if (needsReview.length > 0) {
+      htmlBody += `
+        <div class="warning">
+          <h2>Needs a Human Decision (${needsReview.length})</h2>
+          <p>These suspended accounts are never deleted automatically, and they hold a seat until
+          someone decides. Add them to the Manual Members sheet to keep them, or delete them by
+          hand.</p>
+          <p><em>Ineligible by type</em> (e.g. PATRON) are current members whose expiry lies in the
+          future, so there is no lapse date to measure a grace period from.</p>
+        </div>
+        <table>
+          <tr><th>Name</th><th>CAPID</th><th>CAPWATCH</th><th>Email</th></tr>
+      `;
+      needsReview.forEach(c => {
+        htmlBody += `
+          <tr>
+            <td>${c.name}</td>
+            <td>${c.capsn}</td>
+            <td>${c.reason}</td>
+            <td>${c.email}</td>
+          </tr>
+        `;
+      });
+      htmlBody += `</table>`;
+    }
+  }
   
   // Archived users section
   if (summary.archived.length > 0) {
@@ -984,22 +2000,31 @@ function previewLicenseLifecycle() {
   const archived = previewArchival();
   console.log('\n');
   const deleted = previewDeletion();
-  
+  console.log('\n');
+  const ineligibleSuspended = previewIneligibleSuspendedDeletion();
+
   console.log('\n' + '='.repeat(80));
   console.log('SUMMARY');
   console.log('='.repeat(80));
   console.log(`Users that would be ARCHIVED: ${archived.length}`);
   console.log(`Users that would be DELETED: ${deleted.filter(u => !u.activeInCapwatch).length}`);
   console.log(`Users that would be SKIPPED (active): ${deleted.filter(u => u.activeInCapwatch).length}`);
+  console.log(`Ineligible suspended, past grace (would be DELETED): ${ineligibleSuspended.candidates.length}`);
+  console.log(`Ineligible suspended, within grace (spared): ${ineligibleSuspended.withinGrace.length}`);
+  console.log(`Current members ineligible by type (need review): ${ineligibleSuspended.activeIneligible.length}`);
   console.log('='.repeat(80) + '\n');
-  
+
   return {
     archived: archived,
     deleted: deleted,
+    ineligibleSuspended: ineligibleSuspended,
     summary: {
       archivedCount: archived.length,
       deletedCount: deleted.filter(u => !u.activeInCapwatch).length,
-      skippedCount: deleted.filter(u => u.activeInCapwatch).length
+      skippedCount: deleted.filter(u => u.activeInCapwatch).length,
+      ineligibleSuspendedPastGrace: ineligibleSuspended.candidates.length,
+      ineligibleSuspendedWithinGrace: ineligibleSuspended.withinGrace.length,
+      activeIneligibleNeedingReview: ineligibleSuspended.activeIneligible.length
     }
   };
 }
@@ -1426,6 +2451,27 @@ function deleteIneligibleWorkspaceUsers(dryRun = true) {
 
   return results;
 }
+
+// NOTE: deliberately NO LIVE_ wrapper for deleteIneligibleWorkspaceUsers().
+//
+// One was added on 2026-07-15 and removed the same hour. It sorted directly
+// beside LIVE_deleteIneligibleSuspendedUsers in the editor's dropdown —
+// "Suspended" and "Workspace", one scroll apart — and the first real use picked
+// the wrong one. It only failed because an unrelated missing OAuth scope threw
+// before the deletion ran; otherwise it would have deleted every suspended
+// account on the domain, including 35 members who had lapsed 15 days earlier and
+// were mid-grace, a member who had merely transferred to another wing, and two
+// current PATRONs.
+//
+// This path applies NO grace period and consults none of the transfer or expiry
+// logic: it deletes everything auditWorkspaceUsersForRemoval() flags that is
+// currently suspended. It is the right tool for a deliberate, reviewed bulk
+// cleanup (it took 257 accounts in June 2026) and the wrong tool for anything
+// routine — use the monthly lifecycle for that.
+//
+// Arming it should stay inconvenient. Call deleteIneligibleWorkspaceUsers(false)
+// from a scratch function you write at the time and delete afterwards; the
+// friction is the feature.
 
 /**
  * Manual function to reactivate a specific archived user

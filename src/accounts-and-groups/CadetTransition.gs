@@ -25,12 +25,12 @@
  *     unsuspends an account.
  *
  *  2. LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE cannot be reused as the hold
- *     clock. deleteIneligibleSuspendedUsers() derives its cutoff from
- *     lastLoginTime as a proxy for suspension date, so a member who stopped
- *     opening their cadet mail months ago is ALREADY past it and would be
- *     deleted on the first lifecycle run. The Transitions sheet's DetectedDate
- *     is therefore authoritative for the 90-day hold, and that function skips
- *     anyone holding an open row here.
+ *     clock: it times a member LAPSING, which is not what a transitioning cadet
+ *     is doing. Their old cadet type expires the moment they convert, so that
+ *     clock starts running immediately and says nothing about whether their mail
+ *     has been carried across yet. The Transitions sheet's DetectedDate is
+ *     therefore authoritative for the 90-day hold, and deleteIneligibleSuspendedUsers()
+ *     skips anyone holding an open row here.
  *
  * This file covers detection and state. Migration lives in CadetTransitionMigrate.gs.
  *
