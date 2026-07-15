@@ -1,15 +1,23 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.11.0
+ * Version: 1.12.0
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.11.0)
- * Changes: Added previewSignatureForMember(), a read-only render of one member's
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.12.0)
+ * Changes: Signature duty block now takes at most ONE duty per echelon before
+ *   filling the second slot — sorting on level alone let a member's two wing roles
+ *   crowd their squadron command off the signature entirely. Ties within an echelon
+ *   break on title seniority (dutyTitleRank_: command, then directors, then the
+ *   rest), because CAPWATCH has no primary-duty flag and was ordering by whatever
+ *   eServices listed first. Wing/region orgs are named for the echelon, not the HQ
+ *   unit: "CALIFORNIA WING HQ" -> "California Wing", "PACIFIC REGION CAP" ->
+ *   "Pacific Region". Also HQ no longer title-cases to "Hq".
+ *   (1.11.0: added previewSignatureForMember(), a read-only render of one member's
  *   signature to the log. There was no safe way to inspect a signature before it
  *   reached somebody — pushAllSignatures() writes to every member at once, and the
  *   only other path fires 5 minutes after an account is created. Set the CAPID in
  *   SIGNATURE_PREVIEW_RUN_INPUTS and Run it; it makes no Gmail/Directory calls.
- *   (1.10.0: signature duty titles are used VERBATIM from CAPWATCH, which already
+ *   1.10.0: signature duty titles are used VERBATIM from CAPWATCH, which already
  *   carries full echelon-correct names ("Commander"; "Information Technologies
  *   Officer" at unit/group vs "Director of IT" at wing). No office-symbol expansion:
  *   the symbol lives in DutyPosition.txt's separate FunctArea column and never
@@ -576,8 +584,10 @@ function addDutyPositions(members, dutyPositionData, squadrons) {
         assistant: dutyPositionData[i][4] == '1',
         // The org this duty is actually held at, which is NOT necessarily the
         // member's home unit — a squadron member can hold a wing-level duty.
-        // Signatures name the duty's org, so they need it here.
-        orgName: dutyOrg ? dutyOrg.name : ''
+        // Signatures name the duty's org, so they need it here. Scope rides along
+        // because a wing/region HQ unit's name needs trimming (see formatOrgName_).
+        orgName: dutyOrg ? dutyOrg.name : '',
+        orgScope: dutyOrg ? dutyOrg.scope : ''
       });
       members[dutyPositionData[i][0]].dutyPositionIds.push(dutyPositionID);
       members[dutyPositionData[i][0]].dutyPositionIdsAndLevel.push(
@@ -692,7 +702,8 @@ function addCadetDutyPositions(members, cadetDutyPositionData, squadrons) {
       level: level,
       assistant: isAsst,
       // See addDutyPositions(): the duty's own org, not the member's home unit.
-      orgName: squadron ? squadron.name : ''
+      orgName: squadron ? squadron.name : '',
+      orgScope: squadron ? squadron.scope : ''
     });
 
     // Keep these in sync with seniors too
@@ -2464,6 +2475,26 @@ function dutyLevelRank_(level) {
   return rank === undefined ? 99 : rank;
 }
 
+/** The CAP style guide caps the signature's duty block at two assignments. */
+const SIGNATURE_MAX_DUTIES = 2;
+
+/**
+ * Seniority of a duty title WITHIN one echelon; lower sorts first.
+ *
+ * CAPWATCH has no notion of a primary duty, so two roles at the same level would
+ * otherwise be ordered by whatever eServices happened to list first — which put
+ * "Web Security Administrator" ahead of "Director of IT". Judged from the title
+ * text alone: command first, then directors, then everyone else. Array.sort is
+ * stable, so titles of equal rank keep CAPWATCH's order.
+ */
+function dutyTitleRank_(title) {
+  const t = String(title || '').trim().toUpperCase();
+  if (t === 'COMMANDER') return 0;
+  if (t.indexOf('VICE COMMANDER') === 0 || t.indexOf('DEPUTY COMMANDER') === 0) return 1;
+  if (t.indexOf('DIRECTOR OF ') === 0) return 2;
+  return 3;
+}
+
 /**
  * The signature's duty line(s).
  *
@@ -2483,13 +2514,46 @@ function getDutyBlock(member) {
   const positions = (member.dutyPositions || []).filter(dp => !dp.assistant);
   if (positions.length === 0) return '';
 
-  return positions
-    .slice()
-    .sort((a, b) => dutyLevelRank_(a.level) - dutyLevelRank_(b.level))
-    .slice(0, 2)
-    // Name the org the duty is held at, falling back to the member's home unit
-    // for duty records that predate orgName being carried (see addDutyPositions).
-    .map(dp => `${formatOrgName_(dp.orgName || member.orgName)} ${formatDutyTitle_(dp.id)}`)
+  // Highest echelon first, then most senior title within that echelon.
+  const sorted = positions.slice().sort((a, b) =>
+    dutyLevelRank_(a.level) - dutyLevelRank_(b.level) ||
+    dutyTitleRank_(a.id) - dutyTitleRank_(b.id)
+  );
+
+  // Take at most one duty per echelon first. Sorting on level alone let a member's
+  // two wing roles fill both slots and push their squadron command off the
+  // signature entirely — the span of someone's roles is more informative than a
+  // second job at the same level.
+  const seenLevel = {};
+  const oncePerLevel = [];
+  const remainder = [];
+  sorted.forEach(dp => {
+    const lvl = String(dp.level || '').trim().toUpperCase();
+    if (seenLevel[lvl]) {
+      remainder.push(dp);
+    } else {
+      seenLevel[lvl] = true;
+      oncePerLevel.push(dp);
+    }
+  });
+
+  // ...but don't waste the second slot: a member whose duties are all at one level
+  // should still get two lines. Style guide caps the block at two either way.
+  const picked = oncePerLevel.slice(0, SIGNATURE_MAX_DUTIES);
+  for (let i = 0; picked.length < SIGNATURE_MAX_DUTIES && i < remainder.length; i++) {
+    picked.push(remainder[i]);
+  }
+
+  return picked
+    // Name the org the duty is held at, falling back to the member's home unit for
+    // duty records that predate orgName being carried (see addDutyPositions). The
+    // scope describes the duty's own org, so it is dropped on that fallback.
+    .map(dp => {
+      const org = dp.orgName
+        ? formatOrgName_(dp.orgName, dp.orgScope)
+        : formatOrgName_(member.orgName);
+      return `${org} ${formatDutyTitle_(dp.id)}`;
+    })
     .join('<br />');
 }
 
@@ -2543,18 +2607,38 @@ const ORG_NAME_EXPANSIONS = {
   SQDN: 'Squadron',
   CDT: 'Cadet',
   COMP: 'Composite',
-  SR: 'Senior'
+  SR: 'Senior',
+  // Not an expansion but a restoration: toTitleCase() lowercases before
+  // capitalising, so the wing HQ unit ("CALIFORNIA WING HQ") came out as
+  // "California Wing Hq".
+  HQ: 'HQ'
 };
 
 /**
  * Title-cases a CAPWATCH unit name and expands its abbreviations:
  * "SAN JOSE SR SQDN 80" -> "San Jose Senior Squadron 80".
  *
+ * Wing and region HQ orgs are named for the HQ unit, not the echelon — every one of
+ * the 54 wings in CAPWATCH is "<STATE> WING HQ", and the regions are "<NAME> REGION
+ * HQ" bar Pacific's "PACIFIC REGION CAP". A signature wants the echelon, so for
+ * those scopes everything after WING/REGION is dropped: "CALIFORNIA WING HQ" ->
+ * "California Wing". Keyed on scope rather than the name so a unit that merely has
+ * "wing" in its title is untouched.
+ *
  * @param {string} orgName - Raw CAPWATCH unit name
+ * @param {string} [scope] - CAPWATCH org scope: UNIT / GROUP / WING / REGION
  * @returns {string} Display form
  */
-function formatOrgName_(orgName) {
-  return toTitleCase(String(orgName || ''))
+function formatOrgName_(orgName, scope) {
+  let name = String(orgName || '').trim();
+  const s = String(scope || '').trim().toUpperCase();
+
+  if (s === 'WING' || s === 'REGION') {
+    const m = name.toUpperCase().match(/\b(WING|REGION)\b/);
+    if (m) name = name.slice(0, m.index + m[1].length);
+  }
+
+  return toTitleCase(name)
     .split(/\s+/)
     .filter(Boolean)
     .map(word => {

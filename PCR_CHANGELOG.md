@@ -185,6 +185,36 @@ next to each entry below.
   which identities *would* receive it, then the raw HTML last so it can be lifted out
   of the log and opened in a browser.
 
+- **`UpdateMembers.gs` (v1.12.0)** — three defects the first live preview exposed.
+
+  **A wing role could crowd out a squadron command.** Sorting on echelon alone, then
+  taking two, meant a member holding two wing duties and a squadron command showed
+  both wing rows and **dropped the command entirely**. The block now takes at most
+  **one duty per echelon** before filling the second slot, so the span of someone's
+  roles survives. If all their duties sit at one level the second slot is still used,
+  rather than wasted.
+
+  **Ties within an echelon were arbitrary.** CAPWATCH has no primary-duty flag, so two
+  wing roles were ordered by whatever eServices listed first — putting "Web Security
+  Administrator" ahead of "Director of IT". `dutyTitleRank_()` now breaks the tie on
+  the title text: command, then directors, then everyone else. `Array.sort` is stable,
+  so equal ranks keep CAPWATCH's order.
+
+  **Wing and region orgs were named for the HQ unit.** Every one of CAPWATCH's 54
+  wings is `<STATE> WING HQ`, so the line read "California Wing Hq Director of IT" —
+  both wrong and mis-cased, since `toTitleCase()` lowercases before capitalising.
+  `formatOrgName_()` now takes the org's scope and, for `WING`/`REGION`, drops
+  everything after the echelon: `CALIFORNIA WING HQ` → **California Wing**. This also
+  handles the one region not named "... REGION HQ" — `PACIFIC REGION CAP` →
+  **Pacific Region** — which matters for that tenant. `HQ` no longer renders as "Hq".
+
+  `addDutyPositions()`/`addCadetDutyPositions()` carry `orgScope` alongside `orgName`.
+  Keyed on scope rather than the name, so a unit that merely has "wing" in its title
+  is untouched.
+
+  > Consequence worth knowing: with the cap at two, a member holding wing **and** group
+  > **and** squadron duties still loses the lowest — the two highest echelons win.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until
