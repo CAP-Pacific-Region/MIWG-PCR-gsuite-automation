@@ -199,7 +199,7 @@ function detectCadetTransitions() {
       infoByCapid[capid] = {
         status: memberData[i][24],
         type: memberData[i][21],
-        name: `${memberData[i][3] || ''} ${memberData[i][2] || ''}`.trim()
+        name: normalizeName_(memberData[i][3], memberData[i][2])
       };
     }
   }
@@ -277,6 +277,51 @@ function detectCadetTransitions() {
   });
 
   return { detected: detected, updated: updated, existing: alreadyOpen };
+}
+
+/**
+ * Joins first and last into a display name, collapsing internal whitespace.
+ *
+ * CAPWATCH name fields carry stray padding — one live record produced
+ * "Michael  Murray" from a trailing space on the first name. Cosmetic (the Name
+ * column is human reference only), but it makes the sheet look broken.
+ *
+ * @param {string} first
+ * @param {string} last
+ * @returns {string}
+ */
+function normalizeName_(first, last) {
+  return `${first || ''} ${last || ''}`.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Rewrites the Name column on existing rows through normalizeName_().
+ *
+ * One-shot cleanup for rows written before normalization existed. Touches only
+ * that column, and only where the value actually changes.
+ *
+ * @returns {{fixed: number}}
+ */
+function normalizeTransitionNames() {
+  const rows = readTransitions_();
+  let fixed = 0;
+
+  for (const capid in rows) {
+    const row = rows[capid];
+    const current = String(row.Name || '');
+    const cleaned = current.replace(/\s+/g, ' ').trim();
+
+    if (cleaned !== current) {
+      setTransitionField_(row._rowNumber, 'Name', cleaned);
+      Logger.info('Transition name normalized', {
+        capid: capid, from: current, to: cleaned
+      });
+      fixed++;
+    }
+  }
+
+  Logger.info('Transition name normalization completed', { fixed: fixed });
+  return { fixed: fixed };
 }
 
 /**
