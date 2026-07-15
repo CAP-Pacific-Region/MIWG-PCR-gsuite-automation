@@ -5,7 +5,7 @@
  * primary address (e.g. jane.doe@cawgcap.org -> jane.doe@cawg.cap.gov). The tab is a
  * curated opt-in list, not the whole roster — only listed accounts are touched.
  * Safe to run unattended on a daily trigger.
- * Author: Noel Luneau
+ * Author: Maj Isaac Wilson IV, California Wing
  * Version: 1.2.0
  * Date: 2026-07-14
  * Changes: Let previewSecondaryDomainAliases() run before the secondary domain is

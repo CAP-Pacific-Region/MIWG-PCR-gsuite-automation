@@ -36,6 +36,10 @@ next to each entry below.
   Requires the new `admin.directory.domain.readonly` scope, so **every tenant
   re-authorizes on next run**.
 
+- **`config.gs` (v1.4.0)** — added `SECONDARY_EMAIL_DOMAIN`, sourced from the new
+  `TENANT_SECONDARY_EMAIL_DOMAIN` Script Property and wired into
+  `setupTenantConfig()`. Blank on cadets and pacific.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until

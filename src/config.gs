@@ -3,12 +3,18 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Version: 1.3.0
- * Date: 2026-07-13
- * Changes: Added a per-profile CROSS_TENANT block (consumed by
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0)
+ * Version: 1.4.0
+ * Date: 2026-07-14
+ * Changes: Added SECONDARY_EMAIL_DOMAIN (Script Property
+ *   TENANT_SECONDARY_EMAIL_DOMAIN), consumed by
+ *   accounts-and-groups/SecondaryDomainAliases.gs — the verified secondary domain
+ *   a tenant hands out parallel addresses on. Blank on cadets/pacific, which
+ *   disables that module there.
+ *   (1.3.0: added a per-profile CROSS_TENANT block (consumed by
  *   cross-tenant-contacts/CrossTenantContacts.gs) selecting cross-tenant shared-
  *   contact behavior — on for seniors/cadets, off for pacific.
- *   (1.2.2: profile-driven SQUADRON_DISTRIBUTION_TOGGLES per tenant, so squadron
+ *   1.2.2: profile-driven SQUADRON_DISTRIBUTION_TOGGLES per tenant, so squadron
  *   list creation is tenant-aware; cadets = all-hands + cadets + parents (no
  *   .seniors / command-staff lists), prior toggles were hard-coded.
  *   1.2.1: same, but cadets initially excluded .all; .all kept by request.
