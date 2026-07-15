@@ -402,10 +402,11 @@ the data runs after the download. Apps Script schedules within a 1-hour window, 
 | 4 | `updateEmailGroups()` | Daily, 5–6 AM | Sync wing/duty/specialty distribution groups. |
 | 5 | `updateAllSquadronGroups()` | Daily, 6–7 AM | Squadron all-hands/cadets/seniors/parents + public-contact + access groups. Batches via `SQUADRON_BATCH_INDEX`. |
 | 6 | `updateAdditionalGroupMembers()` | Daily, 6–7 AM | Merge manual additions from the `User Additions` sheet. |
-| 7 | `syncMemberCalendarsDaily()` | Daily | Share unit calendars with new/transferred members. |
-| 8 | `updateChatSpaces()` | Daily or weekly | Sync squadron/committee Chat spaces & membership. |
-| 9 | `updateResources()` | Weekly (Sun) | Aircraft/vehicle Calendar resources + squadron buildings. **Seniors only** (`MANAGE_RESOURCES`). |
-| 10 | `manageLicenseLifecycle()` | Monthly | Reactivate renewed, delete long-ineligible accounts to free seats. |
+| 7 | `addSecondaryDomainAliases()` | Daily, 7–8 AM | Give accounts on the `Secondary Aliases` tab a matching address on the tenant's secondary domain. **Seniors only** (`TENANT_SECONDARY_EMAIL_DOMAIN`). Must run *after* `updateAllMembers()` so a same-morning account already exists. |
+| 8 | `syncMemberCalendarsDaily()` | Daily | Share unit calendars with new/transferred members. |
+| 9 | `updateChatSpaces()` | Daily or weekly | Sync squadron/committee Chat spaces & membership. |
+| 10 | `updateResources()` | Weekly (Sun) | Aircraft/vehicle Calendar resources + squadron buildings. **Seniors only** (`MANAGE_RESOURCES`). |
+| 11 | `manageLicenseLifecycle()` | Monthly | Reactivate renewed, delete long-ineligible accounts to free seats. |
 
 `updateCAWGCadetGroups()` (cross-tenant cadet groups) and the recruiting/retention emails run on
 their own cadence where enabled. **Confirm the actual triggers in each project** — this table is

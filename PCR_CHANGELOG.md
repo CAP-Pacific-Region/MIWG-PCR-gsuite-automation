@@ -10,6 +10,38 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-14] — Secondary-domain aliases for listed accounts
+
+### Added
+
+- **`SecondaryDomainAliases.gs` (v1.1.0)** — new module giving accounts a second
+  address that keeps the local part of their primary but swaps in a secondary
+  domain (`jane.doe@cawgcap.org` → `jane.doe@cawg.cap.gov`), as a **directory
+  alias** via `AdminDirectory.Users.Aliases.insert`. Driven by a new, optional
+  `Secondary Aliases` tab, which is a **curated opt-in list, not the roster** —
+  only listed accounts are touched, and new members are not enrolled
+  automatically. Entry points: `addSecondaryDomainAliases()` (trigger-safe) and
+  `previewSecondaryDomainAliases()` (dry run, manual only).
+
+  Gated on a new `TENANT_SECONDARY_EMAIL_DOMAIN` Script Property, blank on cadets
+  and pacific, so the shared code is an explicit no-op there rather than an error.
+  A preflight check confirms the domain is verified in the tenant, turning what
+  would be one opaque HTTP 400 per row into a single actionable message.
+
+  Unlike `addAlias()` in `UpdateMembers.gs`, a 409 does **not** fall back to a
+  numbered variant (`jane.doe.1@`) — an address that does not mirror the primary
+  defeats the purpose — and conflicts latch: they report once, then are skipped
+  until the row changes, rather than logging an ERROR every night forever.
+
+  Requires the new `admin.directory.domain.readonly` scope, so **every tenant
+  re-authorizes on next run**.
+
+  > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
+  > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
+  > published by CAP National; aliases **cannot** be created on the domain until
+  > then. Until it is verified the module logs the preflight error and exits
+  > without touching any account.
+
 ## [2026-07-11] — Squadron `.all` lists now admit cross-tenant cadet groups
 
 ### Fixed
