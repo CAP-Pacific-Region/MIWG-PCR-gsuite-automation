@@ -945,11 +945,24 @@ const MIGRATE_MAX_ATTEMPTS_ = 5;
 const MIGRATE_BACKOFF_BASE_MS_ = 2000;
 
 /**
- * UrlFetchApp's hard response cap. Gmail returns raw messages as base64 inside
- * JSON, inflating them ~33%, so a message over roughly 37MB overflows this and
- * comes back truncated — a 200 with a severed body.
+ * Size above which an UNPARSEABLE 200 is treated as truncation rather than a
+ * mystery.
+ *
+ * UrlFetchApp caps responses near 50MB, and Gmail returns raw messages as base64
+ * inside JSON (inflating ~33%), so a message over roughly 37MB comes back as a
+ * 200 with a severed body.
+ *
+ * Deliberately far below the cap rather than equal to it. The first version
+ * tested `length >= 50 * 1024 * 1024` on the assumption the boundary was exact;
+ * a real truncation arrived at 52,428,447 bytes — 353 short — so the test never
+ * fired and the message was reported as an unexplained parse error instead of
+ * being skipped. The cap is approximate and not ours to predict.
+ *
+ * 10MB is safe in both directions: Google's JSON error bodies are never remotely
+ * this large, and no response this size fails to parse for any reason other than
+ * being cut off.
  */
-const MIGRATE_RESPONSE_CAP_BYTES_ = 50 * 1024 * 1024;
+const MIGRATE_TRUNCATION_MIN_BYTES_ = 10 * 1024 * 1024;
 
 /**
  * Marker on errors caused by a message too large to fetch. Callers key off this
@@ -1006,15 +1019,12 @@ function gmailFetch_(url, opts, what) {
       try {
         return JSON.parse(text);
       } catch (parseErr) {
-        // A 200 whose body will not parse means UrlFetchApp truncated it at its
-        // 50MB response cap — Gmail returns raw messages as base64 inside JSON,
-        // which inflates ~33%, so a ~37MB message with attachments overflows.
-        // Surfaced as a typed error because the caller can skip one oversized
-        // message but must not treat it as a transient failure and retry it
-        // forever: the size will not change.
-        if (text.length >= MIGRATE_RESPONSE_CAP_BYTES_) {
-          throw new Error(MIGRATE_TOO_LARGE_ + ` Gmail ${what}: response hit the ` +
-            `${formatBytes_(text.length)} UrlFetchApp cap and was truncated.`);
+        // A large 200 whose body will not parse was truncated at UrlFetchApp's
+        // response cap. Typed, because the caller can skip one oversized message
+        // but must not retry it: unlike a 429, the size will never change.
+        if (text.length > MIGRATE_TRUNCATION_MIN_BYTES_) {
+          throw new Error(MIGRATE_TOO_LARGE_ + ` Gmail ${what}: response truncated at ` +
+            `${formatBytes_(text.length)} (UrlFetchApp cap) — message too large to fetch.`);
         }
         throw new Error(`Gmail ${what}: unparseable response (${parseErr.message})`);
       }
