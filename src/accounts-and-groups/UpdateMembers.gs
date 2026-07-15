@@ -1,15 +1,22 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.12.1
+ * Version: 1.13.0
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.12.1)
- * Changes: ORG_NAME_EXPANSIONS gained SQD — a third CAPWATCH spelling of Squadron,
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.13.0)
+ * Changes: getPublicRank() now maps CADET grades; it had none, so a cadet signature
+ *   rendered the raw CAPWATCH value ("C/Amn Jane Doe", "CADET Jane Doe"). Display
+ *   forms come from the grade list in CAP's own signature generator, including the
+ *   "Cadet " prefix it prepends. Note CAPWATCH's cadet spellings are NOT the senior
+ *   ones with "C/" glued on — they carry no internal space ("C/2dLt", "C/LtCol") —
+ *   and "CADET" is CAPWATCH's representation of C/AB, a real grade, distinct from
+ *   the ungraded senior case. Verified against every rank in a real Member.txt.
+ *   (1.12.1: ORG_NAME_EXPANSIONS gained SQD — a third CAPWATCH spelling of Squadron,
  *   used by "FALLBROOK SENIOR SQD 87" — plus GP/GRP for Group, which appear nowhere
  *   in CAPWATCH's org list today but are conventional, and CALIF -> California
  *   ("CENTRAL CALIF GROUP 6"). Checked by rendering all 77 California orgs: every
  *   remaining short word is a proper noun.
- *   (1.12.0: signature duty block now takes at most ONE duty per echelon before
+ *   1.12.0: signature duty block now takes at most ONE duty per echelon before
  *   filling the second slot — sorting on level alone let a member's two wing roles
  *   crowd their squadron command off the signature entirely. Ties within an echelon
  *   break on title seniority (dutyTitleRank_: command, then directors, then the
@@ -2369,8 +2376,22 @@ function formatPhone(phone) {
   return digits ? digits.replace(/(\d{3})(\d{3})(\d{4})/, '$1.$2.$3') : '';
 }
 
+/**
+ * A CAPWATCH grade in the form CAP's style guide prints it.
+ *
+ * Display forms are taken from the grade list in CAP's own signature generator
+ * (cap-brand-tools). Cadet grades carry the "Cadet " prefix that generator's
+ * buildDisplayName() prepends, so the mapped value is the whole display grade.
+ *
+ * Unmapped values pass through unchanged, which is why an ungraded senior used to
+ * render as "SM Jane Doe" — see isUngradedRank_() and getSignatureName().
+ *
+ * @param {string} rank - CAPWATCH Member.txt `Rank`
+ * @returns {string} Display grade, e.g. "Lt. Col." or "Cadet Chief Master Sgt."
+ */
 function getPublicRank(rank) {
   const MAP = {
+    // Senior members.
     "SSgt": "Staff Sgt.",
     "TSgt": "Tech. Sgt.",
     "MSgt": "Master Sgt.",
@@ -2386,7 +2407,27 @@ function getPublicRank(rank) {
     "Lt Col": "Lt. Col.",
     "Col": "Col.",
     "Brig Gen": "Brig. Gen.",
-    "Maj Gen": "Maj. Gen."
+    "Maj Gen": "Maj. Gen.",
+
+    // Cadets. NB the CAPWATCH spellings are NOT the senior ones with a "C/" glued
+    // on — the cadet forms have no internal space ("C/2dLt", not "C/2d Lt").
+    // "CADET" is CAPWATCH's representation of C/AB, the entry grade; it is a real
+    // grade, so it must not be confused with the ungraded senior case.
+    "CADET": "Cadet Airman Basic",
+    "C/Amn": "Cadet Airman",
+    "C/A1C": "Cadet Airman 1st Class",
+    "C/SrA": "Cadet Senior Airman",
+    "C/SSgt": "Cadet Staff Sgt.",
+    "C/TSgt": "Cadet Tech. Sgt.",
+    "C/MSgt": "Cadet Master Sgt.",
+    "C/SMSgt": "Cadet Senior Master Sgt.",
+    "C/CMSgt": "Cadet Chief Master Sgt.",
+    "C/2dLt": "Cadet 2nd Lt.",
+    "C/1stLt": "Cadet 1st Lt.",
+    "C/Capt": "Cadet Capt.",
+    "C/Maj": "Cadet Maj.",
+    "C/LtCol": "Cadet Lt. Col.",
+    "C/Col": "Cadet Col."
   };
   return MAP[rank] || rank || '';
 }

@@ -232,6 +232,28 @@ next to each entry below.
   "Eugene L. Carnahan Cadet Squadron 85" keeps its initial, since the period is
   stripped only for the lookup, not the output.
 
+- **`UpdateMembers.gs` (v1.13.0)** — `getPublicRank()` had **no cadet grades at all**,
+  so a cadet signature rendered the raw CAPWATCH value: "C/Amn Jane Doe",
+  "CADET Jane Doe". All 15 are now mapped.
+
+  Display forms come from the grade list in CAP's own signature generator
+  (`cap-brand-tools`), including the `Cadet ` prefix its `buildDisplayName()`
+  prepends — so `C/CMSgt` → **Cadet Chief Master Sgt.**
+
+  Two traps worth recording:
+
+  - **CAPWATCH's cadet spellings are not the senior ones with `C/` glued on.** They
+    carry no internal space: `C/2dLt`, `C/1stLt`, `C/LtCol` — against the senior
+    `2d Lt`, `1st Lt`, `Lt Col`.
+  - **`CADET` is C/AB**, the entry grade, and a *real* grade → "Cadet Airman Basic".
+    It must not be folded into the ungraded-senior case that `isUngradedRank_()`
+    handles for `SM`.
+
+  Verified against every rank in a real CAWG `Member.txt`: all 14 cadet grades present
+  (743 `C/Amn` … 9 `C/LtCol`) now map, and no non-cadet member carries a cadet-style
+  rank, so senior output is untouched. `C/Col` is mapped for completeness though
+  CAWG has none today.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until
