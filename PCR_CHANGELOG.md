@@ -170,6 +170,21 @@ next to each entry below.
   > trailing whitespace, which `dutyLevelRank_()` trims). `REGION`/`NAT` remain in
   > `DUTY_LEVEL_ORDER` for the Pacific tenant.
 
+- **`UpdateMembers.gs` (v1.11.0)** — added **`previewSignatureForMember()`**, a
+  read-only render of a single member's signature to the execution log.
+
+  There was previously no safe way to look at a signature before it reached a member:
+  `pushAllSignatures()` writes to every member at once, and the only other path fires
+  five minutes after an account is created — so inspecting the output meant either
+  spamming the wing or burning a licence on a throwaway account. This makes **no
+  Gmail or Directory calls at all**; it reads CAPWATCH and formats a string.
+
+  Set `SIGNATURE_PREVIEW_RUN_INPUTS.CAPID` at the top of the file and Run it (Apps
+  Script cannot pass arguments to an editor Run — same convention as
+  `GROUP_ADMINISTRATION_RUN_INPUTS`). It logs the name line, duty block, phone, and
+  which identities *would* receive it, then the raw HTML last so it can be lifted out
+  of the log and opened in a browser.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until

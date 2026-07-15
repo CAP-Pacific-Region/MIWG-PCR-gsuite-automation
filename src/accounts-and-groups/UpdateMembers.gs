@@ -1,17 +1,22 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.10.0
+ * Version: 1.11.0
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.10.0)
- * Changes: Signature duty titles are used VERBATIM from CAPWATCH, which already
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.11.0)
+ * Changes: Added previewSignatureForMember(), a read-only render of one member's
+ *   signature to the log. There was no safe way to inspect a signature before it
+ *   reached somebody — pushAllSignatures() writes to every member at once, and the
+ *   only other path fires 5 minutes after an account is created. Set the CAPID in
+ *   SIGNATURE_PREVIEW_RUN_INPUTS and Run it; it makes no Gmail/Directory calls.
+ *   (1.10.0: signature duty titles are used VERBATIM from CAPWATCH, which already
  *   carries full echelon-correct names ("Commander"; "Information Technologies
  *   Officer" at unit/group vs "Director of IT" at wing). No office-symbol expansion:
  *   the symbol lives in DutyPosition.txt's separate FunctArea column and never
  *   reaches this code — docs/API_REFERENCE.md's `id: 'CC'` example conflated the two.
  *   The one override is DUTY_TITLE_OVERRIDES: the ICL to CAPR 30-1 dropped "and
  *   Retention" from the Recruiting positions and a few rows still carry the old form.
- *   (1.9.0: signature duty lines now name the org the duty is actually HELD at rather
+ *   1.9.0: signature duty lines now name the org the duty is actually HELD at rather
  *   than the member's home unit — a squadron member with a wing duty read "San Jose
  *   Sr Sqdn 80 Director of IT". addDutyPositions()/addCadetDutyPositions() now carry
  *   the duty's orgName. Unit names are expanded for display via formatOrgName_():
@@ -2372,6 +2377,58 @@ function getPublicRank(rank) {
 
 function getWingCode() {
   return CONFIG.WING.toLowerCase() + "wg";
+}
+
+/**
+ * Run-input for previewSignatureForMember(). Apps Script cannot pass arguments to a
+ * function you Run from the editor, so set the CAPID here first — the same pattern
+ * as GROUP_ADMINISTRATION_RUN_INPUTS in groupAdministration.gs.
+ */
+const SIGNATURE_PREVIEW_RUN_INPUTS = {
+  CAPID: ''   // e.g. '123456'
+};
+
+/**
+ * Renders one member's email signature to the execution log. Writes NOTHING.
+ *
+ * Exists because there was otherwise no safe way to look at a signature before it
+ * reaches somebody: pushAllSignatures() writes to every member at once, and the
+ * only other path runs five minutes after an account is created. This makes no
+ * Gmail or Directory calls whatsoever — it reads CAPWATCH and formats a string.
+ *
+ * Set SIGNATURE_PREVIEW_RUN_INPUTS.CAPID above, then Run this. The raw HTML is
+ * logged last so it can be copied out of the log and opened in a browser.
+ */
+function previewSignatureForMember() {
+  const capid = String(SIGNATURE_PREVIEW_RUN_INPUTS.CAPID || '').trim();
+  if (!capid) {
+    Logger.error('Set SIGNATURE_PREVIEW_RUN_INPUTS.CAPID at the top of UpdateMembers.gs, then Run again.');
+    return;
+  }
+
+  // Keyed by CAPID as a trimmed string — see getMembers().
+  const member = getMembers()[capid];
+  if (!member) {
+    Logger.error('No active CAPWATCH member with that CAPID.', {
+      capid: capid,
+      hint: 'getMembers() returns active members only; check the CAPID and that CAPWATCH has been downloaded today.'
+    });
+    return;
+  }
+
+  const duty = getDutyBlock(member);
+
+  Logger.info('Signature preview — nothing was written to any account.', {
+    capid: capid,
+    nameLine: getSignatureName(member),
+    dutyBlock: duty || '(no non-assistant duty — the block is omitted entirely)',
+    phone: formatPhone(member.phone) || '(none — the phone row is omitted)',
+    wouldBeWrittenTo: 'org-owned Send-As identities only: ' +
+      [CONFIG.EMAIL_DOMAIN, CONFIG.SECONDARY_EMAIL_DOMAIN].filter(Boolean).join(', ')
+  });
+
+  // Logged raw and last, so it can be lifted out of the log and rendered.
+  console.log(generateEmailSignature(member));
 }
 
 /**
