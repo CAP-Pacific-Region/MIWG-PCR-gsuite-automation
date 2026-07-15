@@ -482,6 +482,7 @@ function migrateOneTransition_(row, started, opts) {
   // an email would block the deletion and re-run the whole import.
   try {
     sendTransitionCompleteEmail_(row, imported, deleteAfter);
+    setTransitionField_(row._rowNumber, 'NotifiedDate', new Date().toISOString());
   } catch (e) {
     Logger.error('Transition complete, but notification failed', {
       capid: row.CAPID,
@@ -583,6 +584,83 @@ function sendTransitionCompleteEmail_(row, messageCount, deleteAfter) {
     commanderCc: commander && commander.email ? commander.email : 'none',
     messageCount: messageCount
   });
+}
+
+/**
+ * Sends the completion email to migrated members who have not had it yet.
+ *
+ * Exists because migration and notification have to be separable. Mail can be
+ * moved long before the deletion machinery is ready to honour the date the email
+ * quotes, and an email promising "deleted on X, forwarding after" is a lie until
+ * deletion and the forwarding group actually exist. So migrations run quietly
+ * with notify=false, and this sends once the dates mean something.
+ *
+ * Driven off NotifiedDate rather than a status, so it cannot double-send: a row
+ * with a date is done, blank means untold. Skips rows whose Notes carry a
+ * catch-up failure — telling someone their mail is safely across while a
+ * DO NOT DELETE marker sits on the row would be exactly backwards.
+ *
+ * @param {boolean} [dryRun=true] - report who would be mailed, send nothing
+ * @returns {{sent: number, skipped: number, failed: number}}
+ */
+function notifyCompletedTransitions(dryRun) {
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    Logger.info('Notification skipped — not the source tenant');
+    return { sent: 0, skipped: 0, failed: 0 };
+  }
+
+  const isDry = dryRun !== false;   // default to dry run: this mails real people
+  const rows = readTransitions_();
+  let sent = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const capid in rows) {
+    const row = rows[capid];
+
+    if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.COMPLETE) { skipped++; continue; }
+    if (row.NotifiedDate) { skipped++; continue; }
+    if (!row.SeniorEmail) { skipped++; continue; }
+
+    if (String(row.Notes || '').indexOf('DO NOT DELETE') > -1) {
+      console.log(`${capid} | ${row.Name} | SKIPPED — catch-up failed, mail may be missing`);
+      skipped++;
+      continue;
+    }
+
+    const deleteAfter = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
+    if (!deleteAfter) {
+      console.log(`${capid} | ${row.Name} | SKIPPED — no DeleteAfter, the email needs a date`);
+      skipped++;
+      continue;
+    }
+
+    if (isDry) {
+      console.log(`${capid} | ${row.Name} | would notify -> ${row.SeniorEmail}, ` +
+        `${row.CadetEmail}, personal + commander | quoting delete date ` +
+        formatTransitionDate_(deleteAfter));
+      sent++;
+      continue;
+    }
+
+    try {
+      sendTransitionCompleteEmail_(row, Number(row.MessagesMigrated) || 0, deleteAfter);
+      setTransitionField_(row._rowNumber, 'NotifiedDate', new Date().toISOString());
+      sent++;
+    } catch (e) {
+      Logger.error('Notification failed', {
+        capid: capid, errorMessage: e && e.message ? e.message : String(e)
+      });
+      failed++;
+    }
+  }
+
+  console.log('');
+  console.log(isDry
+    ? `DRY RUN — ${sent} would be notified, ${skipped} skipped. Pass false to send.`
+    : `Sent ${sent}, skipped ${skipped}, failed ${failed}.`);
+
+  return { sent: sent, skipped: skipped, failed: failed };
 }
 
 /**

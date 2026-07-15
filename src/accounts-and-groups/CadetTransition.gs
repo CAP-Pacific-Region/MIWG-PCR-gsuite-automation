@@ -62,6 +62,7 @@ const TRANSITION_COLUMNS_ = [
   'MigratedDate',
   'MessagesMigrated',
   'LastCursor',       // Gmail pageToken, so a run that hits the 6-minute limit resumes
+  'NotifiedDate',     // when the member was told; blank means they have NOT been told
   'ForwardGroupCreated',
   'ForwardGroupExpires',
   'Notes'
@@ -75,6 +76,16 @@ const TRANSITION_COLUMNS_ = [
  * Cleared implicitly when the execution ends, which is the only lifetime needed.
  */
 let transitionsSheet_ = null;
+
+/**
+ * Invalidates the cached Sheet handle and header. Only needed if the sheet is
+ * restructured mid-execution, which ensureTransitionColumns_() does on the run
+ * that first adds a column.
+ */
+function resetTransitionsCache_() {
+  transitionsSheet_ = null;
+  transitionHeader_ = null;
+}
 
 /**
  * Resolves the Transitions sheet, creating it with headers on first use.
@@ -95,8 +106,42 @@ function getTransitionsSheet_() {
     Logger.info('Transitions sheet created', { name: TRANSITION_CONFIG.SHEET_NAME });
   }
 
+  ensureTransitionColumns_(sheet);
+
   transitionsSheet_ = sheet;
   return sheet;
+}
+
+/**
+ * Appends any columns added to TRANSITION_COLUMNS_ since the sheet was created.
+ *
+ * The sheet is live state with real rows in it, so a new column cannot just
+ * appear in the constant and be assumed present — setTransitionField_ resolves
+ * positions from TRANSITION_COLUMNS_, and writing to a column the header does
+ * not have would silently scribble into whatever is at that index.
+ *
+ * Appends only. Never reorders or removes: a human may well have added notes or
+ * columns of their own, and this is their sheet too.
+ *
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet
+ */
+function ensureTransitionColumns_(sheet) {
+  const lastCol = sheet.getLastColumn();
+  if (!lastCol) return;
+
+  const header = sheet.getRange(1, 1, 1, lastCol).getValues()[0]
+    .map(h => String(h || '').trim());
+
+  const missing = TRANSITION_COLUMNS_.filter(c => header.indexOf(c) < 0);
+  if (!missing.length) return;
+
+  sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
+  sheet.getRange(1, 1, 1, lastCol + missing.length).setFontWeight('bold');
+
+  // The header just changed under any cached copy.
+  transitionHeader_ = null;
+
+  Logger.info('Transitions sheet columns added', { added: missing });
 }
 
 /**
@@ -132,6 +177,30 @@ function readTransitions_() {
   return byCapid;
 }
 
+/** Cached sheet header, so every field write does not re-read row 1. */
+let transitionHeader_ = null;
+
+/**
+ * The sheet's ACTUAL column order.
+ *
+ * Positions must come from the sheet, never from TRANSITION_COLUMNS_. The two
+ * diverge the moment a column is added to the constant, because
+ * ensureTransitionColumns_() can only append to a sheet that already has rows,
+ * while the constant may declare the new column in the middle. Resolving writes
+ * against the constant in that state puts every field after the insertion point
+ * one column to the left — silently, into real data.
+ *
+ * @returns {Array<string>}
+ */
+function transitionHeader_get_() {
+  if (transitionHeader_) return transitionHeader_;
+
+  const sheet = getTransitionsSheet_();
+  transitionHeader_ = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+    .map(h => String(h || '').trim());
+  return transitionHeader_;
+}
+
 /**
  * Writes one field of one row.
  *
@@ -140,19 +209,23 @@ function readTransitions_() {
  * @param {*} value
  */
 function setTransitionField_(rowNumber, column, value) {
-  const index = TRANSITION_COLUMNS_.indexOf(column);
-  if (index < 0) throw new Error('Unknown Transitions column: ' + column);
+  const index = transitionHeader_get_().indexOf(column);
+  if (index < 0) {
+    throw new Error('Column not present in the Transitions sheet: ' + column +
+      ' (ensureTransitionColumns_ should have added it)');
+  }
   getTransitionsSheet_().getRange(rowNumber, index + 1).setValue(value);
 }
 
 /**
- * Appends a new transition row.
+ * Appends a new transition row, ordered to match the sheet rather than the
+ * constant — see transitionHeader_get_().
  *
  * @param {Object} row - keys matching TRANSITION_COLUMNS_
  */
 function appendTransition_(row) {
   getTransitionsSheet_().appendRow(
-    TRANSITION_COLUMNS_.map(c => row[c] === undefined ? '' : row[c])
+    transitionHeader_get_().map(c => row[c] === undefined ? '' : row[c])
   );
 }
 
