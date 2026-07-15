@@ -432,7 +432,10 @@ function deleteLongArchivedUsers(activeCapsns) {
  * stalest account on the domain. Workspace exposes no suspension timestamp, and
  * suspension follows expiry on the next sync, so the Expiration column is the
  * closest authoritative date to the event this grace period is actually about.
- * lastLoginTime is still reported, purely as context for a human reader.
+ *
+ * lastLoginTime never dates a lapse and so never drives the grace period — but
+ * it can DISPROVE one, and is used for exactly that in the no-record branch
+ * below. It is otherwise reported as context for a human reader.
  *
  * Decision order per suspended account:
  *
@@ -446,18 +449,25 @@ function deleteLongArchivedUsers(activeCapsns) {
  *                             human instead.
  *   lapsed, expiry known   -> deleted once >= grace days past Expiration
  *   lapsed, expiry absent  -> held and surfaced; cannot measure, so no deletion
- *   no CAPWATCH record     -> deleted. Member.txt retains only ~3 months of
- *                             expired members (verified: EXPIRED rows carry just
- *                             3 distinct month-ends), so falling out of the
- *                             extract entirely means lapsed far beyond any
- *                             30-day grace. This inference is only sound if the
- *                             extract is complete — hence the MIN_MEMBER_ROWS
- *                             guard below, which is load-bearing, not defensive
- *                             boilerplate.
+ *   no CAPWATCH record     -> deleted, but only if the claim survives a check.
+ *                             Member.txt retains a rolling window of lapsed
+ *                             members (~3 months observed), so falling out of it
+ *                             means lapsing before the oldest lapse it still
+ *                             carries — far beyond any 30-day grace. Two things
+ *                             can falsify that:
+ *                               - a short extract, which would make current
+ *                                 members look absent (MIN_MEMBER_ROWS guard);
+ *                               - the account being alive after that boundary,
+ *                                 which is impossible for someone who lapsed
+ *                                 before it, since lapsing gets you suspended and
+ *                                 a suspended account cannot sign in. A wing
+ *                                 transfer looks exactly like this. Held for
+ *                                 review rather than deleted.
  *
  * @param {boolean} dryRun - When true (default), no accounts are deleted.
- * @returns {Object} { dryRun, graceDays, deleted, candidates, withinGrace,
- *   activeIneligible, unknownExpiry }
+ * @returns {Object} { dryRun, graceDays, memberRows, oldestRetainedLapse,
+ *   deleted, candidates, withinGrace, activeIneligible, unknownExpiry,
+ *   contradicted }
  */
 function deleteIneligibleSuspendedUsers(dryRun = true) {
   Logger.info('Starting deleteIneligibleSuspendedUsers', { dryRun: dryRun });
@@ -468,6 +478,12 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
   // [16] Expiration, [21] Type, [24] MbrStatus — verified against the Member.txt
   // header by debugCapwatchMemberExpirationColumn().
   const memberData = parseFile('Member');
+
+  // Oldest lapse still present in the extract, derived rather than assumed: the
+  // window has been ~3 months, but nothing guarantees CAPWATCH keeps it there.
+  // This is the boundary that gives "no CAPWATCH record" its meaning — you only
+  // fall out of Member.txt by lapsing before it.
+  let oldestRetainedLapse = null;
 
   // A short Member.txt would make current members look like they have no
   // CAPWATCH record and get them deleted. Refuse rather than guess.
@@ -483,12 +499,25 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
   const memberInfoByCapid = {};
   for (let i = 0; i < memberData.length; i++) {
     const capid = String(memberData[i][0] || '').trim();
-    if (capid) memberInfoByCapid[capid] = {
+    if (!capid) continue;
+    memberInfoByCapid[capid] = {
       status: memberData[i][24],
       type: memberData[i][21],
       expiration: memberData[i][16]
     };
+
+    if (String(memberData[i][24] || '').trim().toUpperCase() !== 'ACTIVE') {
+      const lapsed = parseCapwatchDate_(memberData[i][16]);
+      if (lapsed && (!oldestRetainedLapse || lapsed < oldestRetainedLapse)) {
+        oldestRetainedLapse = lapsed;
+      }
+    }
   }
+  Logger.info('CAPWATCH extract window', {
+    memberRows: memberData.length,
+    oldestRetainedLapse: oldestRetainedLapse ?
+      oldestRetainedLapse.toISOString().slice(0, 10) : null
+  });
 
   // Manual Members allow-list — never delete these
   const manualCapids = {};
@@ -526,6 +555,7 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
   const withinGrace = [];       // lapsed recently — spared, will age in
   const activeIneligible = [];  // current members, ineligible by type — never auto-deleted
   const unknownExpiry = [];     // lapsed but undateable — held for review
+  const contradicted = [];      // no CAPWATCH record, but demonstrably alive since — held
   let nextPageToken = '';
 
   do {
@@ -608,8 +638,22 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
         }
         record.basis = `lapsed ${daysSinceExpiration}d ago (expired ${record.expiration})`;
       } else {
-        // No CAPWATCH record: Member.txt retains only ~3 months of expired
-        // members, so absence means they lapsed well beyond the grace period.
+        // No CAPWATCH record. The claim is: they lapsed before
+        // oldestRetainedLapse, which is the only way to fall out of Member.txt.
+        //
+        // That claim is checkable. Lapsing gets you suspended on the next sync,
+        // and a suspended account cannot sign in — so if this account was still
+        // alive after that boundary, it did not lapse before it, and something
+        // else removed them from our extract (a wing transfer leaves CAPWATCH
+        // silent while the member stays perfectly current elsewhere). Deleting on
+        // a falsified premise is how you destroy a live mailbox, so hand it to a
+        // human. lastActivity is the account's newest sign of life: last login,
+        // or creation for an account never signed into.
+        if (oldestRetainedLapse && lastActivity > oldestRetainedLapse) {
+          record.reason = 'no CAPWATCH record, but alive after the extract window';
+          contradicted.push(record);
+          continue;
+        }
         record.basis = 'no CAPWATCH record — lapsed beyond the extract window';
       }
 
@@ -629,9 +673,11 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
 
   console.log(`\n=== ${dryRun ? 'DRY RUN - ' : ''}INELIGIBLE SUSPENDED DELETIONS ===\n`);
   console.log(`Grace period: ${graceDays} days, measured from CAPWATCH expiry.`);
-  console.log('LAPSED = days since membership expired; "no record" = lapsed beyond the');
-  console.log('         ~3-month extract window. DAYS = days since last login (context only,');
-  console.log('         * = never logged in) — it does NOT affect any decision here.\n');
+  console.log(`Extract retains lapses back to ${oldestRetainedLapse ? oldestRetainedLapse.toISOString().slice(0, 10) : '(unknown)'}.`);
+  console.log('LAPSED = days since membership expired; "no record" = absent from the extract,');
+  console.log('         i.e. lapsed before that date. DAYS = days since last login (* = never');
+  console.log('         logged in); it never sets the grace period, but a no-record account');
+  console.log('         alive after the window is held rather than deleted.\n');
 
   console.log(`-- ${dryRun ? 'WOULD DELETE' : 'DELETING'} (${candidates.length}) --`);
   if (candidates.length === 0) console.log('    (none)');
@@ -649,6 +695,15 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
     `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} ${c.reason.padEnd(24)} ${c.email}`
   ));
 
+  if (contradicted.length > 0) {
+    console.log(`\n-- SPARED, no CAPWATCH record but alive since the extract window — needs a human (${contradicted.length}) --`);
+    console.log(`   (extract retains lapses back to ${oldestRetainedLapse ? oldestRetainedLapse.toISOString().slice(0, 10) : '?'}; these signed in after that,`);
+    console.log('    so they did not lapse — likely transferred out of the wing.)');
+    contradicted.forEach(c => console.log(
+      `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} last active ${String(c.daysSinceActivity) + 'd ago'} ${c.email}`
+    ));
+  }
+
   if (unknownExpiry.length > 0) {
     console.log(`\n-- SPARED, lapsed but expiration unreadable — needs a human (${unknownExpiry.length}) --`);
     unknownExpiry.forEach(c => console.log(
@@ -660,10 +715,13 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
     dryRun: dryRun,
     graceDays: graceDays,
     memberRows: memberData.length,
+    oldestRetainedLapse: oldestRetainedLapse ?
+      oldestRetainedLapse.toISOString().slice(0, 10) : null,
     candidates: candidates,
     withinGrace: withinGrace,
     activeIneligible: activeIneligible,
     unknownExpiry: unknownExpiry,
+    contradicted: contradicted,
     deleted: []
   };
 
@@ -674,6 +732,7 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
       withinGrace: withinGrace.length,
       activeIneligible: activeIneligible.length,
       unknownExpiry: unknownExpiry.length,
+      contradicted: contradicted.length,
       graceDays: graceDays
     });
     return summary;
@@ -921,15 +980,22 @@ function sendLicenseManagementReport(summary) {
       htmlBody += `</table>`;
     }
 
-    const needsReview = ineligible.activeIneligible.concat(ineligible.unknownExpiry);
+    const needsReview = ineligible.activeIneligible
+      .concat(ineligible.contradicted || [])
+      .concat(ineligible.unknownExpiry);
     if (needsReview.length > 0) {
       htmlBody += `
         <div class="warning">
           <h2>Needs a Human Decision (${needsReview.length})</h2>
-          <p>These suspended accounts are never deleted automatically. Current members who are
-          ineligible by type (e.g. PATRON) are real members whose expiry lies in the future, so
-          there is no lapse date to measure a grace period from. They hold a seat until someone
-          decides. Add them to the Manual Members sheet to keep them, or delete them by hand.</p>
+          <p>These suspended accounts are never deleted automatically, and they hold a seat until
+          someone decides. Add them to the Manual Members sheet to keep them, or delete them by
+          hand.</p>
+          <p><em>Ineligible by type</em> (e.g. PATRON) are current members whose expiry lies in the
+          future, so there is no lapse date to measure a grace period from.
+          <em>No CAPWATCH record, but alive after the extract window</em> means the account was
+          signed into more recently than the oldest lapse CAPWATCH still retains
+          (${ineligible.oldestRetainedLapse || 'unknown'}) — so they did not lapse, and most
+          likely transferred out of the wing while remaining a current member elsewhere.</p>
         </div>
         <table>
           <tr><th>Name</th><th>CAPID</th><th>CAPWATCH</th><th>Email</th></tr>

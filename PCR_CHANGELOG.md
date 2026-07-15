@@ -44,9 +44,21 @@ next to each entry below.
   ineligible by type (a PATRON's expiry is in the future and cannot date their
   conversion, so there is nothing safe to measure) — they are surfaced for a human
   instead. **No CAPWATCH record** now means *deletable*: the extract retains only
-  ~3 months of expired members (`EXPIRED` rows carry just 3 distinct month-ends),
-  so absence proves a lapse far beyond any grace period. That inference is only
-  sound on a complete extract, hence the new `MIN_MEMBER_ROWS` guard.
+  a rolling window of expired members (~3 months observed — `EXPIRED` rows carry
+  just 3 distinct month-ends), so absence implies a lapse far beyond any grace
+  period. That inference is only sound on a complete extract, hence the new
+  `MIN_MEMBER_ROWS` guard.
+
+  It is also only sound if the member actually lapsed, and that is checkable:
+  lapsing gets you suspended on the next sync, and a suspended account cannot
+  sign in — so a no-record account that was alive *after* the oldest lapse the
+  extract still retains did not lapse at all. A **wing transfer** looks exactly
+  like this: leave CAWG and you vanish from our extract while remaining a current
+  member elsewhere. A live dry run surfaced one (last login 26 days ago), which
+  the rule would otherwise have deleted. Those accounts are now held for review.
+  The window boundary is derived from the data each run rather than hardcoded, so
+  it tracks CAPWATCH rather than assuming. `lastLoginTime` never sets the grace
+  period, but it is used here to falsify it.
 
   The function now **defaults to a dry run** and returns a result object
   (`candidates` / `withinGrace` / `activeIneligible` / `unknownExpiry`) rather than
