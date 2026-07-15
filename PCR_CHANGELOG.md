@@ -10,6 +10,68 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-15] — The ineligible-suspended reaper, repaired
+
+### Fixed
+
+- **`ManageLicenses.gs` (v1.1.0)** — `deleteIneligibleSuspendedUsers()` has never
+  deleted anything since it was added in June 2026. Its `fields` selector asked
+  for `employeeId`, which is **not** a field on the Admin SDK Directory User
+  resource (it belongs to the People API), so the API returned 400 `Invalid field
+  selection employeeId` and the function threw on its first page, every run.
+  `manageLicenseLifecycle()` wraps that call in try/catch and filed the error into
+  `summary.errors`, so it failed quietly into the monthly report for a month. The
+  June 2026 cleanup of 257 stale accounts was `deleteIneligibleWorkspaceUsers()`,
+  a different function.
+
+  Removing `employeeId` alone would have been dangerous, which is why it wasn't
+  done as a drive-by: the grace period measured **days since last login**, not
+  days since the member lapsed, and every suspended account was already past that
+  cutoff. The first successful run would have deleted the entire suspended
+  population at once, permanently — this edition has no Archived User licenses, so
+  there is no archive and no undo.
+
+  Grace is now measured from the member's **CAPWATCH `Expiration`** date
+  (`Member.txt` column 16, verified by name against the header — `parseFile()`
+  strips it, so the index had never been checked). `lastLoginTime` is retained for
+  human context only and drives no decision. Also fixed: Google returns
+  `lastLoginTime` as the **Unix epoch** for accounts that never signed in rather
+  than omitting the field, so the long-advertised `creationTime` fallback was dead
+  code and such accounts read as ~20649 days stale — an account created yesterday
+  and suspended today sorted as maximally stale.
+
+  Behaviour changes: a **current member is never auto-deleted**, even when
+  ineligible by type (a PATRON's expiry is in the future and cannot date their
+  conversion, so there is nothing safe to measure) — they are surfaced for a human
+  instead. **No CAPWATCH record** now means *deletable*: the extract retains only
+  ~3 months of expired members (`EXPIRED` rows carry just 3 distinct month-ends),
+  so absence proves a lapse far beyond any grace period. That inference is only
+  sound on a complete extract, hence the new `MIN_MEMBER_ROWS` guard.
+
+  The function now **defaults to a dry run** and returns a result object
+  (`candidates` / `withinGrace` / `activeIneligible` / `unknownExpiry`) rather than
+  a bare array. `previewIneligibleSuspendedDeletion()` is a new entry point, also
+  wired into `previewLicenseLifecycle()`, which previously covered only
+  `previewArchival()` / `previewDeletion()` and left this path with no dry run at
+  all. `manageLicenseLifecycle()` still calls it in dry-run mode; the monthly
+  reaper is **not armed** until that flag is flipped. The report email reports
+  candidates, spared-within-grace, and needs-review separately, and no longer
+  claims deletions that did not happen.
+
+### Added
+
+- **`config.gs` (v1.5.0)** — `MIN_MEMBER_ROWS` (1000). `deleteIneligibleSuspendedUsers()`
+  treats a missing CAPWATCH record as proof of a long-ago lapse; a truncated
+  `Member.txt` would therefore make thousands of current members look deletable.
+  `parseFile()`'s fallback parser can quietly return a partial row set, so the
+  deletion path now refuses to run below this floor. The seniors extract carries
+  ~5,000 rows.
+
+- **`ManageLicenses.gs`** — `debugCapwatchMemberExpirationColumn()`, a read-only
+  diagnostic printing the `Member.txt` header, the distribution of expiration
+  values by member status, and raw rows for given CAPIDs. Written to verify the
+  column-16 index before an irreversible policy was built on it.
+
 ## [2026-07-14] — Secondary-domain aliases for listed accounts
 
 ### Added

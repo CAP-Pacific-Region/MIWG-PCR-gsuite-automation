@@ -3,15 +3,21 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0)
- * Version: 1.4.0
- * Date: 2026-07-14
- * Changes: Added SECONDARY_EMAIL_DOMAIN (Script Property
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0, 1.5.0)
+ * Version: 1.5.0
+ * Date: 2026-07-15
+ * Changes: Added LICENSE_CONFIG.MIN_MEMBER_ROWS, a floor under the CAPWATCH
+ *   Member.txt row count. deleteIneligibleSuspendedUsers() reads a missing
+ *   CAPWATCH record as proof a member lapsed long ago, so a truncated extract
+ *   would make current members look deletable; the deletion path now refuses to
+ *   run below the floor. Also rewrote DAYS_BEFORE_DELETE_INELIGIBLE's docs: it is
+ *   measured from CAPWATCH Expiration, not from lastLoginTime as before.
+ *   (1.4.0: added SECONDARY_EMAIL_DOMAIN (Script Property
  *   TENANT_SECONDARY_EMAIL_DOMAIN), consumed by
  *   accounts-and-groups/SecondaryDomainAliases.gs — the verified secondary domain
  *   a tenant hands out parallel addresses on. Blank on cadets/pacific, which
  *   disables that module there.
- *   (1.3.0: added a per-profile CROSS_TENANT block (consumed by
+ *   1.3.0: added a per-profile CROSS_TENANT block (consumed by
  *   cross-tenant-contacts/CrossTenantContacts.gs) selecting cross-tenant shared-
  *   contact behavior — on for seniors/cadets, off for pacific.
  *   1.2.2: profile-driven SQUADRON_DISTRIBUTION_TOGGLES per tenant, so squadron
@@ -651,10 +657,11 @@ const TRANSITION_CONFIG = {
    *
    * This clock is authoritative and is measured from the Transitions sheet's
    * DetectedDate. It deliberately does NOT reuse
-   * LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE, whose cutoff is computed from
-   * lastLoginTime as a proxy for suspension date — a member who stopped opening
-   * their cadet mail months ago is already past that cutoff and would be deleted
-   * on the first lifecycle run, before any migration could happen.
+   * LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE, which times a different event:
+   * a member lapsing. A transitioning cadet has not lapsed — they are converting
+   * — so that clock says nothing useful about when their mail is safe to destroy.
+   * Only this module knows whether the mail is across yet, hence the separate
+   * timer and the getHeldTransitionCapids() hold in deleteIneligibleSuspendedUsers().
    *
    * 90 days covers National being slow on fingerprint processing.
    */
@@ -735,15 +742,38 @@ const LICENSE_CONFIG = {
    * Number of days a suspended, ineligible user is kept before deletion.
    * Ineligible means: suspended AND not an eligible active CAPWATCH member
    * (not in CONFIG.MEMBER_TYPES.ACTIVE with ACTIVE status, and not a Manual
-   * Member). Accounts are suspended immediately on determination of
-   * ineligibility; this timer controls how long before the account is
-   * permanently deleted to free a seat against the 2000-user domain cap.
+   * Member). This timer controls how long before the account is permanently
+   * deleted to free a seat against the 2000-user domain cap.
+   *
+   * Measured from the member's CAPWATCH Expiration date (Member.txt column 16),
+   * i.e. from when they stopped being a member — NOT from lastLoginTime, which
+   * measures something else entirely (a member who simply stopped reading their
+   * mail is not a member who lapsed). Workspace exposes no suspension
+   * timestamp, and suspension follows expiry on the next sync, so expiry is the
+   * closest authoritative date to the event this grace period is about.
    *
    * If a member becomes eligible again before this deadline (e.g. a PATRON
    * upgrades to SENIOR), the account is automatically unsuspended by
    * reactivateRenewedMembers() and the deletion never fires.
    */
   DAYS_BEFORE_DELETE_INELIGIBLE: 30,
+
+  /**
+   * Minimum plausible data row count for CAPWATCH Member.txt.
+   *
+   * deleteIneligibleSuspendedUsers() treats "no CAPWATCH record" as proof that
+   * a member lapsed long ago, because the extract only retains roughly three
+   * months of expired members. That inference inverts dangerously if the file
+   * is short: a truncated or partially downloaded Member.txt makes thousands of
+   * current members look like they have no record, and the reaper would delete
+   * their mailboxes. parseFile() also has a fallback parser that can quietly
+   * return a partial row set.
+   *
+   * So the deletion path refuses to run below this floor. The seniors extract
+   * carries ~5,000 rows; this is set well under that to catch gross truncation
+   * without tripping on normal membership churn.
+   */
+  MIN_MEMBER_ROWS: 1000,
 
   /**
    * Email addresses to receive license management reports

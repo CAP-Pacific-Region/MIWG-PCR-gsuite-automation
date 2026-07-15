@@ -1,17 +1,27 @@
 /**
  * License Lifecycle Management Module
  *
- * Version: 1.0.0
- * Date: 2026-07-09
- * Changes: AdminDirectory.Users.list standardized to customer:"my_customer"
- *   (was domain — 400 Bad Request on the cadets tenant). See PCR_CHANGELOG.md.
+ * Version: 1.1.0
+ * Date: 2026-07-15
+ * Changes: 1.1.0 — deleteIneligibleSuspendedUsers() repaired. It had never once
+ *   run: its field selector asked for employeeId, which is not a Directory User
+ *   field, so every call 400'd on its first page and manageLicenseLifecycle()
+ *   filed the error into the monthly report. Its grace period also measured days
+ *   since last login rather than days since the member lapsed, and Google returns
+ *   lastLoginTime as the Unix epoch (not absent) for never-logged-in accounts, so
+ *   those read as ~20649 days stale. Grace is now measured from the CAPWATCH
+ *   Expiration column; current members are never auto-deleted; and the function
+ *   defaults to a dry run. See PCR_CHANGELOG.md.
+ *   1.0.0 — AdminDirectory.Users.list standardized to customer:"my_customer"
+ *   (was domain — 400 Bad Request on the cadets tenant).
  *
  * Manages Google Workspace license optimization and user account lifecycle:
  * - Auto-reactivates users who renewed their membership
  * - Archives users suspended for 1+ year who are inactive in CAPWATCH
  * - Deletes users archived for 5+ years who are inactive in CAPWATCH
+ * - Deletes suspended accounts of members who lapsed 30+ days ago
  * - Maintains license pool availability
- * 
+ *
  * RECOMMENDED SCHEDULE: Run monthly around the 15th
  * This avoids conflicts with beginning-of-month member sync and provides
  * buffer after renewal processing.
@@ -47,6 +57,7 @@ function manageLicenseLifecycle() {
     archived: [],
     deleted: [],
     deletedIneligible: [],
+    ineligibleResult: null,
     errors: [],
     startTime: start.toISOString()
   };
@@ -62,16 +73,22 @@ function manageLicenseLifecycle() {
     // Kept commented out since archiving is unavailable (step above no-ops).
     // summary.deleted = deleteLongArchivedUsers(activeCapsns);
 
-    // Step 3: Delete suspended ineligible users after 30-day grace period.
+    // Step 3: Report suspended ineligible users that are past the grace period.
     // Ineligible = suspended in Workspace AND not an eligible active CAPWATCH
-    // member (PATRON, lapsed, no record, etc.). Accounts become eligible
-    // again before deletion if the member's CAPWATCH type or status changes
-    // — reactivateRenewedMembers() handles that path and prevents deletion.
+    // member (lapsed, no record, etc.). Accounts become eligible again before
+    // deletion if the member's CAPWATCH type or status changes —
+    // reactivateRenewedMembers() handles that path and prevents deletion.
     //
     // Exception: members mid-transition to the senior tenant are skipped here.
     // CadetTransition.gs holds their mailbox open on its own 90-day clock and
     // deletes it once their mail has been migrated across.
-    summary.deletedIneligible = deleteIneligibleSuspendedUsers();
+    //
+    // STILL A DRY RUN. The grace period now measures the right thing (days since
+    // CAPWATCH expiry, not days since last login), so this list is a safe delete
+    // set — but nobody has watched it run live yet, and deletion is permanent on
+    // this edition. Flip to false to arm the monthly reaper.
+    summary.ineligibleResult = deleteIneligibleSuspendedUsers(true);
+    summary.deletedIneligible = summary.ineligibleResult.deleted;
 
   } catch (err) {
     Logger.error('License lifecycle management failed', err);
@@ -401,39 +418,76 @@ function deleteLongArchivedUsers(activeCapsns) {
 }
 
 /**
- * Deletes suspended Workspace accounts that are ineligible for a seat and
- * have been suspended for at least LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE
- * days (default 30).
+ * Deletes suspended Workspace accounts belonging to members who lapsed at least
+ * LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE days ago (default 30), freeing
+ * seats against the 2000-user domain cap.
  *
- * Ineligible = not an eligible active CAPWATCH member (not in
- * CONFIG.MEMBER_TYPES.ACTIVE with ACTIVE status) AND not a Manual Member.
- * This mirrors the criteria used by suspendExpiredMembers() /
- * auditWorkspaceUsersForRemoval() — the same population that gets suspended
- * immediately on determination of ineligibility.
+ * Defaults to a dry run. Pass dryRun=false to actually delete. Deletion is
+ * PERMANENT here: this edition has no Archived User licenses, so there is no
+ * archive and no undo beyond Google's ~20-day recovery window.
  *
- * If a member becomes eligible again BEFORE this threshold (e.g. a PATRON
- * upgrades to SENIOR), reactivateRenewedMembers() unsuspends them and they
- * never reach the delete threshold.
+ * THE GRACE PERIOD IS MEASURED FROM CAPWATCH EXPIRATION, not from lastLoginTime.
+ * The two are unrelated: someone who stopped reading their mail a year ago but
+ * renewed last month is a current member, while lastLoginTime says they are the
+ * stalest account on the domain. Workspace exposes no suspension timestamp, and
+ * suspension follows expiry on the next sync, so the Expiration column is the
+ * closest authoritative date to the event this grace period is actually about.
+ * lastLoginTime is still reported, purely as context for a human reader.
  *
- * Uses lastLoginTime as a proxy for when the account became inactive
- * (same approach as archiveLongSuspendedUsers). Accounts that never logged
- * in use creationTime as the fallback — these have no usage data to preserve
- * so immediate eligibility for deletion is acceptable.
+ * Decision order per suspended account:
  *
- * @returns {Array<Object>} Accounts that were deleted
+ *   Manual Member          -> never deleted (allow-list)
+ *   held for transition    -> never deleted (CadetTransition.gs owns the clock)
+ *   CADET                  -> skipped (separate domain, out of scope)
+ *   MbrStatus ACTIVE       -> never auto-deleted, even when ineligible by type.
+ *                             A PATRON is a current member; their expiry is in
+ *                             the future and cannot date their conversion, so
+ *                             there is nothing safe to measure. Surfaced for a
+ *                             human instead.
+ *   lapsed, expiry known   -> deleted once >= grace days past Expiration
+ *   lapsed, expiry absent  -> held and surfaced; cannot measure, so no deletion
+ *   no CAPWATCH record     -> deleted. Member.txt retains only ~3 months of
+ *                             expired members (verified: EXPIRED rows carry just
+ *                             3 distinct month-ends), so falling out of the
+ *                             extract entirely means lapsed far beyond any
+ *                             30-day grace. This inference is only sound if the
+ *                             extract is complete — hence the MIN_MEMBER_ROWS
+ *                             guard below, which is load-bearing, not defensive
+ *                             boilerplate.
+ *
+ * @param {boolean} dryRun - When true (default), no accounts are deleted.
+ * @returns {Object} { dryRun, graceDays, deleted, candidates, withinGrace,
+ *   activeIneligible, unknownExpiry }
  */
-function deleteIneligibleSuspendedUsers() {
-  Logger.info('Starting deletion of ineligible suspended users');
+function deleteIneligibleSuspendedUsers(dryRun = true) {
+  Logger.info('Starting deleteIneligibleSuspendedUsers', { dryRun: dryRun });
 
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE);
+  const graceDays = LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE;
 
-  // Build eligibility lookup: CAPID -> {status, type}
+  // Build eligibility lookup: CAPID -> {status, type, expiration}
+  // [16] Expiration, [21] Type, [24] MbrStatus — verified against the Member.txt
+  // header by debugCapwatchMemberExpirationColumn().
   const memberData = parseFile('Member');
+
+  // A short Member.txt would make current members look like they have no
+  // CAPWATCH record and get them deleted. Refuse rather than guess.
+  if (!memberData || memberData.length < LICENSE_CONFIG.MIN_MEMBER_ROWS) {
+    throw new Error(
+      `deleteIneligibleSuspendedUsers: CAPWATCH Member data looks truncated ` +
+      `(${memberData ? memberData.length : 0} rows, expected at least ` +
+      `${LICENSE_CONFIG.MIN_MEMBER_ROWS}). Refusing to run: this function treats ` +
+      `a missing CAPWATCH record as proof a member lapsed long ago, which would ` +
+      `delete current members' accounts if the extract is incomplete.`
+    );
+  }
   const memberInfoByCapid = {};
   for (let i = 0; i < memberData.length; i++) {
     const capid = String(memberData[i][0] || '').trim();
-    if (capid) memberInfoByCapid[capid] = { status: memberData[i][24], type: memberData[i][21] };
+    if (capid) memberInfoByCapid[capid] = {
+      status: memberData[i][24],
+      type: memberData[i][21],
+      expiration: memberData[i][16]
+    };
   }
 
   // Manual Members allow-list — never delete these
@@ -461,15 +515,17 @@ function deleteIneligibleSuspendedUsers() {
   }
 
   // CAPIDs mid-transition to the senior tenant. Their cadet mailbox is still the
-  // only copy of their mail until it is migrated, and this function's cutoff is
-  // derived from lastLoginTime (see below) — which a transitioning member is
-  // usually already past — so without this guard they would be deleted on the
-  // first run after their type flips. CadetTransition.gs deletes them instead,
-  // on its own authoritative clock, once the mail is safely across.
+  // only copy of their mail until it is migrated. A transitioning cadet's old
+  // type has lapsed, so the expiry clock below would happily reap them the first
+  // run after their type flips. CadetTransition.gs deletes them instead, on its
+  // own authoritative clock, once the mail is safely across.
   const heldForTransition = getHeldTransitionCapids();
 
   const eligibleTypes = CONFIG.MEMBER_TYPES.ACTIVE;
-  const deleted = [];
+  const candidates = [];        // past grace — will be deleted
+  const withinGrace = [];       // lapsed recently — spared, will age in
+  const activeIneligible = [];  // current members, ineligible by type — never auto-deleted
+  const unknownExpiry = [];     // lapsed but undateable — held for review
   let nextPageToken = '';
 
   do {
@@ -477,22 +533,7 @@ function deleteIneligibleSuspendedUsers() {
       customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=true isAdmin=false',
-      // WARNING — this selector is BROKEN and that is currently load-bearing.
-      // employeeId is not a field on the Directory User resource (it belongs to
-      // the People API), so this returns 400 "Invalid field selection employeeId"
-      // and the whole function throws on its first page. It has done so on every
-      // run since it was added in June 2026; manageLicenseLifecycle() catches it
-      // into summary.errors, so it fails quietly and NO automated deletion has
-      // ever happened here. (The June cleanup of 257 stale accounts was
-      // deleteIneligibleWorkspaceUsers(), a different function.)
-      //
-      // Do NOT drop employeeId as a drive-by fix. A backlog of suspended
-      // ineligible accounts has been accumulating with nothing reaping it, and
-      // the cutoff below is a lastLoginTime proxy that every one of them is
-      // already past — so the first successful run would delete the entire
-      // backlog at once, permanently, with no grace and no dry-run available.
-      // Fixing this needs its own change with a preview in front of it.
-      fields: 'users(primaryEmail,name,orgUnitPath,suspended,externalIds,employeeId,creationTime,lastLoginTime),nextPageToken',
+      fields: 'users(primaryEmail,name,orgUnitPath,suspended,externalIds,creationTime,lastLoginTime),nextPageToken',
       pageToken: nextPageToken
     });
 
@@ -502,63 +543,292 @@ function deleteIneligibleSuspendedUsers() {
     for (const user of page.users) {
       const ids = user.externalIds || [];
       const capidExt = ids.find(id => id.type === 'organization');
-      const capid = capidExt ? String(capidExt.value || '').trim() :
-        String(user.employeeId || '').trim();
+      const capid = capidExt ? String(capidExt.value || '').trim() : '';
 
       if (!capid) continue;
       if (manualCapids[capid]) continue;
       if (heldForTransition[capid]) continue;
 
-      // Skip if eligible — means they should be reactivated, not deleted
       const info = memberInfoByCapid[capid];
-      if (info && info.status === 'ACTIVE' && eligibleTypes.indexOf(info.type) > -1) continue;
-      if (info && info.type === 'CADET') continue;
+      const type = info ? String(info.type || '').trim().toUpperCase() : '';
+      const status = info ? String(info.status || '').trim().toUpperCase() : '';
 
-      // Check suspension duration proxy
-      const lastActivity = user.lastLoginTime ?
-        new Date(user.lastLoginTime) : new Date(user.creationTime);
-      if (lastActivity >= cutoff) continue;
+      // Cadets live on a separate domain — out of scope here entirely.
+      if (type === 'CADET') continue;
 
-      try {
-        executeWithRetry(() => AdminDirectory.Users.remove(user.primaryEmail));
+      // lastLoginTime is reported for human context only; nothing below keys off
+      // it. A user who has never signed in comes back with lastLoginTime set to
+      // the Unix epoch rather than with the field absent, so test the value, not
+      // its presence — otherwise every such account reads as ~20649 days stale.
+      const lastLogin = user.lastLoginTime ? new Date(user.lastLoginTime) : null;
+      const neverLoggedIn = !lastLogin || lastLogin.getTime() <= 0;
+      const lastActivity = neverLoggedIn ? new Date(user.creationTime) : lastLogin;
 
-        const name = user.name && user.name.fullName ? user.name.fullName :
-          `${user.name.givenName} ${user.name.familyName}`;
-        deleted.push({
-          email: user.primaryEmail,
-          capsn: capid,
-          name: name,
-          orgUnitPath: user.orgUnitPath || '/',
-          lastActivity: lastActivity.toISOString(),
-          daysSinceActivity: Math.floor((new Date() - lastActivity) / (1000 * 60 * 60 * 24)),
-          deletedAt: new Date().toISOString()
-        });
+      const name = user.name && user.name.fullName ? user.name.fullName :
+        `${user.name.givenName} ${user.name.familyName}`;
+      const expiration = info ? parseCapwatchDate_(info.expiration) : null;
+      const daysSinceExpiration = expiration ?
+        Math.floor((new Date() - expiration) / (1000 * 60 * 60 * 24)) : null;
 
-        Logger.info('Ineligible suspended user deleted', {
-          email: user.primaryEmail,
-          capsn: capid,
-          daysSinceActivity: Math.floor((new Date() - lastActivity) / (1000 * 60 * 60 * 24))
-        });
+      const record = {
+        email: user.primaryEmail,
+        capsn: capid,
+        name: name,
+        orgUnitPath: user.orgUnitPath || '/',
+        neverLoggedIn: neverLoggedIn,
+        lastActivity: lastActivity.toISOString(),
+        daysSinceActivity: Math.floor((new Date() - lastActivity) / (1000 * 60 * 60 * 24)),
+        expiration: expiration ? expiration.toISOString().slice(0, 10) : null,
+        daysSinceExpiration: daysSinceExpiration,
+        reason: info ? `${type || '(blank)'} / ${status || '(blank)'}` : 'no CAPWATCH record',
+        deleted: false,
+        dryRun: dryRun
+      };
 
-        Utilities.sleep(100);
-
-      } catch (e) {
-        Logger.error('Failed to delete ineligible suspended user', {
-          email: user.primaryEmail,
-          capsn: capid,
-          errorMessage: e.message,
-          errorCode: e.details?.code
-        });
+      // A current member is never auto-deleted, whatever their type. Eligible
+      // ones shouldn't be suspended at all (reactivateRenewedMembers() unsuspends
+      // them); ineligible-by-type ones are real members whose expiry lies in the
+      // future and so cannot date the conversion that made them ineligible.
+      // There is nothing safe to measure, so a human decides.
+      if (status === 'ACTIVE') {
+        if (eligibleTypes.indexOf(type) === -1) activeIneligible.push(record);
+        continue;
       }
+
+      if (info) {
+        // Lapsed member with an unreadable Expiration — cannot measure the
+        // grace period, so hold rather than guess.
+        if (!expiration) {
+          unknownExpiry.push(record);
+          continue;
+        }
+        if (daysSinceExpiration < graceDays) {
+          withinGrace.push(record);
+          continue;
+        }
+        record.basis = `lapsed ${daysSinceExpiration}d ago (expired ${record.expiration})`;
+      } else {
+        // No CAPWATCH record: Member.txt retains only ~3 months of expired
+        // members, so absence means they lapsed well beyond the grace period.
+        record.basis = 'no CAPWATCH record — lapsed beyond the extract window';
+      }
+
+      candidates.push(record);
     }
   } while (nextPageToken);
 
-  Logger.info('Deletion of ineligible suspended users completed', {
-    count: deleted.length,
-    graceDays: LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE
+  // Longest-lapsed first; no-record accounts (undateable, but lapsed beyond the
+  // extract window) sort ahead of everything with a date.
+  candidates.sort((a, b) => {
+    if (a.daysSinceExpiration === null && b.daysSinceExpiration === null) return 0;
+    if (a.daysSinceExpiration === null) return -1;
+    if (b.daysSinceExpiration === null) return 1;
+    return b.daysSinceExpiration - a.daysSinceExpiration;
+  });
+  withinGrace.sort((a, b) => b.daysSinceExpiration - a.daysSinceExpiration);
+
+  console.log(`\n=== ${dryRun ? 'DRY RUN - ' : ''}INELIGIBLE SUSPENDED DELETIONS ===\n`);
+  console.log(`Grace period: ${graceDays} days, measured from CAPWATCH expiry.`);
+  console.log('LAPSED = days since membership expired; "no record" = lapsed beyond the');
+  console.log('         ~3-month extract window. DAYS = days since last login (context only,');
+  console.log('         * = never logged in) — it does NOT affect any decision here.\n');
+
+  console.log(`-- ${dryRun ? 'WOULD DELETE' : 'DELETING'} (${candidates.length}) --`);
+  if (candidates.length === 0) console.log('    (none)');
+  candidates.forEach(c => console.log(
+    `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} ${(c.daysSinceExpiration === null ? 'no record' : String(c.daysSinceExpiration) + 'd').padEnd(10)} ${(String(c.daysSinceActivity) + (c.neverLoggedIn ? '*' : '')).padEnd(7)} ${c.email}`
+  ));
+
+  console.log(`\n-- SPARED, still within grace (${withinGrace.length}) --`);
+  withinGrace.forEach(c => console.log(
+    `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} lapsed ${c.daysSinceExpiration}d ago, deletable in ${graceDays - c.daysSinceExpiration}d`
+  ));
+
+  console.log(`\n-- SPARED, current member ineligible by type — needs a human (${activeIneligible.length}) --`);
+  activeIneligible.forEach(c => console.log(
+    `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} ${c.reason.padEnd(24)} ${c.email}`
+  ));
+
+  if (unknownExpiry.length > 0) {
+    console.log(`\n-- SPARED, lapsed but expiration unreadable — needs a human (${unknownExpiry.length}) --`);
+    unknownExpiry.forEach(c => console.log(
+      `${c.name.padEnd(34)} ${c.capsn.padEnd(8)} ${c.reason.padEnd(24)} ${c.email}`
+    ));
+  }
+
+  const summary = {
+    dryRun: dryRun,
+    graceDays: graceDays,
+    memberRows: memberData.length,
+    candidates: candidates,
+    withinGrace: withinGrace,
+    activeIneligible: activeIneligible,
+    unknownExpiry: unknownExpiry,
+    deleted: []
+  };
+
+  if (dryRun) {
+    console.log(`\nDry run — nothing deleted. Call deleteIneligibleSuspendedUsers(false) to delete the ${candidates.length} above.\n`);
+    Logger.info('deleteIneligibleSuspendedUsers dry run completed', {
+      wouldDelete: candidates.length,
+      withinGrace: withinGrace.length,
+      activeIneligible: activeIneligible.length,
+      unknownExpiry: unknownExpiry.length,
+      graceDays: graceDays
+    });
+    return summary;
+  }
+
+  candidates.forEach(c => {
+    try {
+      executeWithRetry(() => AdminDirectory.Users.remove(c.email));
+      c.deleted = true;
+      c.deletedAt = new Date().toISOString();
+      summary.deleted.push(c);
+      Logger.info('Ineligible suspended user deleted', {
+        email: c.email, capsn: c.capsn, basis: c.basis
+      });
+    } catch (e) {
+      c.errorMessage = e.message;
+      Logger.error('Failed to delete ineligible suspended user', {
+        email: c.email,
+        capsn: c.capsn,
+        errorMessage: e.message,
+        errorCode: e.details?.code
+      });
+    }
+    Utilities.sleep(100);
   });
 
-  return deleted;
+  console.log(`\nDeleted ${summary.deleted.length} of ${candidates.length}.\n`);
+  Logger.info('deleteIneligibleSuspendedUsers completed', {
+    deleted: summary.deleted.length,
+    failed: candidates.length - summary.deleted.length,
+    withinGrace: withinGrace.length,
+    activeIneligible: activeIneligible.length,
+    graceDays: graceDays
+  });
+
+  return summary;
+}
+
+/**
+ * Read-only diagnostic for the CAPWATCH Member.txt expiration column.
+ *
+ * deleteIneligibleSuspendedUsers() reads column [16] as the membership
+ * expiration date, a positional index inherited from getExpiringMembers().
+ * parseFile() strips the header, so nothing in the codebase actually verifies
+ * that index. Before any deletion policy keys off it, this prints:
+ *
+ *   1. The real header, so [16] can be confirmed by name.
+ *   2. The distribution of expiration values by member status, to test whether
+ *      the extract only retains recently-expired members.
+ *   3. Raw rows for specific CAPIDs, to confirm column alignment end to end.
+ *
+ * Makes no changes and touches no accounts.
+ *
+ * @param {Array<string>} sampleCapids - CAPIDs to dump raw rows for
+ * @returns {void}
+ */
+function debugCapwatchMemberExpirationColumn(sampleCapids) {
+  const samples = sampleCapids || ['618863', '762848', '632609', '582442'];
+
+  const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+  const files = folder.getFilesByName('Member.txt');
+  if (!files.hasNext()) {
+    console.log('Member.txt not found in the CAPWATCH data folder.');
+    return;
+  }
+
+  const rows = Utilities.parseCsv(files.next().getBlob().getDataAsString());
+  if (!rows || rows.length < 2) {
+    console.log('Member.txt is empty or has no data rows.');
+    return;
+  }
+
+  const header = rows[0];
+  const data = rows.slice(1);
+
+  console.log('\n=== 1. Member.txt header (index: name) ===\n');
+  header.forEach((h, i) => {
+    const mark = (i === 16) ? '   <-- read as expiration' :
+      (i === 21) ? '   <-- read as type' :
+      (i === 24) ? '   <-- read as status' :
+      (i === 0) ? '   <-- read as CAPID' : '';
+    console.log(`[${String(i).padStart(2)}] ${String(h).padEnd(28)}${mark}`);
+  });
+  console.log(`\nTotal columns: ${header.length}   Total data rows: ${data.length}`);
+
+  console.log('\n=== 2. Expiration [16] distribution by status [24] ===\n');
+  const byStatus = {};
+  for (let i = 0; i < data.length; i++) {
+    const status = String(data[i][24] || '(blank)').trim();
+    const exp = String(data[i][16] || '(blank)').trim();
+    if (!byStatus[status]) byStatus[status] = {};
+    byStatus[status][exp] = (byStatus[status][exp] || 0) + 1;
+  }
+  Object.keys(byStatus).sort().forEach(status => {
+    const values = byStatus[status];
+    const distinct = Object.keys(values);
+    const total = distinct.reduce((sum, v) => sum + values[v], 0);
+    console.log(`-- status "${status}": ${total} rows, ${distinct.length} distinct expiration values`);
+    distinct
+      .sort((a, b) => values[b] - values[a])
+      .slice(0, 8)
+      .forEach(v => console.log(`     ${String(v).padEnd(14)} x${values[v]}`));
+    if (distinct.length > 8) console.log(`     ... and ${distinct.length - 8} more`);
+    console.log('');
+  });
+
+  console.log('=== 3. Raw rows for sample CAPIDs ===\n');
+  samples.forEach(capid => {
+    const row = data.find(r => String(r[0] || '').trim() === String(capid));
+    if (!row) {
+      console.log(`CAPID ${capid}: NOT PRESENT in Member.txt`);
+      return;
+    }
+    console.log(`CAPID ${capid}:`);
+    console.log(`     [16] expiration = "${row[16]}"`);
+    console.log(`     [21] type       = "${row[21]}"`);
+    console.log(`     [24] status     = "${row[24]}"`);
+    console.log('');
+  });
+}
+
+/**
+ * Parses a CAPWATCH date ("MM/DD/YYYY") into a Date.
+ *
+ * @param {string} value - Raw CAPWATCH date cell
+ * @returns {Date|null} Parsed date, or null if absent/unparseable
+ */
+function parseCapwatchDate_(value) {
+  const parts = String(value || '').trim().split('/');
+  if (parts.length !== 3) return null;
+
+  const month = parseInt(parts[0], 10);
+  const day = parseInt(parts[1], 10);
+  const year = parseInt(parts[2], 10);
+  if (isNaN(month) || isNaN(day) || isNaN(year)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const parsed = new Date(year, month - 1, day);
+  // Rejects overflow like 02/31 rolling into March.
+  if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day) {
+    return null;
+  }
+  return parsed;
+}
+
+/**
+ * Preview what deleteIneligibleSuspendedUsers() would delete, and who it would
+ * spare. Makes no changes. Kept for symmetry with previewArchival() /
+ * previewDeletion() and for running standalone from the Apps Script editor.
+ *
+ * @returns {Object} See deleteIneligibleSuspendedUsers()
+ */
+function previewIneligibleSuspendedDeletion() {
+  return deleteIneligibleSuspendedUsers(true);
 }
 
 /**
@@ -592,10 +862,91 @@ function sendLicenseManagementReport(summary) {
           <p><strong>Duration:</strong> ${Math.round(summary.duration / 1000)} seconds</p>
           <p><strong>Users Archived:</strong> ${summary.archived.length}</p>
           <p><strong>Users Deleted (long-archived):</strong> ${summary.deleted.length}</p>
-          <p><strong>Users Deleted (ineligible, 30-day):</strong> ${summary.deletedIneligible ? summary.deletedIneligible.length : 0}</p>
+          <p><strong>Users Deleted (ineligible, ${LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE}-day):</strong> ${summary.deletedIneligible ? summary.deletedIneligible.length : 0}</p>
           <p><strong>Errors:</strong> ${summary.errors.length}</p>
         </div>
   `;
+
+  const ineligible = summary.ineligibleResult;
+  if (ineligible) {
+    const previewOnly = ineligible.dryRun;
+
+    if (ineligible.candidates.length > 0) {
+      htmlBody += `
+        <div class="${previewOnly ? 'warning' : 'success'}">
+          <h2>Ineligible Suspended Accounts — ${previewOnly ? 'Would Be Deleted' : 'Deleted'} (${ineligible.candidates.length})</h2>
+          <p>${previewOnly
+            ? '<strong>Nothing was deleted.</strong> Automated deletion is not armed yet; this is what the reaper would take on its next live run.'
+            : 'These accounts were permanently deleted to free seats against the 2000-user cap.'}
+          Grace period is ${ineligible.graceDays} days measured from CAPWATCH membership expiry.
+          "No CAPWATCH record" means the member lapsed beyond the extract's ~3-month window.</p>
+        </div>
+        <table>
+          <tr><th>Name</th><th>CAPID</th><th>Lapsed</th><th>Email</th></tr>
+      `;
+      ineligible.candidates.forEach(c => {
+        htmlBody += `
+          <tr>
+            <td>${c.name}</td>
+            <td>${c.capsn}</td>
+            <td>${c.daysSinceExpiration === null ? 'no CAPWATCH record' : c.daysSinceExpiration + ' days ago'}</td>
+            <td>${c.email}</td>
+          </tr>
+        `;
+      });
+      htmlBody += `</table>`;
+    }
+
+    if (ineligible.withinGrace.length > 0) {
+      htmlBody += `
+        <div class="summary">
+          <h2>Within Grace — Not Deleted (${ineligible.withinGrace.length})</h2>
+          <p>These members lapsed less than ${ineligible.graceDays} days ago. They keep their
+          accounts until the grace period runs out, and will be reclaimed automatically if they
+          do not renew. Renewing restores eligibility and cancels the deletion.</p>
+        </div>
+        <table>
+          <tr><th>Name</th><th>CAPID</th><th>Lapsed</th><th>Deletable In</th></tr>
+      `;
+      ineligible.withinGrace.forEach(c => {
+        htmlBody += `
+          <tr>
+            <td>${c.name}</td>
+            <td>${c.capsn}</td>
+            <td>${c.daysSinceExpiration} days ago</td>
+            <td>${ineligible.graceDays - c.daysSinceExpiration} days</td>
+          </tr>
+        `;
+      });
+      htmlBody += `</table>`;
+    }
+
+    const needsReview = ineligible.activeIneligible.concat(ineligible.unknownExpiry);
+    if (needsReview.length > 0) {
+      htmlBody += `
+        <div class="warning">
+          <h2>Needs a Human Decision (${needsReview.length})</h2>
+          <p>These suspended accounts are never deleted automatically. Current members who are
+          ineligible by type (e.g. PATRON) are real members whose expiry lies in the future, so
+          there is no lapse date to measure a grace period from. They hold a seat until someone
+          decides. Add them to the Manual Members sheet to keep them, or delete them by hand.</p>
+        </div>
+        <table>
+          <tr><th>Name</th><th>CAPID</th><th>CAPWATCH</th><th>Email</th></tr>
+      `;
+      needsReview.forEach(c => {
+        htmlBody += `
+          <tr>
+            <td>${c.name}</td>
+            <td>${c.capsn}</td>
+            <td>${c.reason}</td>
+            <td>${c.email}</td>
+          </tr>
+        `;
+      });
+      htmlBody += `</table>`;
+    }
+  }
   
   // Archived users section
   if (summary.archived.length > 0) {
@@ -984,22 +1335,31 @@ function previewLicenseLifecycle() {
   const archived = previewArchival();
   console.log('\n');
   const deleted = previewDeletion();
-  
+  console.log('\n');
+  const ineligibleSuspended = previewIneligibleSuspendedDeletion();
+
   console.log('\n' + '='.repeat(80));
   console.log('SUMMARY');
   console.log('='.repeat(80));
   console.log(`Users that would be ARCHIVED: ${archived.length}`);
   console.log(`Users that would be DELETED: ${deleted.filter(u => !u.activeInCapwatch).length}`);
   console.log(`Users that would be SKIPPED (active): ${deleted.filter(u => u.activeInCapwatch).length}`);
+  console.log(`Ineligible suspended, past grace (would be DELETED): ${ineligibleSuspended.candidates.length}`);
+  console.log(`Ineligible suspended, within grace (spared): ${ineligibleSuspended.withinGrace.length}`);
+  console.log(`Current members ineligible by type (need review): ${ineligibleSuspended.activeIneligible.length}`);
   console.log('='.repeat(80) + '\n');
-  
+
   return {
     archived: archived,
     deleted: deleted,
+    ineligibleSuspended: ineligibleSuspended,
     summary: {
       archivedCount: archived.length,
       deletedCount: deleted.filter(u => !u.activeInCapwatch).length,
-      skippedCount: deleted.filter(u => u.activeInCapwatch).length
+      skippedCount: deleted.filter(u => u.activeInCapwatch).length,
+      ineligibleSuspendedPastGrace: ineligibleSuspended.candidates.length,
+      ineligibleSuspendedWithinGrace: ineligibleSuspended.withinGrace.length,
+      activeIneligibleNeedingReview: ineligibleSuspended.activeIneligible.length
     }
   };
 }
