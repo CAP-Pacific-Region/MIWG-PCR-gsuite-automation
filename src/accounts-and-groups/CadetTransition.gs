@@ -279,7 +279,7 @@ function eachDirectoryUser_(callback) {
       customer: 'my_customer',
       maxResults: 500,
       query: 'isAdmin=false',
-      fields: 'users(primaryEmail,name,suspended,externalIds,employeeId),nextPageToken',
+      fields: 'users(primaryEmail,name,suspended,externalIds),nextPageToken',
       pageToken: pageToken
     });
     pageToken = page.nextPageToken;
@@ -290,15 +290,18 @@ function eachDirectoryUser_(callback) {
 /**
  * Extracts a CAPID from a directory user.
  *
- * Mirrors the externalIds-then-employeeId order used elsewhere; both are
- * populated by addOrUpdateUser() but older accounts may only carry one.
+ * externalIds is the only source. Other call sites fall back to user.employeeId,
+ * but that is dead code: employeeId is not a field on the Directory User
+ * resource (it belongs to the People API), so addOrUpdateUser() writing it is
+ * silently discarded and reading it always yields undefined. Selecting it in a
+ * `fields` mask is a hard 400.
  *
  * @param {Object} user
  * @returns {string} CAPID, or '' if absent
  */
 function capidOfUser_(user) {
   const ext = (user.externalIds || []).find(id => id.type === 'organization');
-  return ext ? String(ext.value || '').trim() : String(user.employeeId || '').trim();
+  return ext ? String(ext.value || '').trim() : '';
 }
 
 /**
@@ -392,7 +395,7 @@ function getPeerTenantCapids_() {
     do {
       const url = 'https://admin.googleapis.com/admin/directory/v1/users' +
         '?customer=my_customer&maxResults=500&projection=full' +
-        '&fields=nextPageToken,users(externalIds,employeeId)' +
+        '&fields=nextPageToken,users(externalIds)' +
         (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
 
       const resp = UrlFetchApp.fetch(url, {

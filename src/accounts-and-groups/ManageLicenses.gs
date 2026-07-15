@@ -477,6 +477,21 @@ function deleteIneligibleSuspendedUsers() {
       customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=true isAdmin=false',
+      // WARNING — this selector is BROKEN and that is currently load-bearing.
+      // employeeId is not a field on the Directory User resource (it belongs to
+      // the People API), so this returns 400 "Invalid field selection employeeId"
+      // and the whole function throws on its first page. It has done so on every
+      // run since it was added in June 2026; manageLicenseLifecycle() catches it
+      // into summary.errors, so it fails quietly and NO automated deletion has
+      // ever happened here. (The June cleanup of 257 stale accounts was
+      // deleteIneligibleWorkspaceUsers(), a different function.)
+      //
+      // Do NOT drop employeeId as a drive-by fix. A backlog of suspended
+      // ineligible accounts has been accumulating with nothing reaping it, and
+      // the cutoff below is a lastLoginTime proxy that every one of them is
+      // already past — so the first successful run would delete the entire
+      // backlog at once, permanently, with no grace and no dry-run available.
+      // Fixing this needs its own change with a preview in front of it.
       fields: 'users(primaryEmail,name,orgUnitPath,suspended,externalIds,employeeId,creationTime,lastLoginTime),nextPageToken',
       pageToken: nextPageToken
     });
