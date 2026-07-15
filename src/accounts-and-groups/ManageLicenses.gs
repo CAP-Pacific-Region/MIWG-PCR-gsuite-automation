@@ -67,6 +67,10 @@ function manageLicenseLifecycle() {
     // member (PATRON, lapsed, no record, etc.). Accounts become eligible
     // again before deletion if the member's CAPWATCH type or status changes
     // — reactivateRenewedMembers() handles that path and prevents deletion.
+    //
+    // Exception: members mid-transition to the senior tenant are skipped here.
+    // CadetTransition.gs holds their mailbox open on its own 90-day clock and
+    // deletes it once their mail has been migrated across.
     summary.deletedIneligible = deleteIneligibleSuspendedUsers();
 
   } catch (err) {
@@ -456,6 +460,14 @@ function deleteIneligibleSuspendedUsers() {
     });
   }
 
+  // CAPIDs mid-transition to the senior tenant. Their cadet mailbox is still the
+  // only copy of their mail until it is migrated, and this function's cutoff is
+  // derived from lastLoginTime (see below) — which a transitioning member is
+  // usually already past — so without this guard they would be deleted on the
+  // first run after their type flips. CadetTransition.gs deletes them instead,
+  // on its own authoritative clock, once the mail is safely across.
+  const heldForTransition = getHeldTransitionCapids();
+
   const eligibleTypes = CONFIG.MEMBER_TYPES.ACTIVE;
   const deleted = [];
   let nextPageToken = '';
@@ -480,6 +492,7 @@ function deleteIneligibleSuspendedUsers() {
 
       if (!capid) continue;
       if (manualCapids[capid]) continue;
+      if (heldForTransition[capid]) continue;
 
       // Skip if eligible — means they should be reactivated, not deleted
       const info = memberInfoByCapid[capid];

@@ -1,0 +1,473 @@
+/**
+ * Cadet → senior tenant transition.
+ *
+ * When a cadet turns 21, or converts voluntarily after 18, CAPWATCH flips their
+ * type and they leave the cadet tenant for the senior one. Before this module
+ * existed the cadet tenant simply suspended them and deleted the account ~30
+ * days later, destroying the mailbox: Archived User licenses are not provisioned
+ * on this edition, so deletion is the only way to free a seat and there is no
+ * archive to recover from.
+ *
+ * This module runs on the CADETS tenant only (TRANSITION_CONFIG.ROLE ===
+ * 'source'). It owns the lifecycle end to end — detect, migrate, delete, forward
+ * — and polls the peer (senior) directory for the destination account rather
+ * than having the two tenants signal each other, so there is no shared state to
+ * drift. The senior tenant's only involvement is exempting these members from
+ * the Level I gate in updateAllMembers(), so the destination mailbox exists to
+ * receive mail.
+ *
+ * Two facts shape the design, both verified rather than assumed:
+ *
+ *  1. SA impersonation works against SUSPENDED users. The mailbox stays readable
+ *     after suspension, so members are suspended on day 0 exactly as before —
+ *     preserving the cap discipline that PATRON accounts blew in June 2026 — and
+ *     the mail is migrated at leisure inside the hold window. Nothing here ever
+ *     unsuspends an account.
+ *
+ *  2. LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE cannot be reused as the hold
+ *     clock. deleteIneligibleSuspendedUsers() derives its cutoff from
+ *     lastLoginTime as a proxy for suspension date, so a member who stopped
+ *     opening their cadet mail months ago is ALREADY past it and would be
+ *     deleted on the first lifecycle run. The Transitions sheet's DetectedDate
+ *     is therefore authoritative for the 90-day hold, and that function skips
+ *     anyone holding an open row here.
+ *
+ * This file covers detection and state. Migration lives in CadetTransitionMigrate.gs.
+ *
+ * @see TRANSITION_CONFIG in config.gs
+ */
+
+// ============================================================================
+// SHEET SCHEMA
+// ============================================================================
+
+/**
+ * Transitions sheet columns, in order.
+ *
+ * The sheet is state, not a report: it is the authoritative record of who is
+ * mid-flight, when their hold expires, and how far their migration got. It is a
+ * sheet rather than Script Properties specifically so a human can see a stuck
+ * migration and intervene — which is also why FAILED rows are left in place
+ * rather than retried forever.
+ */
+const TRANSITION_COLUMNS_ = [
+  'CAPID',            // CAPWATCH member id — the join key across both tenants
+  'Name',             // human reference only
+  'CadetEmail',       // source mailbox on the cadet tenant
+  'SeniorEmail',      // destination mailbox; blank until the senior account appears
+  'NewType',          // CAPWATCH type that triggered detection (SENIOR, PATRON, ...)
+  'DetectedDate',     // authoritative start of the hold clock
+  'DeleteAfter',      // DetectedDate + TRANSITION_CONFIG.HOLD_DAYS
+  'MigrationStatus',  // TRANSITION_CONFIG.STATUS.*
+  'MigratedDate',
+  'MessagesMigrated',
+  'LastCursor',       // Gmail pageToken, so a run that hits the 6-minute limit resumes
+  'ForwardGroupCreated',
+  'ForwardGroupExpires',
+  'Notes'
+];
+
+/**
+ * Resolves the Transitions sheet, creating it with headers on first use.
+ *
+ * @returns {GoogleAppsScript.Spreadsheet.Sheet}
+ */
+function getTransitionsSheet_() {
+  const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
+  let sheet = ss.getSheetByName(TRANSITION_CONFIG.SHEET_NAME);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(TRANSITION_CONFIG.SHEET_NAME);
+    sheet.appendRow(TRANSITION_COLUMNS_);
+    sheet.setFrozenRows(1);
+    sheet.getRange(1, 1, 1, TRANSITION_COLUMNS_.length).setFontWeight('bold');
+    Logger.info('Transitions sheet created', { name: TRANSITION_CONFIG.SHEET_NAME });
+  }
+
+  return sheet;
+}
+
+/**
+ * Reads every transition row, keyed by CAPID.
+ *
+ * Dates come back as ISO strings rather than Date objects so that a value
+ * round-tripped through the sheet compares the same way whether the cell was
+ * written by this code or typed by a human.
+ *
+ * @returns {Object<string, Object>} CAPID -> row object, plus _rowNumber
+ */
+function readTransitions_() {
+  const sheet = getTransitionsSheet_();
+  const values = sheet.getDataRange().getValues();
+  const byCapid = {};
+
+  if (values.length < 2) return byCapid;
+
+  const header = values[0].map(h => String(h || '').trim());
+
+  for (let r = 1; r < values.length; r++) {
+    const capid = String(values[r][header.indexOf('CAPID')] || '').trim();
+    if (!capid) continue;
+
+    const row = { _rowNumber: r + 1 };
+    for (let c = 0; c < header.length; c++) {
+      const value = values[r][c];
+      row[header[c]] = value instanceof Date ? value.toISOString() : value;
+    }
+    byCapid[capid] = row;
+  }
+
+  return byCapid;
+}
+
+/**
+ * Writes one field of one row.
+ *
+ * @param {number} rowNumber - 1-indexed sheet row
+ * @param {string} column - column name from TRANSITION_COLUMNS_
+ * @param {*} value
+ */
+function setTransitionField_(rowNumber, column, value) {
+  const index = TRANSITION_COLUMNS_.indexOf(column);
+  if (index < 0) throw new Error('Unknown Transitions column: ' + column);
+  getTransitionsSheet_().getRange(rowNumber, index + 1).setValue(value);
+}
+
+/**
+ * Appends a new transition row.
+ *
+ * @param {Object} row - keys matching TRANSITION_COLUMNS_
+ */
+function appendTransition_(row) {
+  getTransitionsSheet_().appendRow(
+    TRANSITION_COLUMNS_.map(c => row[c] === undefined ? '' : row[c])
+  );
+}
+
+// ============================================================================
+// DETECTION
+// ============================================================================
+
+/**
+ * Finds cadet-tenant accounts whose CAPWATCH type has moved out of the cadet
+ * program, and opens a transition row for each.
+ *
+ * A lapse and a transition look different in Member.txt and must not be
+ * confused — a lapse is status != ACTIVE (or no record at all) and should follow
+ * the ordinary suspend-and-delete path, while a transition is status ACTIVE with
+ * a non-cadet type and needs the mailbox held. Only the latter lands here.
+ *
+ * Idempotent: an existing row for a CAPID is never re-dated, so the hold clock
+ * cannot be restarted by re-running detection. The one thing it does update is
+ * NewType, so a PATRON who converts to SENIOR is picked up by the migration pass.
+ *
+ * Safe to run on any tenant; no-ops unless ROLE is 'source'.
+ *
+ * @returns {{detected: number, updated: number, existing: number}}
+ */
+function detectCadetTransitions() {
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    Logger.info('Transition detection skipped — not the source tenant', {
+      role: TRANSITION_CONFIG.ROLE || '(off)'
+    });
+    return { detected: 0, updated: 0, existing: 0 };
+  }
+
+  const start = new Date();
+  Logger.info('Starting cadet transition detection');
+
+  // CAPID -> {status, type} for every CAPWATCH record.
+  const memberData = parseFile('Member');
+  const infoByCapid = {};
+  for (let i = 0; i < memberData.length; i++) {
+    const capid = String(memberData[i][0] || '').trim();
+    if (capid) {
+      // Column order per createMemberObject(): [0] CAPID, [2] last, [3] first,
+      // [21] type, [24] status.
+      infoByCapid[capid] = {
+        status: memberData[i][24],
+        type: memberData[i][21],
+        name: `${memberData[i][3] || ''} ${memberData[i][2] || ''}`.trim()
+      };
+    }
+  }
+
+  const existing = readTransitions_();
+  const now = new Date();
+  let detected = 0;
+  let updated = 0;
+  let alreadyOpen = 0;
+
+  // Both active and suspended accounts: by the time detection runs, the member
+  // has usually already been suspended by suspendExpiredMembers().
+  eachDirectoryUser_(user => {
+    const capid = capidOfUser_(user);
+    if (!capid) return;
+
+    const info = infoByCapid[capid];
+    if (!info) return;                                  // no CAPWATCH record: a lapse, not a transition
+    if (info.status !== 'ACTIVE') return;               // lapsed: ordinary suspend-and-delete path
+    if (TRANSITION_CONFIG.TRANSITION_TYPES.indexOf(info.type) < 0) return;  // still a cadet
+
+    const open = existing[capid];
+    if (open) {
+      // Already tracked. Only NewType may change — a PATRON converting to SENIOR
+      // is exactly the case the hold window exists to catch.
+      if (open.NewType !== info.type) {
+        setTransitionField_(open._rowNumber, 'NewType', info.type);
+        Logger.info('Transition type changed', {
+          capid: capid,
+          from: open.NewType,
+          to: info.type
+        });
+        updated++;
+      } else {
+        alreadyOpen++;
+      }
+      return;
+    }
+
+    const deleteAfter = new Date(now);
+    deleteAfter.setDate(deleteAfter.getDate() + TRANSITION_CONFIG.HOLD_DAYS);
+
+    appendTransition_({
+      CAPID: capid,
+      Name: info.name,
+      CadetEmail: user.primaryEmail,
+      SeniorEmail: '',
+      NewType: info.type,
+      DetectedDate: now.toISOString(),
+      DeleteAfter: deleteAfter.toISOString(),
+      MigrationStatus: TRANSITION_CONFIG.STATUS.PENDING,
+      MigratedDate: '',
+      MessagesMigrated: '',
+      LastCursor: '',
+      ForwardGroupCreated: '',
+      ForwardGroupExpires: '',
+      Notes: ''
+    });
+
+    Logger.info('Cadet transition detected', {
+      capid: capid,
+      name: info.name,
+      cadetEmail: user.primaryEmail,
+      newType: info.type,
+      deleteAfter: deleteAfter.toISOString()
+    });
+    detected++;
+  });
+
+  Logger.info('Cadet transition detection completed', {
+    duration: new Date() - start + 'ms',
+    detected: detected,
+    typeChanged: updated,
+    alreadyOpen: alreadyOpen
+  });
+
+  return { detected: detected, updated: updated, existing: alreadyOpen };
+}
+
+/**
+ * Walks every non-admin user in the local directory, suspended included.
+ *
+ * @param {function(Object): void} callback
+ */
+function eachDirectoryUser_(callback) {
+  let pageToken = '';
+  do {
+    const page = AdminDirectory.Users.list({
+      customer: 'my_customer',
+      maxResults: 500,
+      query: 'isAdmin=false',
+      fields: 'users(primaryEmail,name,suspended,externalIds,employeeId),nextPageToken',
+      pageToken: pageToken
+    });
+    pageToken = page.nextPageToken;
+    (page.users || []).forEach(callback);
+  } while (pageToken);
+}
+
+/**
+ * Extracts a CAPID from a directory user.
+ *
+ * Mirrors the externalIds-then-employeeId order used elsewhere; both are
+ * populated by addOrUpdateUser() but older accounts may only carry one.
+ *
+ * @param {Object} user
+ * @returns {string} CAPID, or '' if absent
+ */
+function capidOfUser_(user) {
+  const ext = (user.externalIds || []).find(id => id.type === 'organization');
+  return ext ? String(ext.value || '').trim() : String(user.employeeId || '').trim();
+}
+
+/**
+ * CAPIDs whose cadet account must not be deleted by the ordinary license
+ * lifecycle, because this module owns their deletion instead.
+ *
+ * Read by deleteIneligibleSuspendedUsers(). A row stops protecting the account
+ * once it is COMPLETE or NOT_APPLICABLE and past DeleteAfter — at which point
+ * this module deletes it deliberately.
+ *
+ * @returns {Object<string, boolean>} CAPID -> true
+ */
+function getHeldTransitionCapids() {
+  if (TRANSITION_CONFIG.ROLE !== 'source') return {};
+
+  const held = {};
+  try {
+    const rows = readTransitions_();
+    const now = new Date();
+
+    for (const capid in rows) {
+      const row = rows[capid];
+      const status = row.MigrationStatus;
+
+      // FAILED holds indefinitely and on purpose: a failed migration followed by
+      // an on-schedule deletion is the one outcome that loses mail for good.
+      if (status === TRANSITION_CONFIG.STATUS.FAILED) {
+        held[capid] = true;
+        continue;
+      }
+
+      const deleteAfter = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
+      if (deleteAfter && now < deleteAfter) held[capid] = true;
+    }
+  } catch (e) {
+    // Fail closed. If the sheet is unreadable we cannot tell who is mid-flight,
+    // and deleting a mailbox we should have held is unrecoverable, whereas
+    // skipping a deletion costs one suspended seat until the next run.
+    Logger.error('Unable to read Transitions sheet — holding all deletions this run', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+    throw e;
+  }
+
+  return held;
+}
+
+// ============================================================================
+// PEER DIRECTORY
+// ============================================================================
+
+/**
+ * CAPIDs that hold an account on the PEER tenant, suspended ones included.
+ *
+ * Used by the destination (senior) tenant to recognize a transitioning ex-cadet
+ * and exempt them from the Level I gate.
+ *
+ * Deliberately NOT xtPeerWorkspaceEmailByCapid_() from CrossTenantContacts.gs,
+ * which drops suspended peers — right for publishing live addresses into the
+ * GAL, wrong here. By the time the senior tenant sees a transitioning member,
+ * the cadet tenant has already suspended their old account, so reusing that
+ * function would skip precisely the people this exemption is for.
+ *
+ * Returns an empty map rather than throwing when cross-tenant config is absent:
+ * a tenant with no peer configured has no ex-cadets, and the Level I gate should
+ * carry on as before rather than the whole member update dying.
+ *
+ * @returns {Object<string, boolean>} CAPID -> true
+ */
+function getPeerTenantCapids_() {
+  if (TRANSITION_CONFIG.ROLE !== 'destination') return {};
+
+  let cfg;
+  try {
+    cfg = getCrossTenantConfig_();
+    if (!cfg.runInbound) return {};
+  } catch (e) {
+    Logger.warn('Cadet-transition Level I exemption unavailable — cross-tenant config incomplete', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+    return {};
+  }
+
+  const capids = {};
+  try {
+    const token = xtPeerToken_(
+      'https://www.googleapis.com/auth/admin.directory.user.readonly', cfg
+    );
+    let pageToken = '';
+
+    do {
+      const url = 'https://admin.googleapis.com/admin/directory/v1/users' +
+        '?customer=my_customer&maxResults=500&projection=full' +
+        '&fields=nextPageToken,users(externalIds,employeeId)' +
+        (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
+
+      const resp = UrlFetchApp.fetch(url, {
+        method: 'get',
+        headers: { Authorization: 'Bearer ' + token },
+        muteHttpExceptions: true
+      });
+
+      const code = resp.getResponseCode();
+      if (code < 200 || code >= 300) {
+        throw new Error(`Peer directory list failed (${code}): ${resp.getContentText()}`);
+      }
+
+      const body = JSON.parse(resp.getContentText() || '{}');
+      (body.users || []).forEach(u => {
+        const capid = capidOfUser_(u);
+        if (capid) capids[capid] = true;
+      });
+
+      pageToken = body.nextPageToken || '';
+    } while (pageToken);
+
+  } catch (e) {
+    // Fail closed: without the peer list we cannot prove anyone is an ex-cadet,
+    // so nobody is exempted and the Level I gate holds. That withholds an
+    // account that should have been created — visible and fixable on the next
+    // run — rather than provisioning senior accounts for members who never
+    // completed Level I.
+    Logger.error('Peer directory read failed — no Level I exemptions this run', {
+      errorMessage: e && e.message ? e.message : String(e)
+    });
+    return {};
+  }
+
+  Logger.info('Peer tenant CAPIDs loaded for transition exemption', {
+    count: Object.keys(capids).length,
+    peerDomain: cfg.peerDomain
+  });
+  return capids;
+}
+
+// ============================================================================
+// PREVIEW
+// ============================================================================
+
+/**
+ * Read-only summary of the transition queue. Changes nothing.
+ */
+function previewCadetTransitions() {
+  const rows = readTransitions_();
+  const now = new Date();
+  const buckets = {};
+
+  console.log('Transition queue — ' + Object.keys(rows).length + ' row(s)');
+  console.log('');
+
+  for (const capid in rows) {
+    const row = rows[capid];
+    buckets[row.MigrationStatus] = (buckets[row.MigrationStatus] || 0) + 1;
+
+    const deleteAfter = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
+    const daysLeft = deleteAfter
+      ? Math.ceil((deleteAfter - now) / 86400000)
+      : null;
+
+    console.log([
+      capid,
+      row.Name,
+      row.NewType,
+      row.MigrationStatus,
+      row.SeniorEmail || '(no destination yet)',
+      daysLeft === null ? '' : daysLeft + 'd until delete'
+    ].join(' | '));
+  }
+
+  console.log('');
+  console.log('By status: ' + JSON.stringify(buckets));
+}

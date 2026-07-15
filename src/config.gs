@@ -108,6 +108,7 @@ const TENANT_PROFILES_ = {
   seniors: {
     MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR', ''],
     CADET_LITE: false,
+    TRANSITION_ROLE: 'destination',     // receives ex-cadets; only exempts them from Level I
     EXCLUDED_ORG_IDS: ['1297', '368'], // CA-000 (1297) + CA-999 (368) holding units
     AEM_UNIT: '',                      // no Aerospace Education Member unit
     SYNC_ORG_PATHS: true,              // multi-unit wing: auto-map new squadrons
@@ -153,6 +154,7 @@ const TENANT_PROFILES_ = {
   cadets: {
     MEMBER_TYPES_ACTIVE: ['', 'CADET', ''],
     CADET_LITE: true,
+    TRANSITION_ROLE: 'source',          // owns the transition lifecycle end to end
     EXCLUDED_ORG_IDS: ['1297', '368'], // same CA holding units as seniors
     AEM_UNIT: '',
     SYNC_ORG_PATHS: true,
@@ -201,6 +203,7 @@ const TENANT_PROFILES_ = {
   pacific: {
     MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET', ''],
     CADET_LITE: false,
+    TRANSITION_ROLE: '',          // single tenant holds both cadets and seniors: nothing to cross
     EXCLUDED_ORG_IDS: ['1345'],   // PCR holding unit
     AEM_UNIT: '',                 // region does not run AEM automation
     SYNC_ORG_PATHS: false,        // single unit: no subordinate orgs to auto-map
@@ -418,6 +421,9 @@ CADET_LITE_EXCLUDED_GRADES: [
    * When true, senior members without a completed Level I achievement in
    * MbrAchievements will not receive a new Workspace account. Existing
    * accounts are unaffected — only new provisioning is gated.
+   *
+   * Exception: a member transitioning up from the cadet tenant already has an
+   * account and is exempt. See TRANSITION_CONFIG and updateAllMembers().
    */
   REQUIRE_LEVEL_I_FOR_SENIORS: true,
 
@@ -589,6 +595,96 @@ const RETENTION_CONFIG = {
    * Progress logging frequency (log every N emails)
    */
   PROGRESS_LOG_INTERVAL: 10
+};
+
+// ============================================================================
+// CADET → SENIOR TENANT TRANSITION
+// ============================================================================
+
+/**
+ * Cadet-to-senior tenant transition.
+ *
+ * A cadet who turns 21 (or converts voluntarily after 18) leaves the cadet
+ * tenant and reappears on the senior tenant as a new CAPWATCH type. Without
+ * intervention their cadet mailbox is suspended, then permanently deleted, and
+ * the mail is gone — Archived User licenses are not available on this edition,
+ * so deletion is the only way to free a seat and there is nothing to fall back
+ * on. This config drives the module that carries their mail across first.
+ *
+ * ROLE (per profile):
+ *   'source'      — cadets tenant. Owns the whole lifecycle: detect, migrate,
+ *                   delete, forward. Reads the cadet mailbox with its own SA and
+ *                   writes into the senior mailbox with the peer SA.
+ *   'destination' — seniors tenant. Only exempts transitioning members from the
+ *                   Level I gate so the destination account exists to receive
+ *                   mail. No migration work happens here.
+ *   ''            — off (pacific).
+ *
+ * Deliberately single-owner: the source tenant polls the peer directory for the
+ * destination account rather than the two tenants signaling each other, so there
+ * is no shared state to get out of sync.
+ */
+const TRANSITION_CONFIG = {
+  ROLE: PROFILE_.TRANSITION_ROLE,
+
+  /**
+   * CAPWATCH types that mean "left the cadet program but is still a member".
+   *
+   * PATRON belongs here even though patrons get no Workspace account. A cadet
+   * who ages out while National is still processing their fingerprint cards
+   * lands on PATRON and converts to SENIOR weeks later; if PATRON did not hold
+   * the mailbox open, that mail would be deleted before the conversion landed.
+   * Holding it costs a suspended seat, which still counts against the 2000-user
+   * cap — see HOLD_DAYS.
+   */
+  TRANSITION_TYPES: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR', 'PATRON'],
+
+  /**
+   * Types that can actually receive migrated mail (i.e. get a senior account).
+   * A PATRON row waits at PENDING until they convert to one of these or the
+   * hold expires.
+   */
+  DESTINATION_TYPES: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'],
+
+  /**
+   * Days from detection before the cadet account is deleted.
+   *
+   * This clock is authoritative and is measured from the Transitions sheet's
+   * DetectedDate. It deliberately does NOT reuse
+   * LICENSE_CONFIG.DAYS_BEFORE_DELETE_INELIGIBLE, whose cutoff is computed from
+   * lastLoginTime as a proxy for suspension date — a member who stopped opening
+   * their cadet mail months ago is already past that cutoff and would be deleted
+   * on the first lifecycle run, before any migration could happen.
+   *
+   * 90 days covers National being slow on fingerprint processing.
+   */
+  HOLD_DAYS: 90,
+
+  /**
+   * Months the old cadet address forwards to the new senior address after the
+   * cadet account is deleted. Implemented as a Group at the old address, which
+   * costs no license seat (unlike keeping the account alive).
+   */
+  FORWARD_GROUP_MONTHS: 12,
+
+  /**
+   * When true, refuse to delete a cadet account whose migration has not
+   * confirmed success, and alert instead. An account lingering against the cap
+   * is recoverable; a mailbox deleted after a silent migration failure is not.
+   */
+  REQUIRE_MIGRATION_BEFORE_DELETE: true,
+
+  /** Tab in the automation spreadsheet holding transition state. */
+  SHEET_NAME: 'Transitions',
+
+  /** Migration lifecycle states (MigrationStatus column). */
+  STATUS: {
+    PENDING: 'PENDING',           // detected; destination account does not exist yet
+    IN_PROGRESS: 'IN_PROGRESS',   // migration started, resumable via LastCursor
+    COMPLETE: 'COMPLETE',         // mail moved and verified; safe to delete
+    FAILED: 'FAILED',             // migration errored; blocks deletion, needs a human
+    NOT_APPLICABLE: 'NOT_APPLICABLE' // hold expired with no destination (e.g. stayed PATRON)
+  }
 };
 
 // ============================================================================
