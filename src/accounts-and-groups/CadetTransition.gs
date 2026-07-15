@@ -68,11 +68,22 @@ const TRANSITION_COLUMNS_ = [
 ];
 
 /**
+ * Cached Sheet handle. SpreadsheetApp.openById() is a slow round trip and the
+ * write helpers below are called once per row — without this, a 10-row detection
+ * run spent most of its ~135s reopening the same spreadsheet, and a larger
+ * backlog would have crept into the 6-minute execution limit and died mid-write.
+ * Cleared implicitly when the execution ends, which is the only lifetime needed.
+ */
+let transitionsSheet_ = null;
+
+/**
  * Resolves the Transitions sheet, creating it with headers on first use.
  *
  * @returns {GoogleAppsScript.Spreadsheet.Sheet}
  */
 function getTransitionsSheet_() {
+  if (transitionsSheet_) return transitionsSheet_;
+
   const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
   let sheet = ss.getSheetByName(TRANSITION_CONFIG.SHEET_NAME);
 
@@ -84,6 +95,7 @@ function getTransitionsSheet_() {
     Logger.info('Transitions sheet created', { name: TRANSITION_CONFIG.SHEET_NAME });
   }
 
+  transitionsSheet_ = sheet;
   return sheet;
 }
 
@@ -354,87 +366,155 @@ function getHeldTransitionCapids() {
 // ============================================================================
 
 /**
- * CAPIDs that hold an account on the PEER tenant, suspended ones included.
+ * CAPID -> primaryEmail for every account on the PEER tenant, suspended ones
+ * INCLUDED.
  *
- * Used by the destination (senior) tenant to recognize a transitioning ex-cadet
- * and exempt them from the Level I gate.
+ * Both roles need this, for mirror-image reasons: the destination (senior)
+ * tenant asks "does this member already hold a cadet account?" to exempt them
+ * from the Level I gate, and the source (cadet) tenant asks "has their senior
+ * account appeared yet?" to know where to migrate mail to. Same read, so one
+ * function, ungated by role.
  *
  * Deliberately NOT xtPeerWorkspaceEmailByCapid_() from CrossTenantContacts.gs,
- * which drops suspended peers — right for publishing live addresses into the
- * GAL, wrong here. By the time the senior tenant sees a transitioning member,
- * the cadet tenant has already suspended their old account, so reusing that
- * function would skip precisely the people this exemption is for.
+ * which skips suspended peers. That is right for publishing live addresses into
+ * the GAL and wrong here: a transitioning member's cadet account is already
+ * suspended by the time the senior tenant looks, so reusing it would drop
+ * precisely the people this feature exists for.
  *
- * Returns an empty map rather than throwing when cross-tenant config is absent:
- * a tenant with no peer configured has no ex-cadets, and the Level I gate should
- * carry on as before rather than the whole member update dying.
+ * Throws on failure. Callers decide what a failure means — see
+ * getPeerTenantCapids_(), which swallows it to fail closed.
+ *
+ * @returns {Object<string, string>} CAPID -> primaryEmail (lowercased)
+ */
+function peerCapidToEmail_() {
+  const cfg = getCrossTenantConfig_();
+  const token = xtPeerToken_(
+    'https://www.googleapis.com/auth/admin.directory.user.readonly', cfg
+  );
+
+  const map = {};
+  let pageToken = '';
+
+  do {
+    const url = 'https://admin.googleapis.com/admin/directory/v1/users' +
+      '?customer=my_customer&maxResults=500&projection=full' +
+      '&fields=nextPageToken,users(primaryEmail,externalIds)' +
+      (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
+
+    const resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + token },
+      muteHttpExceptions: true
+    });
+
+    const code = resp.getResponseCode();
+    if (code < 200 || code >= 300) {
+      throw new Error(`Peer directory list failed (${code}): ${resp.getContentText()}`);
+    }
+
+    const body = JSON.parse(resp.getContentText() || '{}');
+    (body.users || []).forEach(u => {
+      const capid = capidOfUser_(u);
+      const email = String(u.primaryEmail || '').trim().toLowerCase();
+      if (capid && email) map[capid] = email;
+    });
+
+    pageToken = body.nextPageToken || '';
+  } while (pageToken);
+
+  Logger.info('Peer directory loaded', {
+    count: Object.keys(map).length,
+    peerDomain: cfg.peerDomain
+  });
+  return map;
+}
+
+/**
+ * CAPIDs holding a peer-tenant account. Destination role only.
+ *
+ * Used by the Level I gate in updateAllMembers() to recognize a transitioning
+ * ex-cadet. Returns {} rather than throwing on any failure — a tenant with no
+ * peer configured simply has no ex-cadets, and a member update should not die
+ * over it.
  *
  * @returns {Object<string, boolean>} CAPID -> true
  */
 function getPeerTenantCapids_() {
   if (TRANSITION_CONFIG.ROLE !== 'destination') return {};
 
-  let cfg;
   try {
-    cfg = getCrossTenantConfig_();
+    const cfg = getCrossTenantConfig_();
     if (!cfg.runInbound) return {};
-  } catch (e) {
-    Logger.warn('Cadet-transition Level I exemption unavailable — cross-tenant config incomplete', {
-      errorMessage: e && e.message ? e.message : String(e)
-    });
-    return {};
-  }
 
-  const capids = {};
-  try {
-    const token = xtPeerToken_(
-      'https://www.googleapis.com/auth/admin.directory.user.readonly', cfg
-    );
-    let pageToken = '';
-
-    do {
-      const url = 'https://admin.googleapis.com/admin/directory/v1/users' +
-        '?customer=my_customer&maxResults=500&projection=full' +
-        '&fields=nextPageToken,users(externalIds)' +
-        (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
-
-      const resp = UrlFetchApp.fetch(url, {
-        method: 'get',
-        headers: { Authorization: 'Bearer ' + token },
-        muteHttpExceptions: true
-      });
-
-      const code = resp.getResponseCode();
-      if (code < 200 || code >= 300) {
-        throw new Error(`Peer directory list failed (${code}): ${resp.getContentText()}`);
-      }
-
-      const body = JSON.parse(resp.getContentText() || '{}');
-      (body.users || []).forEach(u => {
-        const capid = capidOfUser_(u);
-        if (capid) capids[capid] = true;
-      });
-
-      pageToken = body.nextPageToken || '';
-    } while (pageToken);
+    const capids = {};
+    const byCapid = peerCapidToEmail_();
+    for (const capid in byCapid) capids[capid] = true;
+    return capids;
 
   } catch (e) {
     // Fail closed: without the peer list we cannot prove anyone is an ex-cadet,
     // so nobody is exempted and the Level I gate holds. That withholds an
-    // account that should have been created — visible and fixable on the next
-    // run — rather than provisioning senior accounts for members who never
+    // account that should have been created — visible, and self-corrects on the
+    // next run — rather than provisioning senior accounts for members who never
     // completed Level I.
     Logger.error('Peer directory read failed — no Level I exemptions this run', {
       errorMessage: e && e.message ? e.message : String(e)
     });
     return {};
   }
+}
 
-  Logger.info('Peer tenant CAPIDs loaded for transition exemption', {
-    count: Object.keys(capids).length,
-    peerDomain: cfg.peerDomain
+/**
+ * Fills in SeniorEmail on PENDING rows whose destination account now exists.
+ *
+ * Separated from detection because the two answer different questions on
+ * different schedules: detection notices the CAPWATCH type flip immediately,
+ * while the senior account may not appear for days — the member has to be picked
+ * up by the senior tenant's own updateAllMembers() run first. This is the poll
+ * that closes that gap, and migration only considers rows it has resolved.
+ *
+ * A PATRON row stays unresolved on purpose: patrons get no senior account, so
+ * there is nowhere to migrate to unless and until they convert.
+ *
+ * @returns {{resolved: number, stillPending: number}}
+ */
+function resolveTransitionDestinations() {
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    Logger.info('Destination resolution skipped — not the source tenant');
+    return { resolved: 0, stillPending: 0 };
+  }
+
+  const rows = readTransitions_();
+  const peerByCapid = peerCapidToEmail_();
+  let resolved = 0;
+  let stillPending = 0;
+
+  for (const capid in rows) {
+    const row = rows[capid];
+    if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.PENDING) continue;
+    if (row.SeniorEmail) continue;
+
+    const peerEmail = peerByCapid[capid];
+    if (!peerEmail) {
+      stillPending++;
+      continue;
+    }
+
+    setTransitionField_(row._rowNumber, 'SeniorEmail', peerEmail);
+    Logger.info('Transition destination resolved', {
+      capid: capid,
+      name: row.Name,
+      newType: row.NewType,
+      seniorEmail: peerEmail
+    });
+    resolved++;
+  }
+
+  Logger.info('Transition destination resolution completed', {
+    resolved: resolved,
+    stillPending: stillPending
   });
-  return capids;
+  return { resolved: resolved, stillPending: stillPending };
 }
 
 // ============================================================================
