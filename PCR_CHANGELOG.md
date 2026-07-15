@@ -143,6 +143,33 @@ next to each entry below.
   > broken logo. Verify any replacement with a HEAD request — a dead URL here is silent
   > in the logs and only shows up as a broken image in mail that has already been sent.
 
+- **`UpdateMembers.gs` (v1.10.0)** — duty titles are used **verbatim** from CAPWATCH,
+  plus one rename. Checked against a real CAWG `DutyPosition.txt` (4,085 rows,
+  71 distinct titles):
+
+  - The `Duty` column already holds full, **echelon-correct** titles. CAPWATCH varies
+    them itself — `Information Technologies Officer` at `UNIT`/`GROUP` vs
+    `Director of IT` at `WING`; likewise `Safety Officer` vs `Director of Safety`. No
+    echelon logic belongs in this code.
+  - **Do not add office-symbol expansion.** The symbol (`IT`, `AE`, `DC`) is a separate
+    `FunctArea` column that this code never reads. `docs/API_REFERENCE.md` showed
+    `id: 'CC'`, conflating the two — **corrected in this change**; the real value is
+    `id: 'Commander'`.
+  - `DUTY_TITLE_OVERRIDES` renames the retired `Recruiting & Retention Officer` →
+    `Recruiting Officer`, per the ICL to CAPR 30-1. 2 of CAWG's rows still carried the
+    old form against 69 correct ones. Fixing the record in eServices is the real
+    remedy; this only stops a stale row printing a retired title.
+  - Titles are whitespace-collapsed: `Communications Officer ` ships with a trailing
+    space on all 196 of its rows.
+
+  Verified across every distinct title in the feed: exactly **one** is rewritten (the
+  retired Recruiting form) and the other **70 pass through untouched**, none of which
+  are bare office symbols.
+
+  > `Lvl` in real CAWG data only ever contains `UNIT`, `GROUP`, `WING` (one row has
+  > trailing whitespace, which `dutyLevelRank_()` trims). `REGION`/`NAT` remain in
+  > `DUTY_LEVEL_ORDER` for the Pacific tenant.
+
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until

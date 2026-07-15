@@ -1,10 +1,17 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.9.0
+ * Version: 1.10.0
  * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.9.0)
- * Changes: Signature duty lines now name the org the duty is actually HELD at rather
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.10.0)
+ * Changes: Signature duty titles are used VERBATIM from CAPWATCH, which already
+ *   carries full echelon-correct names ("Commander"; "Information Technologies
+ *   Officer" at unit/group vs "Director of IT" at wing). No office-symbol expansion:
+ *   the symbol lives in DutyPosition.txt's separate FunctArea column and never
+ *   reaches this code — docs/API_REFERENCE.md's `id: 'CC'` example conflated the two.
+ *   The one override is DUTY_TITLE_OVERRIDES: the ICL to CAPR 30-1 dropped "and
+ *   Retention" from the Recruiting positions and a few rows still carry the old form.
+ *   (1.9.0: signature duty lines now name the org the duty is actually HELD at rather
  *   than the member's home unit — a squadron member with a wing duty read "San Jose
  *   Sr Sqdn 80 Director of IT". addDutyPositions()/addCadetDutyPositions() now carry
  *   the duty's orgName. Unit names are expanded for display via formatOrgName_():
@@ -13,7 +20,7 @@
  *   "Vance Sr". Logo moved off the Frontify CDN token URL to the copy served with
  *   CAP's own generator (2000x415 master, crisper on high-DPI). NOT the generator's
  *   LOGO_URL_OUTPUT — that GitHub Pages URL 404s.
- *   (1.8.0: generateEmailSignature() reconciled with the CAP brand style guide's own
+ *   1.8.0: generateEmailSignature() reconciled with the CAP brand style guide's own
  *   generator (cap-brand-tools): the "Civil Air Patrol, U.S. Air Force Auxiliary"
  *   line is bold and 5px from the phones (was normal-weight with a 20px gap); the
  *   duty block is capped at TWO assignments sorted highest-to-lowest org level, and
@@ -2425,8 +2432,45 @@ function getDutyBlock(member) {
     .slice(0, 2)
     // Name the org the duty is held at, falling back to the member's home unit
     // for duty records that predate orgName being carried (see addDutyPositions).
-    .map(dp => `${formatOrgName_(dp.orgName || member.orgName)} ${dp.id}`)
+    .map(dp => `${formatOrgName_(dp.orgName || member.orgName)} ${formatDutyTitle_(dp.id)}`)
     .join('<br />');
+}
+
+/**
+ * Display overrides for duty titles a CAP directive has renamed but eServices has
+ * not caught up on.
+ *
+ * CAPWATCH's DutyPosition.txt `Duty` column is authoritative and already carries
+ * full, echelon-correct titles — "Commander", "Information Technologies Officer" at
+ * unit/group, "Director of IT" at wing — so it is otherwise used VERBATIM. Do not
+ * add an office-symbol expansion here: the symbol lives in a separate `FunctArea`
+ * column (IT, AE, DC) and never reaches this code.
+ *
+ * The exception is a retired title still present in the feed. The ICL to CAPR 30-1
+ * dropped "and Retention" from the Recruiting positions; as of 2026-07-14, 2 of
+ * CAWG's rows still carry the old form against 69 correct ones.
+ *
+ * Fixing the record in eServices is the real remedy — this only stops a stale row
+ * printing a retired title in someone's signature.
+ */
+const DUTY_TITLE_OVERRIDES = {
+  'RECRUITING & RETENTION OFFICER': 'Recruiting Officer',
+  'RECRUITING AND RETENTION OFFICER': 'Recruiting Officer',
+  'DIRECTOR OF RECRUITING & RETENTION': 'Director of Recruiting',
+  'DIRECTOR OF RECRUITING AND RETENTION': 'Director of Recruiting'
+};
+
+/**
+ * A duty title as it should be displayed. Verbatim from CAPWATCH except for the
+ * renames above; internal whitespace is collapsed because the feed is untidy
+ * ("Communications Officer " ships with a trailing space on every row).
+ *
+ * @param {string} dutyId - CAPWATCH DutyPosition.txt `Duty` value
+ * @returns {string} Display title
+ */
+function formatDutyTitle_(dutyId) {
+  const title = String(dutyId || '').trim().replace(/\s+/g, ' ');
+  return DUTY_TITLE_OVERRIDES[title.toUpperCase()] || title;
 }
 
 /**
