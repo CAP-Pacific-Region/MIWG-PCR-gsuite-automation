@@ -910,6 +910,241 @@ function resetDepartedRegister() {
 }
 
 /**
+ * Years a Cadet Protection course stays valid, per CAP regulation. Training.txt
+ * records the completion but carries no Expiration column, so this is applied to
+ * Completed rather than read from the data.
+ */
+const CPP_VALIDITY_YEARS = 1;
+
+/**
+ * Reads a CAPWATCH file and returns only the rows belonging to the given CAPIDs,
+ * as objects keyed by header name.
+ *
+ * Member-scoped tables are large — MbrTasks carries a row per member per task,
+ * so tens of thousands for a wing this size — and readCapwatchTxt_() builds an
+ * object for every row in the file. Filter the raw array first and materialise
+ * only what was asked for; a diagnostic should not risk the 6-minute limit.
+ *
+ * Columns are resolved by header name, never by position.
+ *
+ * @param {Folder} folder - CAPWATCH data folder
+ * @param {string} filename - e.g. 'MbrTasks.txt'
+ * @param {Object<string, boolean>} capids - CAPID -> true, the rows to keep
+ * @returns {Array<Object>} Matching rows keyed by header name; [] if absent
+ */
+function readCapwatchRowsForCapids_(folder, filename, capids) {
+  const it = folder.getFilesByName(filename);
+  if (!it.hasNext()) return [];
+
+  const rows = Utilities.parseCsv(it.next().getBlob().getDataAsString());
+  if (!rows || rows.length < 2) return [];
+
+  const header = rows[0].map(h => String(h || '').trim());
+  const capidIdx = header.indexOf('CAPID');
+  if (capidIdx === -1) {
+    Logger.warn('CAPWATCH file has no CAPID column', { filename: filename });
+    return [];
+  }
+
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || !capids[String(row[capidIdx] || '').trim()]) continue;
+
+    const obj = {};
+    for (let c = 0; c < header.length; c++) {
+      if (header[c]) obj[header[c]] = row[c] === undefined ? '' : row[c];
+    }
+    out.push(obj);
+  }
+  return out;
+}
+
+/**
+ * Read-only diagnostic: why is a member PATRON?
+ *
+ * deleteIneligibleSuspendedUsers() never auto-deletes a current member, so
+ * PATRON/ACTIVE accounts land in the needs-a-human bucket holding a seat with no
+ * information attached. Type alone does not say why — and the why decides the
+ * call. A senior usually drops to PATRON because a required qualification
+ * lapsed, most often Cadet Protection training, which expires one year after
+ * completion. Someone who simply needs to retake CPP is likely to convert back
+ * to SENIOR, and deleting their mailbox first would be exactly wrong.
+ *
+ * CAPWATCH records this in two places, both carrying an explicit Expiration:
+ *   MbrTasks        + Tasks         (TaskID -> TaskName)
+ *   MbrAchievements + Achievements  (AchvID -> Achv name)
+ * Training.txt has completions but no expiry.
+ *
+ * Resolves every column BY NAME from each file's header rather than by position
+ * — the Member.txt Expiration column sat unverified at index 16 for months.
+ *
+ * Makes no changes.
+ *
+ * @param {Array<string>} capids - CAPIDs to explain (default: the two
+ *   PATRON/ACTIVE accounts currently holding seats)
+ * @returns {void}
+ */
+function debugWhyPatron(capids) {
+  const samples = capids || ['762848', '634025'];
+  const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+  const now = new Date();
+
+  const wanted = {};
+  samples.forEach(c => { wanted[String(c).trim()] = true; });
+
+  // Find whatever CAPWATCH calls Cadet Protection, by name, in both catalogues.
+  const CPP = /cadet\s*protection|\bCPP\b|\bCPPT\b/i;
+
+  const tasks = readCapwatchTxtIfExists_(folder, 'Tasks.txt');
+  const cppTaskIds = {};
+  tasks.forEach(t => {
+    if (CPP.test(String(t.TaskName || ''))) cppTaskIds[String(t.TaskID || '').trim()] = t.TaskName;
+  });
+
+  const achvs = readCapwatchTxtIfExists_(folder, 'Achievements.txt');
+  const achvNameById = {};
+  const cppAchvIds = {};
+  achvs.forEach(a => {
+    const id = String(a.AchvID || '').trim();
+    const name = a.Achv || a.AchvName || a.Name || a.Description || '';
+    achvNameById[id] = name;
+    if (CPP.test(String(name))) cppAchvIds[id] = name;
+  });
+
+  console.log('\n=== Where Cadet Protection actually lives ===\n');
+  console.log(`Tasks.txt        : ${tasks.length} rows, ${Object.keys(cppTaskIds).length} match`);
+  Object.keys(cppTaskIds).forEach(id => console.log(`   TaskID ${id.padEnd(8)} ${cppTaskIds[id]}`));
+  console.log(`Achievements.txt : ${achvs.length} rows, ${Object.keys(cppAchvIds).length} match`);
+  Object.keys(cppAchvIds).forEach(id => console.log(`   AchvID ${id.padEnd(8)} ${cppAchvIds[id]}`));
+  console.log('\nCPP completions are recorded in Training.txt (TypeCrs), which has NO');
+  console.log(`Expiration column — so expiry is Completed + ${CPP_VALIDITY_YEARS} year per regulation,`);
+  console.log('computed here rather than read. Tasks/Achievements above are a different');
+  console.log('thing (e.g. "ST CPPT" is a specialty-track item, not the course).');
+
+  const taskNameById = {};
+  tasks.forEach(t => { taskNameById[String(t.TaskID || '').trim()] = t.TaskName; });
+
+  // Member-scoped tables only, filtered to the CAPIDs asked about.
+  const mbrTasks = readCapwatchRowsForCapids_(folder, 'MbrTasks.txt', wanted);
+  const mbrAchvs = readCapwatchRowsForCapids_(folder, 'MbrAchievements.txt', wanted);
+  const training = readCapwatchRowsForCapids_(folder, 'Training.txt', wanted);
+  const members = readCapwatchRowsForCapids_(folder, 'Member.txt', wanted);
+
+  console.log(`\nRows for the ${samples.length} CAPID(s) asked about: MbrTasks ${mbrTasks.length}, ` +
+    `MbrAchievements ${mbrAchvs.length}, Training ${training.length}`);
+  console.log('(Member-scoped files are filtered on read; these are not whole-file counts.)\n');
+
+  const fmt = (raw) => {
+    const d = parseCapwatchDate_(raw);
+    if (!d) return { text: String(raw || '(blank)'), expired: null, days: null };
+    const days = Math.floor((now - d) / (1000 * 60 * 60 * 24));
+    return {
+      text: `${d.toISOString().slice(0, 10)} (${days >= 0 ? days + 'd ago' : (-days) + 'd away'})`,
+      expired: days >= 0,
+      days: days
+    };
+  };
+
+  samples.forEach(capid => {
+    const key = String(capid).trim();
+    console.log('\n' + '='.repeat(72));
+    const m = members.find(r => String(r.CAPID || '').trim() === key);
+    if (m) {
+      console.log(`CAPID ${key} — ${m.NameFirst} ${m.NameLast}`);
+      console.log(`   Type "${m.Type}"   MbrStatus "${m.MbrStatus}"   Expiration ${m.Expiration}   Unit ${m.Wing}-${m.Unit}`);
+    } else {
+      console.log(`CAPID ${key} — no Member.txt row`);
+    }
+    console.log('='.repeat(72));
+
+    // Anything with an Expiration that has passed — the likely cause, whatever
+    // it is called.
+    const expiredTasks = mbrTasks.filter(r =>
+      String(r.CAPID || '').trim() === key && fmt(r.Expiration).expired === true);
+    const expiredAchvs = mbrAchvs.filter(r =>
+      String(r.CAPID || '').trim() === key && fmt(r.Expiration).expired === true);
+
+    console.log(`\n-- EXPIRED tasks (${expiredTasks.length}) --`);
+    expiredTasks
+      .sort((a, b) => fmt(b.Expiration).days - fmt(a.Expiration).days)
+      .forEach(r => {
+        const isCpp = cppTaskIds[String(r.TaskID || '').trim()] ? '  <== CADET PROTECTION' : '';
+        console.log(`   ${String(taskNameById[String(r.TaskID || '').trim()] || 'TaskID ' + r.TaskID).slice(0, 44).padEnd(46)} completed ${fmt(r.Completed).text.padEnd(22)} expired ${fmt(r.Expiration).text}${isCpp}`);
+      });
+    if (!expiredTasks.length) console.log('   (none)');
+
+    console.log(`\n-- EXPIRED achievements (${expiredAchvs.length}) --`);
+    expiredAchvs
+      .sort((a, b) => fmt(b.Expiration).days - fmt(a.Expiration).days)
+      .forEach(r => {
+        const id = String(r.AchvID || '').trim();
+        const isCpp = cppAchvIds[id] ? '  <== CADET PROTECTION' : '';
+        console.log(`   ${String(achvNameById[id] || 'AchvID ' + id).slice(0, 44).padEnd(46)} status ${String(r.Status || '').padEnd(12)} completed ${fmt(r.Completed).text.padEnd(22)} expired ${fmt(r.Expiration).text}${isCpp}`);
+      });
+    if (!expiredAchvs.length) console.log('   (none)');
+
+    // THE ANSWER, if there is one: Cadet Protection from Training.txt, with
+    // expiry computed from the regulation rather than read from a column.
+    const tr = training.filter(r => String(r.CAPID || '').trim() === key);
+    const cppTraining = tr.filter(r => CPP.test(String(r.TypeCrs || '')));
+
+    console.log(`\n-- CADET PROTECTION (${cppTraining.length} row(s)) --`);
+    if (!cppTraining.length) {
+      console.log('   NONE. No Cadet Protection course on record at all.');
+    }
+    cppTraining.forEach(r => {
+      const done = parseCapwatchDate_(r.Completed);
+      if (!done) {
+        console.log(`   ${String(r.TypeCrs).padEnd(42)} completed "${r.Completed}" (unreadable)`);
+        return;
+      }
+      const expires = new Date(done.getTime());
+      expires.setFullYear(expires.getFullYear() + CPP_VALIDITY_YEARS);
+      const daysLeft = Math.floor((expires - now) / (1000 * 60 * 60 * 24));
+      console.log(
+        `   ${String(r.TypeCrs).padEnd(42)} completed ${done.toISOString().slice(0, 10)} ` +
+        `-> expires ${expires.toISOString().slice(0, 10)} ` +
+        (daysLeft >= 0 ? `(CURRENT, ${daysLeft}d left)` : `(EXPIRED ${-daysLeft}d ago)`)
+      );
+    });
+
+    // Also surface any task/achievement the catalogues flagged as CPP-ish.
+    const cppRows = mbrTasks.filter(r =>
+      String(r.CAPID || '').trim() === key && cppTaskIds[String(r.TaskID || '').trim()]);
+    const cppAchvRows = mbrAchvs.filter(r =>
+      String(r.CAPID || '').trim() === key && cppAchvIds[String(r.AchvID || '').trim()]);
+    cppRows.forEach(r => console.log(
+      `   [task] ${String(taskNameById[String(r.TaskID || '').trim()]).padEnd(36)} status ${String(r.Status || '').padEnd(12)} expires ${fmt(r.Expiration).text}`
+    ));
+    cppAchvRows.forEach(r => console.log(
+      `   [achv] ${String(achvNameById[String(r.AchvID || '').trim()]).padEnd(36)} status ${String(r.Status || '').padEnd(12)} expires ${fmt(r.Expiration).text}`
+    ));
+
+    console.log(`\n-- All Training.txt rows (${tr.length}) --`);
+    tr.sort((a, b) => {
+      const da = parseCapwatchDate_(a.Completed), db = parseCapwatchDate_(b.Completed);
+      return (db ? db.getTime() : 0) - (da ? da.getTime() : 0);
+    }).forEach(r => console.log(
+      `   ${String(r.TypeCrs || '').slice(0, 52).padEnd(54)} completed ${fmt(r.Completed).text}`
+    ));
+    if (!tr.length) console.log('   (none — no training of any kind on record)');
+  });
+
+  console.log('\n' + '='.repeat(72));
+  console.log('No changes made.');
+  console.log('');
+  console.log('Reading this: a CURRENT or recently-EXPIRED Cadet Protection course means the');
+  console.log('member is a senior who needs to retake it, will likely convert back to SENIOR,');
+  console.log('and whose mailbox should NOT be reclaimed — reactivateRenewedMembers() will');
+  console.log('unsuspend them automatically when their type flips. NO CPP row at all, with no');
+  console.log('other training either, is a different person: someone who never started.');
+  console.log('');
+  console.log('Note the EXPIRED lists exclude CAPWATCH 1900 dates, which are its null marker');
+  console.log('for "no expiry", not a date in the past.');
+}
+
+/**
  * Read-only diagnostic for CAPWATCH MbrTransfer.txt.
  *
  * A member who transfers to another wing goes silent in our Member.txt, which
@@ -1098,6 +1333,13 @@ function parseCapwatchDate_(value) {
   const year = parseInt(parts[2], 10);
   if (isNaN(month) || isNaN(day) || isNaN(year)) return null;
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  // CAPWATCH writes 1900 dates as its null: 01/01/1900 for "never"/"not set"
+  // (seen throughout MbrTasks.Expiration, MbrAchievements.Expiration and
+  // MbrTransfer.FromApprovalDate). Treat as absent, not as a date 126 years in
+  // the past — otherwise "no expiry" reads as "expired long ago", which is the
+  // wrong answer in the dangerous direction.
+  if (year <= 1900) return null;
 
   const parsed = new Date(year, month - 1, day);
   // Rejects overflow like 02/31 rolling into March.
