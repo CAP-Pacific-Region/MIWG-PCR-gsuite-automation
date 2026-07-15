@@ -465,11 +465,22 @@ function xtPeerParentGroups_(cfg) {
 
 /**
  * Mints an OAuth token for the PEER tenant by JWT-signing with the peer-tenant
- * service account and impersonating a peer admin. Mirrors getImpersonatedToken_
- * in UpdateMembers.gs, but reads the XT_PEER_SA_* Script Properties so a project
- * can read its peer's directory without touching its own SA_* credentials.
+ * service account. Mirrors getImpersonatedToken_ in UpdateMembers.gs, but reads
+ * the XT_PEER_SA_* Script Properties so a project can act against its peer
+ * without touching its own SA_* credentials.
+ *
+ * @param {string} scope
+ * @param {Object} cfg - from getCrossTenantConfig_()
+ * @param {string} [subject] - peer user to impersonate. Defaults to the peer
+ *   admin in XT_PEER_SA_SUBJECT, which is what directory reads want, since those
+ *   are admin-level and cover the whole domain.
+ *
+ *   Pass an explicit subject for anything PER-USER. Gmail in particular has no
+ *   admin-level cross-user access: an admin token cannot read or write another
+ *   user's mailbox, so users/{someone}/messages/import with the default admin
+ *   token is rejected. It must impersonate {someone} directly.
  */
-function xtPeerToken_(scope, cfg) {
+function xtPeerToken_(scope, cfg, subject) {
   const sa = (cfg && cfg.peerSa) || {};
   if (!sa.email || !sa.key || !sa.subject) {
     throw new Error('Missing peer SA credentials (XT_PEER_SA_EMAIL / XT_PEER_SA_KEY / XT_PEER_SA_SUBJECT).');
@@ -479,7 +490,7 @@ function xtPeerToken_(scope, cfg) {
 
   const header = { alg: 'RS256', typ: 'JWT' };
   const claimSet = {
-    iss: sa.email, sub: sa.subject, aud: 'https://oauth2.googleapis.com/token',
+    iss: sa.email, sub: subject || sa.subject, aud: 'https://oauth2.googleapis.com/token',
     exp: now + 3600, iat: now, scope: scope
   };
   const toSign =

@@ -1323,11 +1323,33 @@ function updateAllMembers() {
   // Gate new senior accounts on Level I completion
   if (CONFIG.REQUIRE_LEVEL_I_FOR_SENIORS) {
     const level1Capids = loadLevel1CompletedCapids();
+
+    // Members transitioning up from the cadet tenant are exempt: they already
+    // hold an account and are not new to the organization, so the Level I gate
+    // does not apply to them. "New account" below is judged against THIS
+    // tenant's directory, and an ex-cadet's account lives on the peer tenant —
+    // so without this they read as newcomers and get withheld. The exemption
+    // also has to hold for their mail to have anywhere to land: the cadet
+    // tenant cannot migrate their mailbox until this account exists.
+    const peerCapids = getPeerTenantCapids_();
+
     let level1Skipped = 0;
+    let transitionExempt = 0;
     for (const capsn in toProcess) {
       const member = toProcess[capsn];
       const isSeniorType = ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'].indexOf(member.type) > -1;
       const isNewAccount = !workspaceEmailByCapid[String(capsn)];
+
+      if (isSeniorType && isNewAccount && peerCapids[String(capsn)]) {
+        Logger.info('Senior exempt from Level I — transitioning from cadet tenant', {
+          capsn: capsn,
+          name: member.firstName + ' ' + member.lastName,
+          charter: member.charter
+        });
+        transitionExempt++;
+        continue;
+      }
+
       if (isSeniorType && isNewAccount && !level1Capids.has(String(capsn))) {
         Logger.info('Senior skipped — Level I not complete', {
           capsn: capsn,
@@ -1340,6 +1362,11 @@ function updateAllMembers() {
     }
     if (level1Skipped > 0) {
       Logger.info('New senior accounts withheld pending Level I', { count: level1Skipped });
+    }
+    if (transitionExempt > 0) {
+      Logger.info('Senior accounts provisioned under cadet-transition exemption', {
+        count: transitionExempt
+      });
     }
   }
 
