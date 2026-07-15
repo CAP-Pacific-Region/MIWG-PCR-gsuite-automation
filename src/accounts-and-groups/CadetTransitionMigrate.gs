@@ -92,6 +92,16 @@ const MIGRATE_DUPLICATE_GUARD_MIN_ = 100;
 /** Continuation trigger handler name. */
 const MIGRATE_CONTINUATION_FN_ = 'continueCadetTransitionMigration';
 
+/**
+ * Script Property carrying what the pending continuation is scoped to.
+ *
+ * A trigger cannot take arguments, so without this the continuation has no idea
+ * what the run that scheduled it was doing — and would default to "everything,
+ * with notifications", silently escalating a deliberately narrow run into a
+ * broad one. Holds {capid?, notify}.
+ */
+const MIGRATE_CONTINUATION_SCOPE_PROP_ = 'MIGRATE_CONTINUATION_SCOPE';
+
 // ============================================================================
 // ENTRY POINTS
 // ============================================================================
@@ -103,9 +113,10 @@ const MIGRATE_CONTINUATION_FN_ = 'continueCadetTransitionMigration';
  * run leaves a clear picture: earlier rows COMPLETE, one IN_PROGRESS with a
  * cursor, later rows still PENDING.
  *
+ * @param {boolean} [notify=true] - send completion emails
  * @returns {{migrated: number, incomplete: number, failed: number}}
  */
-function migrateCadetTransitions() {
+function migrateCadetTransitions(notify) {
   if (TRANSITION_CONFIG.ROLE !== 'source') {
     Logger.info('Transition migration skipped — not the source tenant');
     return { migrated: 0, incomplete: 0, failed: 0 };
@@ -124,13 +135,13 @@ function migrateCadetTransitions() {
 
     if (new Date() - started > MIGRATE_SOFT_TIME_LIMIT_MS_) {
       Logger.info('Migration paused — time limit, remaining rows next run', { capid: capid });
-      scheduleMigrationContinuation_();
+      scheduleMigrationContinuation_({ notify: notify });
       incomplete++;
       break;
     }
 
     try {
-      const result = migrateOneTransition_(row, started);
+      const result = migrateOneTransition_(row, started, { notify: notify });
       if (result.complete) migrated++; else incomplete++;
     } catch (e) {
       // FAILED is terminal until a human looks. It also blocks deletion — see
@@ -193,7 +204,10 @@ function migrateSingleTransition(capid, notify) {
 
   const started = new Date();
   try {
-    return migrateOneTransition_(row, started, '', notify !== false);
+    return migrateOneTransition_(row, started, {
+      notify: notify !== false,
+      single: true          // so a continuation resumes THIS member, not the queue
+    });
   } catch (e) {
     setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.FAILED);
     setTransitionField_(row._rowNumber, 'Notes',
@@ -203,8 +217,14 @@ function migrateSingleTransition(capid, notify) {
 }
 
 /**
- * Continuation trigger target. Deletes the one-shot trigger that fired it, then
- * resumes.
+ * Continuation trigger target. Deletes the trigger that fired it, then resumes
+ * whatever the previous run was doing — at the SAME scope and notify setting.
+ *
+ * Triggers take no arguments, so the scope comes from a Script Property. This
+ * used to call migrateCadetTransitions() unconditionally, which meant a
+ * deliberately narrow run — one member, notifications off — silently became the
+ * whole queue with notifications on at its first pause. The narrower the run you
+ * asked for, the more surprising the result.
  *
  * @param {Object} e - trigger event
  */
@@ -214,7 +234,70 @@ function continueCadetTransitionMigration(e) {
       .filter(t => t.getUniqueId() === e.triggerUid)
       .forEach(t => ScriptApp.deleteTrigger(t));
   }
-  migrateCadetTransitions();
+
+  const props = PropertiesService.getScriptProperties();
+  const raw = props.getProperty(MIGRATE_CONTINUATION_SCOPE_PROP_);
+  props.deleteProperty(MIGRATE_CONTINUATION_SCOPE_PROP_);
+
+  let scope = null;
+  try {
+    scope = raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    Logger.warn('Unparseable continuation scope', { raw: raw });
+  }
+
+  if (!scope) {
+    // No scope: either a trigger scheduled by an older version, or the property
+    // was lost. We cannot know what the original run intended, so do the least
+    // surprising thing — finish what is demonstrably already underway and start
+    // nothing new. Notifications off, because a mailbox someone else began
+    // migrating is not ours to announce.
+    Logger.warn('Continuation has no scope — resuming in-progress rows only, ' +
+      'starting nothing new, notifications suppressed');
+    resumeInProgressOnly_();
+    return;
+  }
+
+  if (scope.capid) {
+    migrateSingleTransition(scope.capid, scope.notify);
+  } else {
+    migrateCadetTransitions(scope.notify);
+  }
+}
+
+/**
+ * Resumes only rows already mid-migration. Starts nothing, notifies nobody.
+ *
+ * The safe fallback when a continuation cannot tell what it was for.
+ *
+ * @returns {{resumed: number}}
+ */
+function resumeInProgressOnly_() {
+  const started = new Date();
+  const rows = readTransitions_();
+  let resumed = 0;
+
+  for (const capid in rows) {
+    const row = rows[capid];
+    if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.IN_PROGRESS) continue;
+    if (!row.SeniorEmail) continue;
+
+    try {
+      migrateOneTransition_(row, started, { notify: false });
+      resumed++;
+    } catch (e) {
+      setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.FAILED);
+      setTransitionField_(row._rowNumber, 'Notes',
+        `Failed ${new Date().toISOString()}: ${e && e.message ? e.message : String(e)}`);
+      Logger.error('Resume failed', {
+        capid: capid, errorMessage: e && e.message ? e.message : String(e)
+      });
+    }
+    break; // one at a time; the next pause reschedules
+  }
+
+  Logger.info('In-progress resume completed', { resumed: resumed });
+  return { resumed: resumed };
 }
 
 /**
@@ -243,12 +326,19 @@ function isMigratable_(row) {
  *
  * @param {Object} row - Transitions row
  * @param {Date} started - pass start, for the shared time budget
- * @param {string} [query] - Gmail search to limit the set; used by the catch-up
- *   pass to pick up only what arrived since the last run
- * @param {boolean} [notify=true] - send the completion email
+ * @param {Object} [opts]
+ * @param {string} [opts.query] - Gmail search limiting the set; the catch-up
+ *   pass uses it to pick up only what arrived since the last run
+ * @param {boolean} [opts.notify=true] - send the completion email
+ * @param {boolean} [opts.single] - this run is scoped to THIS member only, so a
+ *   continuation must resume only them rather than the whole queue
  * @returns {{complete: boolean, imported: number}}
  */
-function migrateOneTransition_(row, started, query, notify) {
+function migrateOneTransition_(row, started, opts) {
+  opts = opts || {};
+  const query = opts.query || '';
+  const notify = opts.notify;
+
   const cfg = getCrossTenantConfig_();
 
   const sourceToken = getImpersonatedToken_(
@@ -311,9 +401,16 @@ function migrateOneTransition_(row, started, query, notify) {
     if (new Date() - started > MIGRATE_SOFT_TIME_LIMIT_MS_) {
       setTransitionField_(row._rowNumber, 'LastCursor', pageToken);
       setTransitionField_(row._rowNumber, 'MessagesMigrated', imported);
-      scheduleMigrationContinuation_();
+
+      // Carry the scope forward, or the continuation widens the run.
+      scheduleMigrationContinuation_(
+        opts.single
+          ? { capid: String(row.CAPID), notify: notify }
+          : { notify: notify }
+      );
+
       Logger.info('Mailbox migration paused — will resume', {
-        capid: row.CAPID, imported: imported
+        capid: row.CAPID, imported: imported, scope: opts.single ? 'this member' : 'queue'
       });
       return { complete: false, imported: imported };
     }
@@ -762,7 +859,7 @@ function gmailFetch_(url, opts, what) {
  * and inside a mailbox, and two triggers racing would import the same pages
  * twice.
  */
-function scheduleMigrationContinuation_() {
+function scheduleMigrationContinuation_(scope) {
   const already = ScriptApp.getProjectTriggers()
     .some(t => t.getHandlerFunction() === MIGRATE_CONTINUATION_FN_);
 
@@ -771,12 +868,19 @@ function scheduleMigrationContinuation_() {
     return;
   }
 
+  // Written BEFORE the trigger exists: a trigger that fires without its scope
+  // falls back to the conservative path, which is safe but would not resume what
+  // was actually asked for.
+  PropertiesService.getScriptProperties().setProperty(
+    MIGRATE_CONTINUATION_SCOPE_PROP_, JSON.stringify(scope || {})
+  );
+
   ScriptApp.newTrigger(MIGRATE_CONTINUATION_FN_)
     .timeBased()
     .after(60 * 1000)
     .create();
 
-  Logger.info('Migration continuation scheduled');
+  Logger.info('Migration continuation scheduled', { scope: scope || {} });
 }
 
 /** Removes any pending continuation triggers. Manual recovery aid. */
@@ -921,7 +1025,7 @@ function catchUpTransitionMail() {
 
       // Reuse the full migration path: same resumability, same cursor handling,
       // same import semantics. Only the query differs.
-      const result = migrateOneTransition_(row, started, query);
+      const result = migrateOneTransition_(row, started, { query: query, notify: false });
       const moved = result.imported - before;
 
       if (moved > 0) {
