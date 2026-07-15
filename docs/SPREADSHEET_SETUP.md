@@ -38,6 +38,7 @@ creates/manages it; you only need the empty tab to exist.
 | `Manual Members` | Optional | input | `updateAllMembers()` (members added by hand) |
 | `External Contacts` | Region only (`RUN_SHARED_CONTACTS`) | input | `runExternalContactsToDomainSharedContacts()` |
 | `Aliases` | Optional | input | send-as alias assignment in `updateAllMembers()` |
+| `Secondary Aliases` | Optional | input + Auto | `addSecondaryDomainAliases()` (cols A–B yours, C–D written back) |
 | `Error Emails` | **Yes** (must exist) | Auto | error reporting at the end of `updateEmailGroups()` |
 | `Log` (in the retention sheet) | Auto | Auto | `logEmailSent()` in retention emails |
 
@@ -120,6 +121,54 @@ Optional per-account send-as configuration applied in `updateAllMembers()`
 | B | `Alias Email` | The send-as address |
 | C | `Display Name` | Send-as display name |
 | D | `Signature` | Optional HTML signature |
+
+### `Secondary Aliases` — parallel addresses on a verified secondary domain
+Drives `addSecondaryDomainAliases()` (`SecondaryDomainAliases.gs`). Each listed account
+gets a **directory alias** that keeps the local part of its primary address but swaps in
+`TENANT_SECONDARY_EMAIL_DOMAIN` — e.g. `jane.doe@cawgcap.org` also receives at
+`jane.doe@cawg.cap.gov`. **Positional:**
+
+| Col | Column | Meaning |
+|--:|---|---|
+| A | `Primary Email` | The existing account to alias |
+| B | `Alias Email` | Optional override; leave blank to derive local part + secondary domain |
+| C | `Status` | **Written by the script** — `ADDED`, `OK — already present`, `CONFLICT`, or `ERROR` |
+| D | `Last Run` | **Written by the script** — timestamp of the last attempt |
+
+This tab is an **opt-in list**, not the roster — only the accounts you list here get an
+address on the secondary domain. Nothing is added automatically, so a new member who should
+have one needs a row added by hand.
+
+Prerequisites: the secondary domain must be **added and verified** in the tenant
+(Admin console > Domains > Manage domains), and `TENANT_SECONDARY_EMAIL_DOMAIN` must be
+set as a Script Property — either `@cawg.cap.gov` or `cawg.cap.gov`; both are accepted.
+`addSecondaryDomainAliases()` refuses to run otherwise — Google rejects an alias on an
+unverified domain, so there is no way to pre-create the addresses and have them activate
+later.
+
+**You can still build the list in advance.** `previewSecondaryDomainAliases()` runs even
+while the domain is pending verification (it warns, then continues), because it writes
+nothing to any account. It fills column C with the address each row *would* get and flags
+any listed account that doesn't exist — so populate the tab now, preview it, fix what it
+finds, and verification day is one run rather than a data-entry session.
+
+The real run is idempotent, so it is safe to re-run after fixing conflicts. Aliases become
+sendable in Gmail within roughly 24 hours of being created.
+
+**On a daily trigger** (`addSecondaryDomainAliases()`, see [ADMIN_GUIDE §8](ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule)):
+
+- A run over a settled list makes **no changes** — rows already carrying their alias are
+  reported `OK — already present` and skipped. Column D still updates, which is how you
+  confirm the trigger is alive.
+- **`CONFLICT` rows report once, then go quiet.** The address belongs to another account or
+  group and only a human can free it, so re-reporting nightly would just train everyone to
+  ignore the log. The row keeps its original `Status` and `Last Run` (the date it was first
+  seen) and is skipped. **Editing column B un-latches it** — a different address means a
+  different question, so the next run retries. Clearing column C also forces a retry.
+- `ERROR` rows are **not** latched and retry every run, since they are often transient or
+  simply pending (a row added before the account exists resolves itself the next morning).
+- Never attach `previewSecondaryDomainAliases()` to a trigger — it writes to the same
+  `Status` column the real run reads.
 
 ### `Error Emails` — auto-managed error log
 Create the tab **empty**; the automation writes and maintains it. Header it sets:

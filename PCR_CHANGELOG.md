@@ -10,6 +10,262 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-14] — Secondary-domain aliases for listed accounts
+
+### Added
+
+- **`SecondaryDomainAliases.gs` (v1.2.1)** — new module giving accounts a second
+  address that keeps the local part of their primary but swaps in a secondary
+  domain (`jane.doe@cawgcap.org` → `jane.doe@cawg.cap.gov`), as a **directory
+  alias** via `AdminDirectory.Users.Aliases.insert`. Driven by a new, optional
+  `Secondary Aliases` tab, which is a **curated opt-in list, not the roster** —
+  only listed accounts are touched, and new members are not enrolled
+  automatically. Entry points: `addSecondaryDomainAliases()` (trigger-safe) and
+  `previewSecondaryDomainAliases()` (dry run, manual only).
+
+  Gated on a new `TENANT_SECONDARY_EMAIL_DOMAIN` Script Property, blank on cadets
+  and pacific, so the shared code is an explicit no-op there rather than an error.
+  A preflight check confirms the domain is verified in the tenant, turning what
+  would be one opaque HTTP 400 per row into a single actionable message.
+
+  Unlike `addAlias()` in `UpdateMembers.gs`, a 409 does **not** fall back to a
+  numbered variant (`jane.doe.1@`) — an address that does not mirror the primary
+  defeats the purpose — and conflicts latch: they report once, then are skipped
+  until the row changes, rather than logging an ERROR every night forever.
+
+  Requires the new `admin.directory.domain.readonly` scope, so **every tenant
+  re-authorizes on next run**.
+
+- **`config.gs` (v1.4.0)** — added `SECONDARY_EMAIL_DOMAIN`, sourced from the new
+  `TENANT_SECONDARY_EMAIL_DOMAIN` Script Property and wired into
+  `setupTenantConfig()`. Blank on cadets and pacific.
+
+### Fixed
+
+- **`UpdateMembers.gs` (v1.5.0)** — `updateGmailSendAsDisplayName()` patched only
+  `sendAs/{primaryEmail}`, so every *alias* Send-As identity kept whatever display
+  name Gmail auto-assigned when the alias was created and went stale the moment the
+  member was promoted. It now mirrors the name onto the user's org-owned alias
+  identities as well (new step 3 + `updateSendAsDisplayNameForOrgAliases_()`), which
+  fixes both callers — new-user setup and the `updateAllSendAsNames()` backfill.
+
+  Only identities on `CONFIG.EMAIL_DOMAIN` / `CONFIG.SECONDARY_EMAIL_DOMAIN` are
+  touched (`isOrgOwnedSendAs_()`, exact domain match): members add their own personal
+  addresses as Send-As identities, and renaming someone's private Gmail to their CAP
+  rank would be wrong. This is the concern that left the domain filter commented out
+  in `updateSignatureForAllAliases()`. Patches only when the name differs, so a
+  settled roster costs one list call per user and no writes.
+
+  > ⚠️ The code half is inert on its own. `updateAllSendAsNames()` is the only bulk
+  > caller and **was never on the nightly chain**, so promotions did not reach the
+  > Gmail Send-As name for *anyone* — primary included — except when someone ran the
+  > backfill by hand. It is now listed in [ADMIN_GUIDE §8](docs/ADMIN_GUIDE.md) at
+  > 8–9 AM; **the trigger must still be created per tenant.**
+
+- **`UpdateMembers.gs` (v1.6.0)** — new accounts received a **blank signature**.
+  `runDelayedGmailSetup()` rebuilt `{ capsn }` from its queued Script Properties
+  record and handed that to `generateEmailSignature()`, which therefore rendered an
+  empty name line, an empty `(M)` phone row, and a duty of "Member" — then pushed it
+  to the account five minutes after creation, on every tenant.
+  `queueForDelayedGmailSetup()` now carries the fields the generator reads
+  (`signatureMember`). Records queued by the older code have no such field; rather
+  than reproduce the bug they are skipped with a warning, and the account still gets
+  its Send-As display name.
+
+  Also: an ungraded senior (CAPWATCH rank `SM`) rendered literally as "SM Jane Doe".
+  The CAP style guide does not permit `SM` as a grade designation, and
+  `getPublicRank()` has no mapping for it, so it passed straight through. New
+  `getSignatureName()` shows ungraded members by name with a middle initial —
+  "Jane M. Doe" — until their first promotion, after which the normal grade + name
+  form resumes. A blank Rank column is treated the same way.
+
+  > Existing users are deliberately untouched: `pushAllSignatures()` remains manual
+  > and off the §8 schedule, by request. Only newly created accounts get a signature.
+
+- **`UpdateMembers.gs` (v1.7.0)** — `updateSignatureForAllAliases()` wrote to **every**
+  Send-As identity a member had, including personal accounts they had added themselves:
+  the only guard was a hard-coded `endsWith("@pcrcap.org")` check that shipped
+  **commented out**. It now writes only to identities on a domain this tenant owns, via
+  the same `isOrgOwnedSendAs_()` used by the display-name sync.
+
+  Note the old check was doubly wrong for this repo even if it had been enabled: it
+  named the **Pacific** tenant's domain, so on seniors or cadets it would have matched
+  nothing and skipped every identity — and it permits exactly one domain, so
+  secondary-domain aliases would never receive a signature.
+
+  Signature name lines now also include the member's **suffix** (`Maj. Isaac Wilson IV`),
+  which `getSignatureName()` was dropping.
+
+- **`UpdateMembers.gs` (v1.8.0)** — `generateEmailSignature()` reconciled with the CAP
+  brand style guide. The guide itself lives behind a JS/auth wall on Frontify, so the
+  reference used was the template inside CAP's own signature generator
+  (`cap-brand-tools`, `signature-generator/script.js`), which emits the canonical block.
+
+  | Element | Was | Now |
+  |---|---|---|
+  | "Civil Air Patrol, U.S. Air Force Auxiliary" | `<h2>`, normal weight, `margin 0 0 20px` | `<p>`, **bold**, `margin 0 0 5px` |
+  | Duty block | all non-assistant duties, `line-height 12px`, `'Member'` when none | **max 2**, sorted highest→lowest org level, `line-height 14px`, **omitted** when none |
+  | Phone row | always emitted — a bare `(M)` when the member had no phone | omitted when there is no phone |
+  | Logo | no `width`/`height`/`alt`, negative margin | `width=200 height=42`, `display:block`, `alt` text |
+
+  Two latent bugs fell out of this. `getDutyBlock()` checked emptiness *before* filtering
+  assistants, so a member holding only assistant duties produced an **empty `<h2>`**; and
+  `'Member'` was never a duty assignment — the guide's generator simply drops the element.
+
+  Duty ordering uses CAPWATCH's `level` (`UNIT`/`GROUP`/`WING` per
+  [API_REFERENCE](docs/API_REFERENCE.md), plus `REGION`/`NAT` for the region tenant).
+  Unrecognized levels sort last rather than being guessed at; `Array.sort` is stable, so
+  they retain CAPWATCH's own order.
+
+  > Both open items from this entry — the logo host and the duty line's org prefix — are
+  > resolved in v1.9.0 below.
+
+- **`UpdateMembers.gs` (v1.9.0)** — signature duty lines named the **wrong org**. They
+  were prefixed with `member.orgName`, the member's *home unit*, regardless of where the
+  duty is actually held: a squadron member with a wing-level duty read "San Jose Sr Sqdn
+  80 Director of IT". `addDutyPositions()` and `addCadetDutyPositions()` now carry the
+  duty's own `orgName` (from the org that duty record points at), and `getDutyBlock()`
+  uses it, falling back to the home unit.
+
+  Unit names are also expanded for display by `formatOrgName_()`:
+  `SAN JOSE SR SQDN 80` → **San Jose Senior Squadron 80**. Expansions: `Sq`/`Sqdn` →
+  Squadron, `Cdt` → Cadet, `Comp` → Composite, `Sr` → Senior. Matching ignores case and
+  a trailing period, and is **scoped to org names only** — it never runs over a person's
+  name, so a member whose suffix is `Sr` stays "Vance Sr" rather than "Vance Senior".
+
+  **Logo moved off the Frontify CDN token URL** to the copy served alongside CAP's own
+  generator (`cap-brand-tools.netlify.app/.../LogoNoAux.png`) — a 2000×415 master
+  rendered to 200×42, so it stays sharp on high-DPI displays.
+
+  > ⚠️ Explicitly **not** the generator's own `LOGO_URL_OUTPUT`
+  > (`civilairpatrolmac.github.io/CAP-Brand-Tools/...`): that URL **404s**, as does the
+  > whole GitHub Pages site. Signatures produced by CAP's official tool therefore have a
+  > broken logo. Verify any replacement with a HEAD request — a dead URL here is silent
+  > in the logs and only shows up as a broken image in mail that has already been sent.
+
+- **`UpdateMembers.gs` (v1.10.0)** — duty titles are used **verbatim** from CAPWATCH,
+  plus one rename. Checked against a real CAWG `DutyPosition.txt` (4,085 rows,
+  71 distinct titles):
+
+  - The `Duty` column already holds full, **echelon-correct** titles. CAPWATCH varies
+    them itself — `Information Technologies Officer` at `UNIT`/`GROUP` vs
+    `Director of IT` at `WING`; likewise `Safety Officer` vs `Director of Safety`. No
+    echelon logic belongs in this code.
+  - **Do not add office-symbol expansion.** The symbol (`IT`, `AE`, `DC`) is a separate
+    `FunctArea` column that this code never reads. `docs/API_REFERENCE.md` showed
+    `id: 'CC'`, conflating the two — **corrected in this change**; the real value is
+    `id: 'Commander'`.
+  - `DUTY_TITLE_OVERRIDES` renames the retired `Recruiting & Retention Officer` →
+    `Recruiting Officer`, per the ICL to CAPR 30-1. 2 of CAWG's rows still carried the
+    old form against 69 correct ones. Fixing the record in eServices is the real
+    remedy; this only stops a stale row printing a retired title.
+  - Titles are whitespace-collapsed: `Communications Officer ` ships with a trailing
+    space on all 196 of its rows.
+
+  Verified across every distinct title in the feed: exactly **one** is rewritten (the
+  retired Recruiting form) and the other **70 pass through untouched**, none of which
+  are bare office symbols.
+
+  > `Lvl` in real CAWG data only ever contains `UNIT`, `GROUP`, `WING` (one row has
+  > trailing whitespace, which `dutyLevelRank_()` trims). `REGION`/`NAT` remain in
+  > `DUTY_LEVEL_ORDER` for the Pacific tenant.
+
+- **`UpdateMembers.gs` (v1.11.0)** — added **`previewSignatureForMember()`**, a
+  read-only render of a single member's signature to the execution log.
+
+  There was previously no safe way to look at a signature before it reached a member:
+  `pushAllSignatures()` writes to every member at once, and the only other path fires
+  five minutes after an account is created — so inspecting the output meant either
+  spamming the wing or burning a licence on a throwaway account. This makes **no
+  Gmail or Directory calls at all**; it reads CAPWATCH and formats a string.
+
+  Set `SIGNATURE_PREVIEW_RUN_INPUTS.CAPID` at the top of the file and Run it (Apps
+  Script cannot pass arguments to an editor Run — same convention as
+  `GROUP_ADMINISTRATION_RUN_INPUTS`). It logs the name line, duty block, phone, and
+  which identities *would* receive it, then the raw HTML last so it can be lifted out
+  of the log and opened in a browser.
+
+- **`UpdateMembers.gs` (v1.12.0)** — three defects the first live preview exposed.
+
+  **A wing role could crowd out a squadron command.** Sorting on echelon alone, then
+  taking two, meant a member holding two wing duties and a squadron command showed
+  both wing rows and **dropped the command entirely**. The block now takes at most
+  **one duty per echelon** before filling the second slot, so the span of someone's
+  roles survives. If all their duties sit at one level the second slot is still used,
+  rather than wasted.
+
+  **Ties within an echelon were arbitrary.** CAPWATCH has no primary-duty flag, so two
+  wing roles were ordered by whatever eServices listed first — putting "Web Security
+  Administrator" ahead of "Director of IT". `dutyTitleRank_()` now breaks the tie on
+  the title text: command, then directors, then everyone else. `Array.sort` is stable,
+  so equal ranks keep CAPWATCH's order.
+
+  **Wing and region orgs were named for the HQ unit.** Every one of CAPWATCH's 54
+  wings is `<STATE> WING HQ`, so the line read "California Wing Hq Director of IT" —
+  both wrong and mis-cased, since `toTitleCase()` lowercases before capitalising.
+  `formatOrgName_()` now takes the org's scope and, for `WING`/`REGION`, drops
+  everything after the echelon: `CALIFORNIA WING HQ` → **California Wing**. This also
+  handles the one region not named "... REGION HQ" — `PACIFIC REGION CAP` →
+  **Pacific Region** — which matters for that tenant. `HQ` no longer renders as "Hq".
+
+  `addDutyPositions()`/`addCadetDutyPositions()` carry `orgScope` alongside `orgName`.
+  Keyed on scope rather than the name, so a unit that merely has "wing" in its title
+  is untouched.
+
+  > Consequence worth knowing: with the cap at two, a member holding wing **and** group
+  > **and** squadron duties still loses the lowest — the two highest echelons win.
+
+- **`UpdateMembers.gs` (v1.12.1)** — `ORG_NAME_EXPANSIONS` gained `SQD` → Squadron,
+  `GP`/`GRP` → Group, and `CALIF` → California.
+
+  CAPWATCH spells Squadron three ways: `SQDN` (585 orgs), `SQ` (45) and `SQD` (1 —
+  "FALLBROOK SENIOR SQD 87", a California unit, which was rendering as "Fallbrook
+  Senior Sqd 87"). Trailing periods are stripped before lookup, covering `SQ.` and
+  `SQDN.` too. `GP`/`GRP` appear nowhere in CAPWATCH's org list today — all 147 groups
+  spell it out — but they are conventional and cost nothing to cover. `CALIF` fixes
+  "CENTRAL CALIF GROUP 6" → **Central California Group 6** and "CALIF WING HQ SQ" →
+  **California Wing HQ Squadron**; orgs already spelling out `CALIFORNIA` are
+  unaffected, since lookup is whole-word.
+
+  Verified by rendering **all 77 California orgs**: every remaining short word is a
+  proper noun (San, Los, Diego, Santa, Beale, Pancho …) and correctly untouched.
+  "Eugene L. Carnahan Cadet Squadron 85" keeps its initial, since the period is
+  stripped only for the lookup, not the output.
+
+- **`UpdateMembers.gs` (v1.13.0)** — `getPublicRank()` had **no cadet grades at all**,
+  so a cadet signature rendered the raw CAPWATCH value: "C/Amn Jane Doe",
+  "CADET Jane Doe". All 15 are now mapped.
+
+  Display forms come from the grade list in CAP's own signature generator
+  (`cap-brand-tools`), including the `Cadet ` prefix its `buildDisplayName()`
+  prepends — so `C/CMSgt` → **Cadet Chief Master Sgt.**
+
+  Two traps worth recording:
+
+  - **CAPWATCH's cadet spellings are not the senior ones with `C/` glued on.** They
+    carry no internal space: `C/2dLt`, `C/1stLt`, `C/LtCol` — against the senior
+    `2d Lt`, `1st Lt`, `Lt Col`.
+  - **`CADET` is C/AB**, the entry grade, and a *real* grade → "Cadet Airman Basic".
+    It must not be folded into the ungraded-senior case that `isUngradedRank_()`
+    handles for `SM`.
+
+  Verified against every rank in a real CAWG `Member.txt`: all 14 cadet grades present
+  (743 `C/Amn` … 9 `C/LtCol`) now map, and no non-cadet member carries a cadet-style
+  rank, so senior output is untouched. `C/Col` is mapped for completeness though
+  CAWG has none today.
+
+  > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
+  > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
+  > published by CAP National; aliases **cannot** be created on the domain until
+  > then, and there is no way to pre-create them and have them activate on
+  > verification. Until it is verified `addSecondaryDomainAliases()` logs the
+  > preflight error and exits without touching any account.
+  >
+  > `previewSecondaryDomainAliases()` deliberately still runs in that state (warning
+  > rather than bailing), so the tab can be populated and validated ahead of the
+  > domain going live — it resolves the address each row would get and flags any
+  > listed account that does not exist.
+
 ## [2026-07-11] — Squadron `.all` lists now admit cross-tenant cadet groups
 
 ### Fixed

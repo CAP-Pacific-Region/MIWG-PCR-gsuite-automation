@@ -1,10 +1,76 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.4.5
- * Date: 2026-07-09
+ * Version: 1.13.0
+ * Date: 2026-07-14
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Changes: AdminDirectory.Users.list standardized to customer:"my_customer";
- *   testImpersonationToken uses console.log (Logger is overridden). See PCR_CHANGELOG.md.
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.13.0)
+ * Changes: getPublicRank() now maps CADET grades; it had none, so a cadet signature
+ *   rendered the raw CAPWATCH value ("C/Amn Jane Doe", "CADET Jane Doe"). Display
+ *   forms come from the grade list in CAP's own signature generator, including the
+ *   "Cadet " prefix it prepends. Note CAPWATCH's cadet spellings are NOT the senior
+ *   ones with "C/" glued on — they carry no internal space ("C/2dLt", "C/LtCol") —
+ *   and "CADET" is CAPWATCH's representation of C/AB, a real grade, distinct from
+ *   the ungraded senior case. Verified against every rank in a real Member.txt.
+ *   (1.12.1: ORG_NAME_EXPANSIONS gained SQD — a third CAPWATCH spelling of Squadron,
+ *   used by "FALLBROOK SENIOR SQD 87" — plus GP/GRP for Group, which appear nowhere
+ *   in CAPWATCH's org list today but are conventional, and CALIF -> California
+ *   ("CENTRAL CALIF GROUP 6"). Checked by rendering all 77 California orgs: every
+ *   remaining short word is a proper noun.
+ *   1.12.0: signature duty block now takes at most ONE duty per echelon before
+ *   filling the second slot — sorting on level alone let a member's two wing roles
+ *   crowd their squadron command off the signature entirely. Ties within an echelon
+ *   break on title seniority (dutyTitleRank_: command, then directors, then the
+ *   rest), because CAPWATCH has no primary-duty flag and was ordering by whatever
+ *   eServices listed first. Wing/region orgs are named for the echelon, not the HQ
+ *   unit: "CALIFORNIA WING HQ" -> "California Wing", "PACIFIC REGION CAP" ->
+ *   "Pacific Region". Also HQ no longer title-cases to "Hq".
+ *   1.11.0: added previewSignatureForMember(), a read-only render of one member's
+ *   signature to the log. There was no safe way to inspect a signature before it
+ *   reached somebody — pushAllSignatures() writes to every member at once, and the
+ *   only other path fires 5 minutes after an account is created. Set the CAPID in
+ *   SIGNATURE_PREVIEW_RUN_INPUTS and Run it; it makes no Gmail/Directory calls.
+ *   1.10.0: signature duty titles are used VERBATIM from CAPWATCH, which already
+ *   carries full echelon-correct names ("Commander"; "Information Technologies
+ *   Officer" at unit/group vs "Director of IT" at wing). No office-symbol expansion:
+ *   the symbol lives in DutyPosition.txt's separate FunctArea column and never
+ *   reaches this code — docs/API_REFERENCE.md's `id: 'CC'` example conflated the two.
+ *   The one override is DUTY_TITLE_OVERRIDES: the ICL to CAPR 30-1 dropped "and
+ *   Retention" from the Recruiting positions and a few rows still carry the old form.
+ *   1.9.0: signature duty lines now name the org the duty is actually HELD at rather
+ *   than the member's home unit — a squadron member with a wing duty read "San Jose
+ *   Sr Sqdn 80 Director of IT". addDutyPositions()/addCadetDutyPositions() now carry
+ *   the duty's orgName. Unit names are expanded for display via formatOrgName_():
+ *   "SAN JOSE SR SQDN 80" -> "San Jose Senior Squadron 80" (Sq/Sqdn/Cdt/Comp/Sr).
+ *   Expansion is scoped to org names only, so a member whose SUFFIX is "Sr" stays
+ *   "Vance Sr". Logo moved off the Frontify CDN token URL to the copy served with
+ *   CAP's own generator (2000x415 master, crisper on high-DPI). NOT the generator's
+ *   LOGO_URL_OUTPUT — that GitHub Pages URL 404s.
+ *   1.8.0: generateEmailSignature() reconciled with the CAP brand style guide's own
+ *   generator (cap-brand-tools): the "Civil Air Patrol, U.S. Air Force Auxiliary"
+ *   line is bold and 5px from the phones (was normal-weight with a 20px gap); the
+ *   duty block is capped at TWO assignments sorted highest-to-lowest org level, and
+ *   is omitted entirely when empty rather than printing 'Member' or an empty
+ *   heading; the phone row is omitted when the member has no phone rather than
+ *   printing a bare "(M)"; the logo carries width/height/alt and display:block.
+ *   1.7.0: updateSignatureForAllAliases() now writes ONLY to Send-As identities on
+ *   a domain this tenant owns, via isOrgOwnedSendAs_. Its guard was a hard-coded
+ *   "@pcrcap.org" check that shipped commented out, so it stamped the CAP signature
+ *   onto every identity a member had — including personal accounts they added
+ *   themselves. Signature name lines now include the member's suffix
+ *   "Maj. Isaac Wilson IV"; it was silently dropped.
+ *   1.6.0: new accounts get a REAL signature — runDelayedGmailSetup() rebuilt
+ *   `{ capsn }` from its queued record and handed that to generateEmailSignature(),
+ *   so every new account got a blank name, no phone, and a duty of "Member";
+ *   queueForDelayedGmailSetup() now carries the fields the generator reads. Also
+ *   ungraded seniors, CAPWATCH rank 'SM', rendered literally as "SM Jane Doe" —
+ *   getSignatureName() shows them as "Jane M. Doe" until their first promotion.
+ *   1.5.0: updateGmailSendAsDisplayName() mirrors the display name onto org-owned
+ *   ALIAS Send-As identities too (step 3), not just sendAs/{primaryEmail}, so a
+ *   secondary-domain address no longer goes stale on promotion; patches only when
+ *   the name differs.
+ *   1.4.5: AdminDirectory.Users.list standardized to customer:"my_customer";
+ *   testImpersonationToken uses console.log — Logger is overridden.)
+ *   See PCR_CHANGELOG.md.
  *
  * Description:
  * - Added CADET_LITE filtering logic and configuration controls.
@@ -521,12 +587,19 @@ function addDutyPositions(members, dutyPositionData, squadrons) {
     if (members[dutyPositionData[i][0]]) {
       let dutyPositionID = dutyPositionData[i][1].trim();
       const indicator = dutyPositionData[i][4] == '1' ? ' (A)' : ' (P)';
-      const charter = squadrons[dutyPositionData[i][7]] ? squadrons[dutyPositionData[i][7]].charter : 'Unknown';
+      const dutyOrg = squadrons[dutyPositionData[i][7]];
+      const charter = dutyOrg ? dutyOrg.charter : 'Unknown';
       members[dutyPositionData[i][0]].dutyPositions.push({
         value: dutyPositionID + indicator + ' (' + charter + ')',
         id: dutyPositionID,
         level: dutyPositionData[i][3],
-        assistant: dutyPositionData[i][4] == '1'
+        assistant: dutyPositionData[i][4] == '1',
+        // The org this duty is actually held at, which is NOT necessarily the
+        // member's home unit — a squadron member can hold a wing-level duty.
+        // Signatures name the duty's org, so they need it here. Scope rides along
+        // because a wing/region HQ unit's name needs trimming (see formatOrgName_).
+        orgName: dutyOrg ? dutyOrg.name : '',
+        orgScope: dutyOrg ? dutyOrg.scope : ''
       });
       members[dutyPositionData[i][0]].dutyPositionIds.push(dutyPositionID);
       members[dutyPositionData[i][0]].dutyPositionIdsAndLevel.push(
@@ -639,7 +712,10 @@ function addCadetDutyPositions(members, cadetDutyPositionData, squadrons) {
       value: value,
       id: dutyId,
       level: level,
-      assistant: isAsst
+      assistant: isAsst,
+      // See addDutyPositions(): the duty's own org, not the member's home unit.
+      orgName: squadron ? squadron.name : '',
+      orgScope: squadron ? squadron.scope : ''
     });
 
     // Keep these in sync with seniors too
@@ -2101,6 +2177,121 @@ function updateGmailSendAsDisplayName(primaryEmail, displayName) {
       error: e.message
     });
   }
+
+  //
+  // ---------------------------------------------------------
+  //  STEP 3 — PATCH ORG-OWNED ALIAS SEND-AS IDENTITIES
+  // ---------------------------------------------------------
+  //
+  // Step 2 only reaches sendAs/{primaryEmail}. Every other identity — notably a
+  // member's address on the secondary domain — keeps whatever display name Gmail
+  // auto-assigned when the alias was created, and so goes stale the moment the
+  // member is promoted. Mirror the primary's name onto them.
+  //
+  updateSendAsDisplayNameForOrgAliases_(primaryEmail, displayName, accessToken);
+}
+
+/**
+ * Mirrors a display name onto the user's alias Send-As identities that sit on a
+ * domain this organization owns.
+ *
+ * Deliberately skips anything NOT on an org domain: users add their own personal
+ * addresses as Send-As identities, and renaming someone's private Gmail to their
+ * CAP rank would be both wrong and intrusive. This is the same concern that left
+ * the domain filter commented out in updateSignatureForAllAliases().
+ *
+ * Patches only when the name actually differs, so a settled roster costs one list
+ * call per user and no writes.
+ *
+ * @param {string} primaryEmail - User's primary email (already patched in step 2)
+ * @param {string} displayName - Display name to mirror
+ * @param {string} accessToken - Impersonated token for this user
+ */
+function updateSendAsDisplayNameForOrgAliases_(primaryEmail, displayName, accessToken) {
+  try {
+    const listUrl =
+      `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(primaryEmail)}/settings/sendAs`;
+
+    const listResponse = UrlFetchApp.fetch(listUrl, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + accessToken },
+      muteHttpExceptions: true
+    });
+
+    if (listResponse.getResponseCode() !== 200) {
+      Logger.warn('Could not list Send-As identities', {
+        user: primaryEmail,
+        code: listResponse.getResponseCode()
+      });
+      return;
+    }
+
+    const identities = JSON.parse(listResponse.getContentText()).sendAs || [];
+
+    identities.forEach(identity => {
+      const aliasEmail = String(identity.sendAsEmail || '');
+
+      // The primary is step 2's job.
+      if (aliasEmail.toLowerCase() === primaryEmail.toLowerCase()) return;
+      if (!isOrgOwnedSendAs_(aliasEmail)) return;
+      if (identity.displayName === displayName) return;  // already correct
+
+      const patchUrl =
+        `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(primaryEmail)}/settings/sendAs/${encodeURIComponent(aliasEmail)}`;
+
+      const resp = UrlFetchApp.fetch(patchUrl, {
+        method: 'patch',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + accessToken },
+        payload: JSON.stringify({ displayName: displayName }),
+        muteHttpExceptions: true
+      });
+
+      const code = resp.getResponseCode();
+      if (code < 200 || code >= 300) {
+        Logger.warn('Alias Send-As display name update failed', {
+          user: primaryEmail,
+          alias: aliasEmail,
+          code: code,
+          response: resp.getContentText()
+        });
+        return;
+      }
+
+      Logger.info('Alias Send-As display name updated', {
+        user: primaryEmail,
+        alias: aliasEmail,
+        from: identity.displayName || '',
+        to: displayName
+      });
+    });
+
+  } catch (e) {
+    Logger.error('Alias Send-As display name sync threw exception', {
+      user: primaryEmail,
+      error: e.message
+    });
+  }
+}
+
+/**
+ * True if a Send-As address sits on a domain this tenant hands out — its primary
+ * email domain, or the secondary domain if one is configured.
+ *
+ * Accepts TENANT_SECONDARY_EMAIL_DOMAIN with or without a leading '@'; it is set
+ * bare on at least one tenant.
+ */
+function isOrgOwnedSendAs_(sendAsEmail) {
+  const email = String(sendAsEmail || '').trim().toLowerCase();
+  const at = email.lastIndexOf('@');
+  if (at < 0) return false;
+  const domain = email.slice(at + 1);
+  if (!domain) return false;
+
+  return [CONFIG.EMAIL_DOMAIN, CONFIG.SECONDARY_EMAIL_DOMAIN]
+    .map(d => String(d || '').trim().toLowerCase().replace(/^@+/, ''))
+    .filter(Boolean)
+    .indexOf(domain) !== -1;
 }
 
 /**
@@ -2185,8 +2376,22 @@ function formatPhone(phone) {
   return digits ? digits.replace(/(\d{3})(\d{3})(\d{4})/, '$1.$2.$3') : '';
 }
 
+/**
+ * A CAPWATCH grade in the form CAP's style guide prints it.
+ *
+ * Display forms are taken from the grade list in CAP's own signature generator
+ * (cap-brand-tools). Cadet grades carry the "Cadet " prefix that generator's
+ * buildDisplayName() prepends, so the mapped value is the whole display grade.
+ *
+ * Unmapped values pass through unchanged, which is why an ungraded senior used to
+ * render as "SM Jane Doe" — see isUngradedRank_() and getSignatureName().
+ *
+ * @param {string} rank - CAPWATCH Member.txt `Rank`
+ * @returns {string} Display grade, e.g. "Lt. Col." or "Cadet Chief Master Sgt."
+ */
 function getPublicRank(rank) {
   const MAP = {
+    // Senior members.
     "SSgt": "Staff Sgt.",
     "TSgt": "Tech. Sgt.",
     "MSgt": "Master Sgt.",
@@ -2202,7 +2407,27 @@ function getPublicRank(rank) {
     "Lt Col": "Lt. Col.",
     "Col": "Col.",
     "Brig Gen": "Brig. Gen.",
-    "Maj Gen": "Maj. Gen."
+    "Maj Gen": "Maj. Gen.",
+
+    // Cadets. NB the CAPWATCH spellings are NOT the senior ones with a "C/" glued
+    // on — the cadet forms have no internal space ("C/2dLt", not "C/2d Lt").
+    // "CADET" is CAPWATCH's representation of C/AB, the entry grade; it is a real
+    // grade, so it must not be confused with the ungraded senior case.
+    "CADET": "Cadet Airman Basic",
+    "C/Amn": "Cadet Airman",
+    "C/A1C": "Cadet Airman 1st Class",
+    "C/SrA": "Cadet Senior Airman",
+    "C/SSgt": "Cadet Staff Sgt.",
+    "C/TSgt": "Cadet Tech. Sgt.",
+    "C/MSgt": "Cadet Master Sgt.",
+    "C/SMSgt": "Cadet Senior Master Sgt.",
+    "C/CMSgt": "Cadet Chief Master Sgt.",
+    "C/2dLt": "Cadet 2nd Lt.",
+    "C/1stLt": "Cadet 1st Lt.",
+    "C/Capt": "Cadet Capt.",
+    "C/Maj": "Cadet Maj.",
+    "C/LtCol": "Cadet Lt. Col.",
+    "C/Col": "Cadet Col."
   };
   return MAP[rank] || rank || '';
 }
@@ -2211,14 +2436,309 @@ function getWingCode() {
   return CONFIG.WING.toLowerCase() + "wg";
 }
 
-function getDutyBlock(member) {
-  if (!member.dutyPositions || member.dutyPositions.length === 0) {
-    return 'Member';
+/**
+ * Run-input for previewSignatureForMember(). Apps Script cannot pass arguments to a
+ * function you Run from the editor, so set the CAPID here first — the same pattern
+ * as GROUP_ADMINISTRATION_RUN_INPUTS in groupAdministration.gs.
+ */
+const SIGNATURE_PREVIEW_RUN_INPUTS = {
+  CAPID: ''   // e.g. '123456'
+};
+
+/**
+ * Renders one member's email signature to the execution log. Writes NOTHING.
+ *
+ * Exists because there was otherwise no safe way to look at a signature before it
+ * reaches somebody: pushAllSignatures() writes to every member at once, and the
+ * only other path runs five minutes after an account is created. This makes no
+ * Gmail or Directory calls whatsoever — it reads CAPWATCH and formats a string.
+ *
+ * Set SIGNATURE_PREVIEW_RUN_INPUTS.CAPID above, then Run this. The raw HTML is
+ * logged last so it can be copied out of the log and opened in a browser.
+ */
+function previewSignatureForMember() {
+  const capid = String(SIGNATURE_PREVIEW_RUN_INPUTS.CAPID || '').trim();
+  if (!capid) {
+    Logger.error('Set SIGNATURE_PREVIEW_RUN_INPUTS.CAPID at the top of UpdateMembers.gs, then Run again.');
+    return;
   }
-  return member.dutyPositions
-    .filter(dp => !dp.assistant)
-    .map(dp => `${toTitleCase(member.orgName)} ${dp.id}`)
-    .join('<br>');
+
+  // Keyed by CAPID as a trimmed string — see getMembers().
+  const member = getMembers()[capid];
+  if (!member) {
+    Logger.error('No active CAPWATCH member with that CAPID.', {
+      capid: capid,
+      hint: 'getMembers() returns active members only; check the CAPID and that CAPWATCH has been downloaded today.'
+    });
+    return;
+  }
+
+  const duty = getDutyBlock(member);
+
+  Logger.info('Signature preview — nothing was written to any account.', {
+    capid: capid,
+    nameLine: getSignatureName(member),
+    dutyBlock: duty || '(no non-assistant duty — the block is omitted entirely)',
+    phone: formatPhone(member.phone) || '(none — the phone row is omitted)',
+    wouldBeWrittenTo: 'org-owned Send-As identities only: ' +
+      [CONFIG.EMAIL_DOMAIN, CONFIG.SECONDARY_EMAIL_DOMAIN].filter(Boolean).join(', ')
+  });
+
+  // Logged raw and last, so it can be lifted out of the log and rendered.
+  console.log(generateEmailSignature(member));
+}
+
+/**
+ * Logo used in the email signature, hot-linked from every member's mail client.
+ *
+ * This is the copy served alongside CAP's own signature generator. It is a 2000x415
+ * master rendered down to 200x42 by the <img> attributes, so it stays sharp on
+ * high-DPI displays where a 200px-wide asset looks soft.
+ *
+ * NOT the generator's own LOGO_URL_OUTPUT constant — that points at
+ * civilairpatrolmac.github.io/CAP-Brand-Tools/..., which 404s (the whole GitHub
+ * Pages site does), so signatures built with the official tool have a broken image.
+ * The previous URL here was a Frontify CDN link carrying an embedded token; it
+ * resolves today, but a token rotation would break every signature at once.
+ *
+ * Verify with a HEAD request before changing it. A dead URL here is invisible in
+ * the logs and shows up only as a broken image in already-sent mail.
+ */
+const CAP_SIGNATURE_LOGO_URL =
+  'https://cap-brand-tools.netlify.app/signature-generator/LogoNoAux.png';
+
+/**
+ * Organizational level, highest first. The CAP style guide wants duty assignments
+ * "listed highest to lowest organizational level". CAPWATCH levels are documented
+ * as UNIT/GROUP/WING (docs/API_REFERENCE.md); REGION and NAT are included for the
+ * region tenant. Anything unrecognized sorts last rather than being guessed at —
+ * Array.sort is stable, so those keep CAPWATCH's own order among themselves.
+ */
+const DUTY_LEVEL_ORDER = { NAT: 0, NHQ: 0, REGION: 1, WING: 2, GROUP: 3, UNIT: 4 };
+
+function dutyLevelRank_(level) {
+  const rank = DUTY_LEVEL_ORDER[String(level || '').trim().toUpperCase()];
+  return rank === undefined ? 99 : rank;
+}
+
+/** The CAP style guide caps the signature's duty block at two assignments. */
+const SIGNATURE_MAX_DUTIES = 2;
+
+/**
+ * Seniority of a duty title WITHIN one echelon; lower sorts first.
+ *
+ * CAPWATCH has no notion of a primary duty, so two roles at the same level would
+ * otherwise be ordered by whatever eServices happened to list first — which put
+ * "Web Security Administrator" ahead of "Director of IT". Judged from the title
+ * text alone: command first, then directors, then everyone else. Array.sort is
+ * stable, so titles of equal rank keep CAPWATCH's order.
+ */
+function dutyTitleRank_(title) {
+  const t = String(title || '').trim().toUpperCase();
+  if (t === 'COMMANDER') return 0;
+  if (t.indexOf('VICE COMMANDER') === 0 || t.indexOf('DEPUTY COMMANDER') === 0) return 1;
+  if (t.indexOf('DIRECTOR OF ') === 0) return 2;
+  return 3;
+}
+
+/**
+ * The signature's duty line(s).
+ *
+ * Returns '' when there is nothing to show, and generateEmailSignature() then omits
+ * the element entirely — the style guide's own generator drops the block when the
+ * field is blank, rather than emitting an empty heading. This previously returned
+ * the literal 'Member', which is not a duty assignment; and because the emptiness
+ * check ran BEFORE the assistant filter, a member holding only assistant duties fell
+ * through to an empty heading anyway.
+ *
+ * Capped at two, per the style guide.
+ *
+ * @param {Object} member - CAPWATCH member object
+ * @returns {string} HTML, or '' if the member has no non-assistant duty position
+ */
+function getDutyBlock(member) {
+  const positions = (member.dutyPositions || []).filter(dp => !dp.assistant);
+  if (positions.length === 0) return '';
+
+  // Highest echelon first, then most senior title within that echelon.
+  const sorted = positions.slice().sort((a, b) =>
+    dutyLevelRank_(a.level) - dutyLevelRank_(b.level) ||
+    dutyTitleRank_(a.id) - dutyTitleRank_(b.id)
+  );
+
+  // Take at most one duty per echelon first. Sorting on level alone let a member's
+  // two wing roles fill both slots and push their squadron command off the
+  // signature entirely — the span of someone's roles is more informative than a
+  // second job at the same level.
+  const seenLevel = {};
+  const oncePerLevel = [];
+  const remainder = [];
+  sorted.forEach(dp => {
+    const lvl = String(dp.level || '').trim().toUpperCase();
+    if (seenLevel[lvl]) {
+      remainder.push(dp);
+    } else {
+      seenLevel[lvl] = true;
+      oncePerLevel.push(dp);
+    }
+  });
+
+  // ...but don't waste the second slot: a member whose duties are all at one level
+  // should still get two lines. Style guide caps the block at two either way.
+  const picked = oncePerLevel.slice(0, SIGNATURE_MAX_DUTIES);
+  for (let i = 0; picked.length < SIGNATURE_MAX_DUTIES && i < remainder.length; i++) {
+    picked.push(remainder[i]);
+  }
+
+  return picked
+    // Name the org the duty is held at, falling back to the member's home unit for
+    // duty records that predate orgName being carried (see addDutyPositions). The
+    // scope describes the duty's own org, so it is dropped on that fallback.
+    .map(dp => {
+      const org = dp.orgName
+        ? formatOrgName_(dp.orgName, dp.orgScope)
+        : formatOrgName_(member.orgName);
+      return `${org} ${formatDutyTitle_(dp.id)}`;
+    })
+    .join('<br />');
+}
+
+/**
+ * Display overrides for duty titles a CAP directive has renamed but eServices has
+ * not caught up on.
+ *
+ * CAPWATCH's DutyPosition.txt `Duty` column is authoritative and already carries
+ * full, echelon-correct titles — "Commander", "Information Technologies Officer" at
+ * unit/group, "Director of IT" at wing — so it is otherwise used VERBATIM. Do not
+ * add an office-symbol expansion here: the symbol lives in a separate `FunctArea`
+ * column (IT, AE, DC) and never reaches this code.
+ *
+ * The exception is a retired title still present in the feed. The ICL to CAPR 30-1
+ * dropped "and Retention" from the Recruiting positions; as of 2026-07-14, 2 of
+ * CAWG's rows still carry the old form against 69 correct ones.
+ *
+ * Fixing the record in eServices is the real remedy — this only stops a stale row
+ * printing a retired title in someone's signature.
+ */
+const DUTY_TITLE_OVERRIDES = {
+  'RECRUITING & RETENTION OFFICER': 'Recruiting Officer',
+  'RECRUITING AND RETENTION OFFICER': 'Recruiting Officer',
+  'DIRECTOR OF RECRUITING & RETENTION': 'Director of Recruiting',
+  'DIRECTOR OF RECRUITING AND RETENTION': 'Director of Recruiting'
+};
+
+/**
+ * A duty title as it should be displayed. Verbatim from CAPWATCH except for the
+ * renames above; internal whitespace is collapsed because the feed is untidy
+ * ("Communications Officer " ships with a trailing space on every row).
+ *
+ * @param {string} dutyId - CAPWATCH DutyPosition.txt `Duty` value
+ * @returns {string} Display title
+ */
+function formatDutyTitle_(dutyId) {
+  const title = String(dutyId || '').trim().replace(/\s+/g, ' ');
+  return DUTY_TITLE_OVERRIDES[title.toUpperCase()] || title;
+}
+
+/**
+ * CAPWATCH unit-name abbreviations, expanded for display.
+ *
+ * Keys are compared upper-cased and stripped of a trailing period, so "Sqdn",
+ * "SQDN" and "Sqdn." all match. Deliberately scoped to ORG NAMES only — it is
+ * never run over a person's name, so a member whose suffix is "Sr" stays
+ * "Wilson Sr" and does not become "Wilson Senior".
+ */
+const ORG_NAME_EXPANSIONS = {
+  // Squadron has three spellings in CAPWATCH: SQDN (585), SQ (45) and SQD (1,
+  // "FALLBROOK SENIOR SQD 87"). Trailing periods are stripped before lookup, which
+  // covers "SQ." and "SQDN." too.
+  SQ: 'Squadron',
+  SQD: 'Squadron',
+  SQDN: 'Squadron',
+  // Precautionary: no GP/GRP appears in CAPWATCH's org list today, but the
+  // abbreviations are conventional and cost nothing to cover.
+  GP: 'Group',
+  GRP: 'Group',
+  CDT: 'Cadet',
+  COMP: 'Composite',
+  SR: 'Senior',
+  // State name, not a unit type: "CENTRAL CALIF GROUP 6", "CALIF WING HQ SQ".
+  // Orgs already spelling out CALIFORNIA are unaffected — lookup is whole-word.
+  CALIF: 'California',
+  // Not an expansion but a restoration: toTitleCase() lowercases before
+  // capitalising, so the wing HQ unit ("CALIFORNIA WING HQ") came out as
+  // "California Wing Hq".
+  HQ: 'HQ'
+};
+
+/**
+ * Title-cases a CAPWATCH unit name and expands its abbreviations:
+ * "SAN JOSE SR SQDN 80" -> "San Jose Senior Squadron 80".
+ *
+ * Wing and region HQ orgs are named for the HQ unit, not the echelon — every one of
+ * the 54 wings in CAPWATCH is "<STATE> WING HQ", and the regions are "<NAME> REGION
+ * HQ" bar Pacific's "PACIFIC REGION CAP". A signature wants the echelon, so for
+ * those scopes everything after WING/REGION is dropped: "CALIFORNIA WING HQ" ->
+ * "California Wing". Keyed on scope rather than the name so a unit that merely has
+ * "wing" in its title is untouched.
+ *
+ * @param {string} orgName - Raw CAPWATCH unit name
+ * @param {string} [scope] - CAPWATCH org scope: UNIT / GROUP / WING / REGION
+ * @returns {string} Display form
+ */
+function formatOrgName_(orgName, scope) {
+  let name = String(orgName || '').trim();
+  const s = String(scope || '').trim().toUpperCase();
+
+  if (s === 'WING' || s === 'REGION') {
+    const m = name.toUpperCase().match(/\b(WING|REGION)\b/);
+    if (m) name = name.slice(0, m.index + m[1].length);
+  }
+
+  return toTitleCase(name)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(word => {
+      const key = word.replace(/\.$/, '').toUpperCase();
+      return ORG_NAME_EXPANSIONS[key] || word;
+    })
+    .join(' ');
+}
+
+/**
+ * Builds the signature's name line.
+ *
+ * A senior member awaiting their first promotion carries CAPWATCH rank 'SM'.
+ * getPublicRank() has no mapping for it, so it used to render literally as
+ * "SM Jane Doe" — and the CAP style guide does not permit 'SM' as a grade
+ * designation at all. Show those members by name with a middle initial instead
+ * ("Jane M. Doe"); once promoted, the normal grade + name form takes over and the
+ * initial drops off ("2nd Lt. Jane Doe"), which is the convention the style guide's
+ * own generator follows.
+ *
+ * @param {Object} member - CAPWATCH member object
+ * @returns {string} e.g. "Maj. Jane Doe", or ungraded, "Jane M. Doe"
+ */
+function getSignatureName(member) {
+  const first = String(member.firstName || '').trim();
+  const last = String(member.lastName || '').trim();
+  const suffix = String(member.suffix || '').trim();
+
+  if (isUngradedRank_(member.rank)) {
+    const initial = String(member.middleName || '').trim().charAt(0);
+    return [first, initial ? initial + '.' : '', last, suffix].filter(Boolean).join(' ');
+  }
+
+  return [getPublicRank(member.rank), first, last, suffix].filter(Boolean).join(' ');
+}
+
+/**
+ * True for a member with no grade to display. CAPWATCH uses 'SM' for a senior
+ * member who has not been promoted yet; a blank Rank column means the same thing.
+ */
+function isUngradedRank_(rank) {
+  const r = String(rank || '').trim().toUpperCase();
+  return r === '' || r === 'SM';
 }
 
 /**
@@ -2230,9 +2750,7 @@ function getDutyBlock(member) {
  * @returns {string} HTML signature block
  */
 function generateEmailSignature(member) {
-  const rank = getPublicRank(member.rank);
-  const first = member.firstName || '';
-  const last = member.lastName || '';
+  const nameLine = getSignatureName(member);
   const duty = getDutyBlock(member);
   const wingCode = getWingCode(member);
   const phoneDigits = member.phone ? member.phone.replace(/\D/g, '').slice(-10) : '';
@@ -2247,26 +2765,26 @@ function generateEmailSignature(member) {
 <h1 style="font-size: 12px; line-height: 12px;
            font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
            color: #001871; font-weight: bold; margin: 0 0 5px;">
-  ${rank} ${first} ${last}
+  ${nameLine}
 </h1>
 
-<h2 style="font-size: 12px; line-height: 12px;
+${duty ? `<h2 style="font-size: 12px; line-height: 14px;
            font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
            color: #000000; font-weight: normal; margin: 0 0 5px;">
   ${duty}
-</h2>
-
-<h2 style="font-size: 12px; line-height: 12px;
-           font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
-           color: #000000; margin: 0 0 20px;">
-  Civil Air Patrol, U.S. Air Force Auxiliary
-</h2>
+</h2>` : ''}
 
 <p style="font-size: 12px; line-height: 12px;
           font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
+          color: #000000; font-weight: bold; margin: 0 0 5px;">
+  Civil Air Patrol, U.S. Air Force Auxiliary
+</p>
+
+${phoneFormatted ? `<p style="font-size: 12px; line-height: 12px;
+          font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
           color: #000000; font-weight: normal; margin: 0 0 5px;">
   (M) <a href="tel:+1${phoneDigits}" style="color: #000000; text-decoration: none;">${phoneFormatted}</a>
-</p>
+</p>` : ''}
 
 <p style="font-size: 12px; line-height: 12px;
           font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
@@ -2288,8 +2806,12 @@ function generateEmailSignature(member) {
 
 <a href="https://www.GoCivilAirPatrol.com">
   <img
-    style="margin: 15px 0 20px -5px;"
-    src="https://cdn-assets-cloud.frontify.com/s3/frontify-cloud-files-us/eyJwYXRoIjoiZnJvbnRpZnlcL2ZpbGVcLzFNOTF6UzJGRXByV0pNUjQ1cnkxLnBuZyJ9:frontify:kAS-l74of5IyRDi0IxD9lG5yNH6i-Zg30PGjGUjU8y0?width=200">
+    src="${CAP_SIGNATURE_LOGO_URL}"
+    width="200"
+    height="42"
+    style="display:block; border:0; outline:none; text-decoration:none;
+           width:200px; max-width:200px; height:42px; margin: 15px 0 20px 0;"
+    alt="Civil Air Patrol Logo" />
 </a>
 
 <p style="font-size: 12px; line-height: 14px;
@@ -2379,7 +2901,26 @@ function queueForDelayedGmailSetup(email, displayName, member) {
 
   PropertiesService.getScriptProperties().setProperty(
     'gmailsetup_' + script.getUniqueId(),
-    JSON.stringify({ email: email, displayName: displayName, capsn: member.capsn })
+    JSON.stringify({
+      email: email,
+      displayName: displayName,
+      capsn: member.capsn,
+      // Everything generateEmailSignature() reads, carried across to the trigger.
+      // runDelayedGmailSetup() used to rebuild `{ capsn }` from this record and
+      // hand THAT to the generator, so every new account got a signature with a
+      // blank name, no phone, and a duty of "Member".
+      signatureMember: {
+        capsn: member.capsn,
+        rank: member.rank,
+        firstName: member.firstName,
+        middleName: member.middleName,
+        lastName: member.lastName,
+        suffix: member.suffix,
+        phone: member.phone,
+        orgName: member.orgName,
+        dutyPositions: member.dutyPositions
+      }
+    })
   );
 }
 
@@ -2399,11 +2940,20 @@ function runDelayedGmailSetup(e) {
         try {
           updateGmailSendAsDisplayName(data.email, data.displayName);
 
-          const member = { capsn: data.capsn };
-          const signature = generateEmailSignature(member);
-          updateSignatureForAllAliases(data.email, signature);
+          // Records queued by an older version carry no signatureMember. Don't
+          // fall back to `{ capsn }` — that IS the bug that shipped blank
+          // signatures. Skip the signature and say so; the account still gets
+          // its Send-As display name, and the member can use the CAP generator.
+          if (data.signatureMember) {
+            const signature = generateEmailSignature(data.signatureMember);
+            updateSignatureForAllAliases(data.email, signature);
+          } else {
+            Logger.warn('Delayed Gmail setup: record predates the signature fix; ' +
+              'skipping signature rather than pushing a blank one.', { email: data.email });
+          }
 
-          Logger.info("Delayed Gmail setup completed", data);
+          // Log the identifier only — data now carries the member's phone.
+          Logger.info("Delayed Gmail setup completed", { email: data.email });
 
         } catch (err) {
           Logger.error("Delayed Gmail setup failed", {
@@ -2718,11 +3268,24 @@ function updateSignatureForAllAliases(primaryEmail, signatureHTML) {
     identities.forEach(identity => {
       const aliasEmail = identity.sendAsEmail;
 
-      // 👉 Only update signatures for @pcrcap.org
-      //if (!aliasEmail.toLowerCase().endsWith("@pcrcap.org")) {
-      //  Logger.info("Skipping non-org alias", { alias: aliasEmail });
-      //  return;
-      //}
+      // Only ever write to addresses this organization owns. Members add their
+      // own personal accounts as Send-As identities, and stamping a CAP signature
+      // onto someone's private mail would be a real intrusion. This function
+      // patches whatever the list returns, so the guard has to live here.
+      //
+      // Replaces a hard-coded `endsWith("@pcrcap.org")` check that shipped
+      // COMMENTED OUT and so protected nobody. Even enabled it was wrong here: it
+      // named the Pacific tenant's domain, which on seniors or cadets matches
+      // nothing and would have skipped every identity — and it allows exactly one
+      // domain, so the secondary-domain aliases would never get a signature.
+      // isOrgOwnedSendAs_() reads this tenant's own domains from CONFIG.
+      if (!isOrgOwnedSendAs_(aliasEmail)) {
+        Logger.info('Skipping non-org Send-As identity', {
+          user: primaryEmail,
+          alias: aliasEmail
+        });
+        return;
+      }
 
       const apiUrl =
         `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(primaryEmail)}/settings/sendAs/${encodeURIComponent(aliasEmail)}`;

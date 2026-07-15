@@ -66,7 +66,8 @@
     "https://www.googleapis.com/auth/gmail.addons.current.action.compose",
     "https://www.googleapis.com/auth/admin.directory.resource.calendar",
     "https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly",
-    "https://www.googleapis.com/auth/admin.directory.orgunit"
+    "https://www.googleapis.com/auth/admin.directory.orgunit",
+    "https://www.googleapis.com/auth/admin.directory.domain.readonly"
   ],
   "runtimeVersion": "V8",
   "webapp": {

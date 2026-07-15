@@ -5,6 +5,7 @@
   "XT_PEER_DOMAIN": "cawgcadets.org",
   "TENANT_DOMAIN": "cawgcap.org",
   "TENANT_EMAIL_DOMAIN": "@cawgcap.org",
+  "TENANT_SECONDARY_EMAIL_DOMAIN": "@cawg.cap.gov",
   "TENANT_CAPWATCH_ORGID": "188",
   "TENANT_WING": "CA",
   "TENANT_REGION": "",

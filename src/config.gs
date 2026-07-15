@@ -3,12 +3,18 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Version: 1.3.0
- * Date: 2026-07-13
- * Changes: Added a per-profile CROSS_TENANT block (consumed by
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0)
+ * Version: 1.4.0
+ * Date: 2026-07-14
+ * Changes: Added SECONDARY_EMAIL_DOMAIN (Script Property
+ *   TENANT_SECONDARY_EMAIL_DOMAIN), consumed by
+ *   accounts-and-groups/SecondaryDomainAliases.gs — the verified secondary domain
+ *   a tenant hands out parallel addresses on. Blank on cadets/pacific, which
+ *   disables that module there.
+ *   (1.3.0: added a per-profile CROSS_TENANT block (consumed by
  *   cross-tenant-contacts/CrossTenantContacts.gs) selecting cross-tenant shared-
  *   contact behavior — on for seniors/cadets, off for pacific.
- *   (1.2.2: profile-driven SQUADRON_DISTRIBUTION_TOGGLES per tenant, so squadron
+ *   1.2.2: profile-driven SQUADRON_DISTRIBUTION_TOGGLES per tenant, so squadron
  *   list creation is tenant-aware; cadets = all-hands + cadets + parents (no
  *   .seniors / command-staff lists), prior toggles were hard-coded.
  *   1.2.1: same, but cadets initially excluded .all; .all kept by request.
@@ -60,6 +66,7 @@ function getTenantConfig_() {
   return {
     DOMAIN: get('TENANT_DOMAIN'),
     EMAIL_DOMAIN: get('TENANT_EMAIL_DOMAIN'),
+    SECONDARY_EMAIL_DOMAIN: get('TENANT_SECONDARY_EMAIL_DOMAIN'),
     CAPWATCH_ORGID: get('TENANT_CAPWATCH_ORGID'),
     WING: get('TENANT_WING'),
     REGION: get('TENANT_REGION'),
@@ -240,6 +247,7 @@ function setupTenantConfig() {
   const values = {
     TENANT_DOMAIN: '',                     // e.g. cawgcap.org  (cadets: cawgcadets.org)
     TENANT_EMAIL_DOMAIN: '',               // e.g. @cawgcap.org
+    TENANT_SECONDARY_EMAIL_DOMAIN: '',     // e.g. @cawg.cap.gov (bare 'cawg.cap.gov' also accepted); '' unless the tenant has a verified secondary domain
     TENANT_CAPWATCH_ORGID: '',             // e.g. 188
     TENANT_WING: '',                       // e.g. CA
     TENANT_REGION: '',                     // '' unless this project is a Region-level pull
@@ -321,6 +329,13 @@ WING: TENANT.WING,
 
 /** Email domain for CAP accounts (members get username + this). */
 EMAIL_DOMAIN: TENANT.EMAIL_DOMAIN,
+
+/**
+ * Optional secondary domain, already verified in this tenant, used to give
+ * accounts a parallel address with the same local part (see
+ * accounts-and-groups/SecondaryDomainAliases.gs). '' disables that module.
+ */
+SECONDARY_EMAIL_DOMAIN: TENANT.SECONDARY_EMAIL_DOMAIN,
 
 /** Google Workspace domain used for API calls. */
 DOMAIN: TENANT.DOMAIN,

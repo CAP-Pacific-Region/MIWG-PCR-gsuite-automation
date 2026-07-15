@@ -171,9 +171,13 @@ console.log(member.firstName, member.lastName, member.rank);
   modified: '2024-01-15',
   orgPath: '/MI-001/MI-100',
   email: 'john@example.com',
-  dutyPositions: [{value: 'CC (P) (NER-MI-100)', id: 'CC', level: 'UNIT', assistant: false}],
-  dutyPositionIds: ['CC'],
-  dutyPositionIdsAndLevel: ['CC_UNIT']
+  // NB: `id` is CAPWATCH DutyPosition.txt's `Duty` column — the full title, NOT the
+  // office symbol. The symbol (CC, IT, AE) is a separate `FunctArea` column that this
+  // code does not read. CAPWATCH already varies the title by echelon: "Information
+  // Technologies Officer" at UNIT/GROUP vs "Director of IT" at WING.
+  dutyPositions: [{value: 'Commander (P) (NER-MI-100)', id: 'Commander', level: 'UNIT', assistant: false, orgName: 'Kellogg Senior Squadron'}],
+  dutyPositionIds: ['Commander'],
+  dutyPositionIdsAndLevel: ['Commander_UNIT']
 }
 ```
 
