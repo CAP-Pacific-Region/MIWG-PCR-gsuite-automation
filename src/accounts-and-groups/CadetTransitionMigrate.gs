@@ -171,9 +171,11 @@ function isMigratable_(row) {
  *
  * @param {Object} row - Transitions row
  * @param {Date} started - pass start, for the shared time budget
+ * @param {string} [query] - Gmail search to limit the set; used by the catch-up
+ *   pass to pick up only what arrived since the last run
  * @returns {{complete: boolean, imported: number}}
  */
-function migrateOneTransition_(row, started) {
+function migrateOneTransition_(row, started, query) {
   const cfg = getCrossTenantConfig_();
 
   const sourceToken = getImpersonatedToken_(
@@ -211,7 +213,7 @@ function migrateOneTransition_(row, started) {
       return { complete: false, imported: imported };
     }
 
-    const page = listSourceMessages_(row.CadetEmail, sourceToken, pageToken);
+    const page = listSourceMessages_(row.CadetEmail, sourceToken, pageToken, query);
 
     for (const msg of page.messages) {
       const raw = getSourceMessageRaw_(row.CadetEmail, sourceToken, msg.id);
@@ -228,20 +230,37 @@ function migrateOneTransition_(row, started) {
 
   const migratedAt = new Date();
 
-  // The 90-day hold from detection was there to wait out National's fingerprint
-  // processing — i.e. for members who might yet convert. This one has converted
-  // and their mail is across, so that purpose is served. Pull the deletion in:
-  // the forwarding group cannot take the old address until the account is gone,
-  // so a longer wait just keeps the old address dead for no benefit. The
-  // remaining buffer is to catch a migration that reported success but was not.
-  const deleteAfter = new Date(migratedAt);
-  deleteAfter.setDate(deleteAfter.getDate() + TRANSITION_CONFIG.POST_MIGRATION_DELETE_DAYS);
+  // A query means this is a catch-up sweep over a mailbox already migrated, not
+  // a first migration. Two things must NOT repeat:
+  //
+  //  - DeleteAfter must not move. Catch-up runs immediately before deletion, so
+  //    re-stamping migratedAt + 14 would push the deadline out by another 14
+  //    days every single time and the account would never actually close.
+  //  - The completion email must not re-send. The member was told once; telling
+  //    them again every sweep is noise, and it CCs their commander.
+  const isCatchUp = !!query;
 
   setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.COMPLETE);
   setTransitionField_(row._rowNumber, 'MigratedDate', migratedAt.toISOString());
   setTransitionField_(row._rowNumber, 'MessagesMigrated', imported);
-  setTransitionField_(row._rowNumber, 'DeleteAfter', deleteAfter.toISOString());
   setTransitionField_(row._rowNumber, 'LastCursor', '');
+
+  if (isCatchUp) {
+    Logger.info('Catch-up sweep complete', {
+      capid: row.CAPID, imported: imported
+    });
+    return { complete: true, imported: imported };
+  }
+
+  // The 90-day hold from detection was there to wait out National's fingerprint
+  // processing — i.e. for members who might yet convert. This one has converted
+  // and their mail is across, so that purpose is served. Pull the deletion in:
+  // the forwarding group cannot take the old address until the account is gone,
+  // so a longer wait just keeps the member in limbo for no benefit. The
+  // remaining buffer is to catch a migration that reported success but was not.
+  const deleteAfter = new Date(migratedAt);
+  deleteAfter.setDate(deleteAfter.getDate() + TRANSITION_CONFIG.POST_MIGRATION_DELETE_DAYS);
+  setTransitionField_(row._rowNumber, 'DeleteAfter', deleteAfter.toISOString());
 
   Logger.info('Mailbox migration complete', {
     capid: row.CAPID,
@@ -273,13 +292,21 @@ function migrateOneTransition_(row, started) {
 // ============================================================================
 
 /**
- * Tells the member their mail has moved and their old address is going away.
+ * Tells the member their mail has moved and their old account is closing.
  *
- * Goes to their new senior mailbox AND their CAPWATCH personal address: the
- * senior account may not have been logged into yet, and the whole point is to
- * reach them in time to warn their contacts. Their old cadet address is
- * suspended and cannot receive, so it is not an option. Commander is CC'd, as
- * the retention emails do.
+ * Goes to three addresses, because the whole value of this email is reaching
+ * them in time to warn their contacts:
+ *  - the new senior mailbox, which they may not have logged into yet
+ *  - their CAPWATCH personal address
+ *  - their OLD cadet address, which is where they are most likely still reading
+ *
+ * The cadet address is included precisely because it is still live. An earlier
+ * version excluded it on the grounds that a suspended account cannot receive —
+ * but on this tenant these accounts are not suspended at all (suspension is not
+ * running here), so mail sent there is delivered and read. Excluding the one
+ * address they actually check would have defeated the point.
+ *
+ * Commander is CC'd, as the retention emails do.
  *
  * @param {Object} row - Transitions row
  * @param {number} messageCount - messages imported
@@ -306,7 +333,10 @@ function sendTransitionCompleteEmail_(row, messageCount, deleteAfter) {
   const personalEmail = createEmailMap()[capid] || '';
   const commander = orgid ? getCommanderInfo(orgid) : null;
 
-  const recipients = [row.SeniorEmail, personalEmail].filter(Boolean);
+  const recipients = [row.SeniorEmail, personalEmail, row.CadetEmail]
+    .filter(Boolean)
+    .filter((addr, i, all) => all.indexOf(addr) === i);
+
   if (!recipients.length) {
     throw new Error('No deliverable address for CAPID ' + capid);
   }
@@ -373,10 +403,11 @@ function formatTransitionDate_(date) {
  * @param {string} pageToken
  * @returns {{messages: Array<{id: string}>, nextPageToken: string}}
  */
-function listSourceMessages_(user, token, pageToken) {
+function listSourceMessages_(user, token, pageToken, query) {
   const url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages' +
     '?maxResults=' + MIGRATE_PAGE_SIZE_ +
     '&includeSpamTrash=false' +
+    (query ? '&q=' + encodeURIComponent(query) : '') +
     (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
 
   const body = gmailFetch_(url, { method: 'get', token: token }, 'list messages for ' + user);
@@ -413,8 +444,11 @@ function getSourceMessageRaw_(user, token, id) {
  * @param {string} labelId
  */
 function importToDestination_(user, token, raw, labelId) {
-  const url = 'https://gmail.googleapis.com/gmail/v1/users/' +
-    encodeURIComponent(user) + '/messages/import' +
+  // users/me, not the address: the token already impersonates this user, so 'me'
+  // and the address are equivalent — but naming the address independently of the
+  // token's subject is exactly the mismatch that caused the admin-token bug.
+  // Keeping them coupled makes that class of error impossible.
+  const url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/import' +
     '?internalDateSource=dateHeader&neverMarkSpam=true';
 
   gmailFetch_(url, {
@@ -437,7 +471,8 @@ function importToDestination_(user, token, raw, labelId) {
  * @returns {string} label id, or ''
  */
 function ensureDestinationLabel_(user, token) {
-  const base = 'https://gmail.googleapis.com/gmail/v1/users/' + encodeURIComponent(user) + '/labels';
+  // users/me — the token impersonates this user. See importToDestination_.
+  const base = 'https://gmail.googleapis.com/gmail/v1/users/me/labels';
 
   try {
     const existing = gmailFetch_(base, { method: 'get', token: token }, 'list labels for ' + user);
@@ -610,27 +645,34 @@ function previewCadetTransitionMigration() {
         'profile for ' + row.CadetEmail
       );
 
-      // Prove the DESTINATION credential the same way — impersonating the member
-      // and actually touching their mailbox. Merely minting a token proves only
-      // that the scope is granted, which is how the admin-subject bug survived
-      // the first version of this preview: the token minted fine and the import
-      // was rejected anyway, because Gmail has no admin-level cross-user access.
+      // Prove the DESTINATION credential by actually using it as the member.
+      // Merely minting a token proves only that the scope is granted — which is
+      // how the admin-subject bug survived the first version of this preview.
+      //
+      // labels.list, not users/me/profile: profile needs a READ scope
+      // (gmail.readonly / gmail.metadata) and the destination token has neither
+      // by design. Migration writes, it does not read, and the peer SA should
+      // not hold read access to every senior mailbox just so a preview can print
+      // a message count. gmail.labels covers labels.list, so this exercises a
+      // real per-user call within the privilege migration actually needs.
+      //
+      // No address assertion needed here: the token exchange only succeeds if
+      // the subject exists and the SA may impersonate it, and every destination
+      // call uses users/me, so there is no subject/target mismatch of the kind
+      // that caused the original bug.
       const destToken = xtPeerToken_(MIGRATE_DEST_SCOPES_, cfg, row.SeniorEmail);
-      const destProfile = gmailFetch_(
-        'https://gmail.googleapis.com/gmail/v1/users/me/profile',
+      const destLabels = gmailFetch_(
+        'https://gmail.googleapis.com/gmail/v1/users/me/labels',
         { method: 'get', token: destToken },
-        'destination profile for ' + row.SeniorEmail
+        'destination labels for ' + row.SeniorEmail
       );
 
-      if (String(destProfile.emailAddress || '').toLowerCase() !==
-          String(row.SeniorEmail).toLowerCase()) {
-        throw new Error(`Destination token opened ${destProfile.emailAddress}, ` +
-          `not ${row.SeniorEmail} — impersonation is not honoring the subject`);
-      }
+      const already = (destLabels.labels || [])
+        .some(l => l.name === MIGRATE_LABEL_NAME_);
 
       console.log(`${capid} | ${row.Name} | ${row.NewType} | ` +
         `${row.CadetEmail} -> ${row.SeniorEmail} | ${profile.messagesTotal} messages ` +
-        `| dest OK (${destProfile.messagesTotal} already there)`);
+        `| dest OK${already ? ' (already has the migration label — previously migrated?)' : ''}`);
       total += Number(profile.messagesTotal) || 0;
 
     } catch (e) {
@@ -641,6 +683,83 @@ function previewCadetTransitionMigration() {
   console.log('');
   console.log('Total messages to migrate: ' + total);
   console.log('Nothing was imported — this is a preview.');
+}
+
+/**
+ * Brings across anything that landed in the cadet mailbox since it was migrated.
+ *
+ * The source account is NOT suspended and NOT closed — it keeps receiving mail
+ * right up until deletion. The main migration is a point-in-time snapshot, so
+ * without this, everything that arrived between migration and deletion would be
+ * destroyed silently: the sender gets no bounce, the member never sees it, and
+ * it is gone. This is the pass that makes the completion email's promise true.
+ *
+ * MUST run immediately before deletion. Safe to run repeatedly in between, and
+ * worth doing so — each pass narrows the window that a final pass has to cover.
+ *
+ * Advances MigratedDate on success so the next run only looks at what is new.
+ *
+ * @returns {{caughtUp: number, imported: number}}
+ */
+function catchUpTransitionMail() {
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    Logger.info('Catch-up skipped — not the source tenant');
+    return { caughtUp: 0, imported: 0 };
+  }
+
+  const started = new Date();
+  const rows = readTransitions_();
+  let caughtUp = 0;
+  let imported = 0;
+
+  for (const capid in rows) {
+    const row = rows[capid];
+    if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.COMPLETE) continue;
+    if (!row.MigratedDate || !row.SeniorEmail) continue;
+
+    // Gmail's after: takes epoch seconds (the bare date form is day-granular,
+    // which would re-import a whole day). Rewind a minute: same-second boundary
+    // messages could otherwise slip through, and a couple of duplicates is a
+    // better failure than silently losing mail.
+    const since = Math.floor(new Date(row.MigratedDate).getTime() / 1000) - 60;
+    const query = 'after:' + since;
+
+    try {
+      const before = Number(row.MessagesMigrated) || 0;
+
+      // Reuse the full migration path: same resumability, same cursor handling,
+      // same import semantics. Only the query differs.
+      const result = migrateOneTransition_(row, started, query);
+      const moved = result.imported - before;
+
+      if (moved > 0) {
+        Logger.info('Caught up new mail before deletion', {
+          capid: capid, name: row.Name, newMessages: moved
+        });
+        imported += moved;
+      }
+      caughtUp++;
+
+    } catch (e) {
+      // Do NOT mark FAILED — the bulk migration succeeded and that status would
+      // wrongly suggest it did not. But this MUST block deletion, since mail is
+      // now known to be sitting in the source that is not in the destination.
+      setTransitionField_(row._rowNumber, 'Notes',
+        `Catch-up failed ${new Date().toISOString()} — DO NOT DELETE: ` +
+        (e && e.message ? e.message : String(e)));
+      Logger.error('Catch-up failed — deletion must not proceed', {
+        capid: capid,
+        errorMessage: e && e.message ? e.message : String(e)
+      });
+    }
+  }
+
+  Logger.info('Catch-up pass completed', {
+    duration: new Date() - started + 'ms',
+    rows: caughtUp,
+    newMessages: imported
+  });
+  return { caughtUp: caughtUp, imported: imported };
 }
 
 /**
