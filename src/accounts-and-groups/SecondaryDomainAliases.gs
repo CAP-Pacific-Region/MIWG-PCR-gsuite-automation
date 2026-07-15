@@ -6,12 +6,15 @@
  * curated opt-in list, not the whole roster — only listed accounts are touched.
  * Safe to run unattended on a daily trigger.
  * Author: Noel Luneau
- * Version: 1.1.0
+ * Version: 1.2.0
  * Date: 2026-07-14
- * Changes: Made the run trigger-safe — batch the sheet write-back into one call,
+ * Changes: Let previewSecondaryDomainAliases() run before the secondary domain is
+ *   verified (warn instead of bailing), so the list can be built and validated in
+ *   advance; the real run still refuses.
+ *   (1.1.0: made the run trigger-safe — batch the sheet write-back into one call,
  *   latch CONFLICT rows so they report once instead of every night, and take a
  *   script lock so a scheduled run and a manual run cannot overlap.
- *   (1.0.0: initial version.)
+ *   1.0.0: initial version.)
  ***********************************************/
 
 /**
@@ -37,6 +40,11 @@ const SECONDARY_ALIAS_CONFLICT_PREFIX = 'CONFLICT';
  * Preview the run without touching any account. Writes a Status of
  * "DRY RUN — would add ..." for every row so the derived addresses can be
  * eyeballed against the roster before anything is created.
+ *
+ * Deliberately runs even when the secondary domain is not verified yet (it only
+ * warns), so the list can be built and checked in advance of the domain going
+ * live. It still confirms every listed account exists and resolves the address
+ * each would get.
  *
  * Run this by hand. Never attach it to a trigger — it writes to the same Status
  * column the real run reads.
@@ -84,16 +92,28 @@ function processSecondaryDomainAliases_(dryRun) {
     return;
   }
 
-  // A directory alias can only be created on a domain this tenant has verified.
-  // Checking once up front turns what would otherwise be one opaque HTTP 400 per
-  // row into a single actionable message.
+  // A directory alias can only be created on a domain this tenant has verified;
+  // Aliases.insert rejects anything else. Checking once up front turns what would
+  // otherwise be one opaque HTTP 400 per row into a single actionable message.
+  //
+  // This blocks the real run only. A preview writes nothing to any account, so it
+  // stays useful while the domain is still pending verification — which is exactly
+  // when you want to build and check the list.
   if (!isDomainVerified_(domain)) {
-    Logger.error('Secondary domain is not a verified domain in this tenant.', {
-      domain: domain,
-      hint: 'Admin console > Domains > Manage domains — add and verify it first. ' +
-            'A subdomain of cap.gov also needs a DNS TXT record, which CAP National must publish.'
-    });
-    return;
+    const hint = 'Admin console > Domains > Manage domains — add and verify it first. ' +
+      'A subdomain of cap.gov also needs a DNS TXT record, which CAP National must publish.';
+
+    if (!dryRun) {
+      Logger.error('Secondary domain is not a verified domain in this tenant.', {
+        domain: domain,
+        hint: hint
+      });
+      return;
+    }
+
+    Logger.warn('Secondary domain is not verified yet — previewing anyway. ' +
+      'Addresses below are what WOULD be created; no alias can actually be added until ' +
+      'the domain is verified.', { domain: domain, hint: hint });
   }
 
   // Also a normal no-op: the tab is optional and only the tenants that use this

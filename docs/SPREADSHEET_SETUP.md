@@ -141,11 +141,18 @@ have one needs a row added by hand.
 
 Prerequisites: the secondary domain must be **added and verified** in the tenant
 (Admin console > Domains > Manage domains), and `TENANT_SECONDARY_EMAIL_DOMAIN` must be
-set as a Script Property (leading `@` included). The script refuses to run otherwise.
+set as a Script Property (leading `@` included). `addSecondaryDomainAliases()` refuses to
+run otherwise — Google rejects an alias on an unverified domain, so there is no way to
+pre-create the addresses and have them activate later.
 
-Run `previewSecondaryDomainAliases()` first — it fills column C with the addresses it
-*would* create without touching any account. The real run is idempotent, so it is safe to
-re-run after fixing conflicts. Aliases become sendable in Gmail within roughly 24 hours.
+**You can still build the list in advance.** `previewSecondaryDomainAliases()` runs even
+while the domain is pending verification (it warns, then continues), because it writes
+nothing to any account. It fills column C with the address each row *would* get and flags
+any listed account that doesn't exist — so populate the tab now, preview it, fix what it
+finds, and verification day is one run rather than a data-entry session.
+
+The real run is idempotent, so it is safe to re-run after fixing conflicts. Aliases become
+sendable in Gmail within roughly 24 hours of being created.
 
 **On a daily trigger** (`addSecondaryDomainAliases()`, see [ADMIN_GUIDE §8](ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule)):
 

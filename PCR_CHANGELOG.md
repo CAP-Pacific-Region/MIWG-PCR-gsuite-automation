@@ -14,7 +14,7 @@ next to each entry below.
 
 ### Added
 
-- **`SecondaryDomainAliases.gs` (v1.1.0)** — new module giving accounts a second
+- **`SecondaryDomainAliases.gs` (v1.2.0)** — new module giving accounts a second
   address that keeps the local part of their primary but swaps in a secondary
   domain (`jane.doe@cawgcap.org` → `jane.doe@cawg.cap.gov`), as a **directory
   alias** via `AdminDirectory.Users.Aliases.insert`. Driven by a new, optional
@@ -39,8 +39,14 @@ next to each entry below.
   > ⚠️ Blocked on `cawg.cap.gov` being added and verified as a secondary domain of
   > the seniors tenant. As a subdomain of `cap.gov` this needs a DNS TXT record
   > published by CAP National; aliases **cannot** be created on the domain until
-  > then. Until it is verified the module logs the preflight error and exits
-  > without touching any account.
+  > then, and there is no way to pre-create them and have them activate on
+  > verification. Until it is verified `addSecondaryDomainAliases()` logs the
+  > preflight error and exits without touching any account.
+  >
+  > `previewSecondaryDomainAliases()` deliberately still runs in that state (warning
+  > rather than bailing), so the tab can be populated and validated ahead of the
+  > domain going live — it resolves the address each row would get and flags any
+  > listed account that does not exist.
 
 ## [2026-07-11] — Squadron `.all` lists now admit cross-tenant cadet groups
 
