@@ -63,6 +63,8 @@ const TRANSITION_COLUMNS_ = [
   'MessagesMigrated',
   'LastCursor',       // Gmail pageToken, so a run that hits the 6-minute limit resumes
   'NotifiedDate',     // when the member was told; blank means they have NOT been told
+  'DriveMigrated',    // files copied. BLANK = nobody looked; 0 = deliberately nothing to copy
+  'DriveCursor',      // Drive pageToken, for resuming a copy across executions
   'ForwardGroupCreated',
   'ForwardGroupExpires',
   'Notes'

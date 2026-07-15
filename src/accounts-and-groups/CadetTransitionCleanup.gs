@@ -139,6 +139,22 @@ function whyNotCloseable_(row, now) {
     return 'MessagesMigrated is empty — no evidence anything was actually moved';
   }
 
+  // Deleting the account destroys the member's Drive with it, and this function
+  // knew nothing about Drive until now: mail was migrated, the row read COMPLETE,
+  // and closing would have silently taken gigabytes of files that were never
+  // copied. Cross-tenant ownership transfer does not exist and sharing does not
+  // survive the owner, so the files must be copied first — see
+  // CadetTransitionDrive.gs. Measured 2026-07-15: 43.5GB across 6511 files for
+  // four members, one holding 36.7GB.
+  //
+  // Refuses until DriveMigrated says otherwise. '0' is a legitimate answer for a
+  // member with an empty Drive and must be set deliberately; blank means nobody
+  // has looked, which is not the same thing.
+  if (String(row.DriveMigrated || '') === '') {
+    return 'Drive not handled — closing would destroy it. Copy it, or set ' +
+      'DriveMigrated=0 if there is nothing to copy';
+  }
+
   const deleteAfter = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
   if (!deleteAfter) return 'no DeleteAfter set';
   if (now < deleteAfter) {
