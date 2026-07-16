@@ -53,7 +53,7 @@ function harness(files, opts) {
     SENDER_NAME: 'CAP Information Technology',
     ITSUPPORT_EMAIL: 'it.support@cawgcap.org',
     TEST_EMAIL: 'test@cawgcap.org'
-  }, ['notifyLSCodeChanges', 'previewLSCodeChanges']);
+  }, ['notifyLSCodeChanges', 'previewLSCodeChanges', 'armLSCodeLiveTest']);
 
   return { m, sent, log: calls };
 }
@@ -260,7 +260,51 @@ section('9. A disabled profile does nothing at all');
 }
 
 // ---------------------------------------------------------------------------
-section('10. A corrupt state file refuses to run rather than re-baselining');
+section('10. armLSCodeLiveTest seeds one scoped change, then notify mails once');
+{
+  const files = { 'Member.txt': memberFile(ESTABLISHED_WING) };
+  const { m, sent } = harness(files);
+  m.notifyLSCodeChanges();            // real baseline: everyone recorded, silent
+  check('baseline is silent', sent.length, 0);
+
+  // Arm a test in Alpha Squadron (org 100). Member 1 holds an 'A', so this
+  // records their prior value as blank -> the next run sees a GRANT.
+  const armed = m.armLSCodeLiveTest('100');
+  check('arming sends nothing on its own', sent.length, 0);
+  check('it targets an org-100 member', ['1', '2', '3'].includes(armed.capid), true);
+  check('picks a cleared member, so the test is a GRANT', armed.direction, 'GRANTED');
+  check('reports the recipient it will mail', armed.recipient, 'ada.alpha@cawgcap.org');
+
+  // Preview must show exactly one org would be mailed — the blast-radius gate.
+  const preview = m.previewLSCodeChanges();
+  check('preview would mail exactly one org', preview.sent, 1);
+  check('preview still sends no mail', sent.length, 0);
+
+  // The real run sends one digest, to that one commander.
+  const summary = m.notifyLSCodeChanges();
+  check('one email', sent.length, 1);
+  check('to the armed org\'s commander', sent[0].to, 'ada.alpha@cawgcap.org');
+  check('one grant', summary.granted, 1);
+
+  // Self-heal: the seeded member is back at their true value, so a further run
+  // is silent again.
+  const after = m.notifyLSCodeChanges();
+  check('state self-heals — next run silent', sent.length, 1);
+  check('and everyone reads unchanged', after.unchanged, ESTABLISHED_WING.length);
+}
+
+// ---------------------------------------------------------------------------
+section('11. armLSCodeLiveTest refuses an argument-less call');
+{
+  const files = { 'Member.txt': memberFile(ESTABLISHED_WING) };
+  const { m } = harness(files);
+  let threw = false;
+  try { m.armLSCodeLiveTest(); } catch (e) { threw = true; }
+  check('throws without an ORGID', threw, true);
+}
+
+// ---------------------------------------------------------------------------
+section('12. A corrupt state file refuses to run rather than re-baselining');
 {
   const files = {
     'Member.txt': memberFile([{ capid: '1', orgid: '100', lscode: 'A' }]),

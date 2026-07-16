@@ -862,3 +862,99 @@ function testLSCodeDigestToTestEmail() {
 
   Logger.info('Test LSCode digest sent', { recipient: TEST_EMAIL });
 }
+
+/**
+ * Pre-deploy live test: arms exactly one real, self-healing change in one
+ * squadron so the actual send path can be exercised before the module is
+ * trusted wing-wide.
+ *
+ * testLSCodeDigestToTestEmail() proves only that the template renders and Gmail
+ * accepts a message. It does not exercise reading Member.txt, the diff, the
+ * commander lookup, or the window dating against live data. This does: it picks
+ * one ACTIVE, in-scope member of `orgid` and records their PRIOR LSCode as the
+ * opposite side of the cleared boundary, so the very next notifyLSCodeChanges()
+ * detects exactly one change — in this org alone — and mails that squadron's
+ * commander a genuine digest.
+ *
+ * Why the blast radius is one email: the recorded state otherwise equals the
+ * current extract (a baseline was laid), so every other member diffs to
+ * no-change. previewLSCodeChanges() will list every org that would be mailed —
+ * run it first and confirm it names only this org before sending for real.
+ *
+ * Why it is safe: it writes only this module's own LSCodeState.txt, never a
+ * CAPWATCH record. The notify run re-saves every member at their true current
+ * value, so the seeded member returns to their real status on the same run that
+ * sends the digest. No eServices data is touched, and nothing needs undoing.
+ *
+ * Guarded against an argument-less Run: an explicit orgid is required, so this
+ * cannot fire by being picked from the editor's function dropdown.
+ *
+ * Intended sequence:
+ *   armLSCodeLiveTest('1299')   // reports the member and the recipient email
+ *   previewLSCodeChanges()      // confirm ONLY org 1299 would be mailed
+ *   notifyLSCodeChanges()       // sends one real digest; state self-heals
+ *
+ * @param {string|number} orgid - The squadron ORGID to seed a test change in
+ * @returns {Object} { capid, orgid, direction, recipient } for confirmation
+ */
+function armLSCodeLiveTest(orgid) {
+  const org = String(orgid === undefined || orgid === null ? '' : orgid).trim();
+  if (!org) {
+    throw new Error('armLSCodeLiveTest(orgid) requires an explicit ORGID — refusing to guess ' +
+      'which squadron to mail. Call it as armLSCodeLiveTest(\'1299\').');
+  }
+
+  clearCache();
+  const cleared = LSCODE_NOTIFY_CONFIG.CLEARED;
+  const current = readMemberLSCodes_();
+
+  // Prefer a member who currently holds a clearance, so the test reads as a
+  // benign GRANT rather than the "verify in eServices" alarm a REVOKE raises.
+  // Fall back to any in-scope active member of the org if none is cleared.
+  let target = null;
+  for (const capid in current) {
+    if (current[capid].orgid === org && current[capid].lscode === cleared) { target = current[capid]; break; }
+  }
+  if (!target) {
+    for (const capid in current) {
+      if (current[capid].orgid === org) { target = current[capid]; break; }
+    }
+  }
+  if (!target) {
+    throw new Error('No ACTIVE, in-scope member found in org ' + org +
+      ' — cannot arm a test here. Check the ORGID and that it is on this tenant.');
+  }
+
+  const priorValue = target.lscode === cleared ? '' : cleared;
+  const direction = target.lscode === cleared ? 'GRANTED' : 'REVOKED';
+
+  const commander = buildCommanderMap_()[org];
+  const recipient = commander && commander.email ? commander.email : null;
+
+  const members = loadLSCodeState_();
+  // Date the prior confirmation a week back, so the resulting digest shows a
+  // week-wide window like a real weekly run would.
+  members[target.capid] = { c: priorValue, seen: isoDate_(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)) };
+  saveLSCodeState_(members);
+
+  const result = { capid: target.capid, orgid: org, direction: direction, recipient: recipient };
+
+  Logger.info('Armed LSCode live test — NOTHING SENT YET', {
+    orgid: org,
+    orgName: target.orgName,
+    charter: target.charter,
+    member: [target.rank, target.firstName, target.lastName].filter(String).join(' ') + ' (' + target.capid + ')',
+    willDetect: direction,
+    willMail: commander
+      ? [commander.rank, commander.lastName].filter(String).join(' ') + ' <' + (recipient || 'NO EMAIL ON RECORD') + '>'
+      : 'NO COMMANDER ON RECORD — a real run would leave this pending, not send',
+    confirmThenRun: 'previewLSCodeChanges() to confirm only this org, then notifyLSCodeChanges()'
+  });
+
+  if (!recipient) {
+    Logger.warn('Armed test has no deliverable recipient — the digest would be reported ' +
+      'as pending (noCommanderOrgs), not sent. Pick an org whose commander has a primary email.');
+  }
+
+  return result;
+}
