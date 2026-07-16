@@ -347,4 +347,41 @@ section('13. Wrong sender identity: digests fail, but the alarm still gets out')
     sent.filter(s => s.from === 'automation@cawgcap.org').length, 0);
 }
 
+// ---------------------------------------------------------------------------
+section('14. installLSCodeWeeklyTrigger dedupes and schedules weekly');
+{
+  const created = [];
+  const deleted = [];
+  // Two existing notify triggers (a stale duplicate) plus an unrelated one.
+  const triggers = [
+    { getHandlerFunction: () => 'notifyLSCodeChanges' },
+    { getHandlerFunction: () => 'someOtherJob' },
+    { getHandlerFunction: () => 'notifyLSCodeChanges' }
+  ];
+  const ScriptApp = {
+    WeekDay: { MONDAY: 'MONDAY' },
+    getProjectTriggers: () => triggers,
+    deleteTrigger: t => deleted.push(t.getHandlerFunction()),
+    newTrigger: fn => {
+      const b = {
+        timeBased: () => b,
+        onWeekDay: d => { b._day = d; return b; },
+        atHour: h => { b._hour = h; return b; },
+        create: () => created.push({ fn: fn, day: b._day, hour: b._hour })
+      };
+      return b;
+    }
+  };
+  const mod = loadModule(MODULE, { Logger: makeLogger().logger, ScriptApp: ScriptApp },
+    ['installLSCodeWeeklyTrigger']);
+
+  mod.installLSCodeWeeklyTrigger();
+
+  check('removes both existing notify triggers', deleted, ['notifyLSCodeChanges', 'notifyLSCodeChanges']);
+  check('leaves unrelated triggers alone', deleted.indexOf('someOtherJob'), -1);
+  check('creates exactly one trigger', created.length, 1);
+  check('scheduled weekly, Monday, hour 7, for notifyLSCodeChanges',
+    created[0], { fn: 'notifyLSCodeChanges', day: 'MONDAY', hour: 7 });
+}
+
 done();

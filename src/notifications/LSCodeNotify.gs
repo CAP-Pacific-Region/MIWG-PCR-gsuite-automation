@@ -878,6 +878,51 @@ function escapeHtml_(value) {
 }
 
 // ============================================================================
+// SETUP
+// ============================================================================
+
+/**
+ * Installs the weekly time-driven trigger for notifyLSCodeChanges().
+ *
+ * MUST be run while signed in as the automation account. A time-driven trigger
+ * runs as whoever creates it, and only the automation account owns the
+ * AUTOMATION_SENDER_EMAIL Send-As alias the digests require (see SENDING IDENTITY
+ * in the module header) — created under any other identity, every digest fails
+ * with "Invalid argument". Confirm the owner in the Triggers panel afterward.
+ *
+ * Idempotent: removes any existing notifyLSCodeChanges triggers first, so
+ * re-running never stacks duplicates, and leaves triggers for other functions
+ * alone.
+ *
+ * The cadence is the width of the reported detection window (see module header),
+ * so keep it weekly. Change the day/hour below to reschedule; pick a slot after
+ * getCapwatch() has refreshed the extract. The hour is in the script timezone
+ * (America/Los_Angeles).
+ *
+ * @returns {void}
+ */
+function installLSCodeWeeklyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'notifyLSCodeChanges') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+
+  // Change day/hour here.
+  ScriptApp.newTrigger('notifyLSCodeChanges')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
+    .atHour(7)
+    .create();
+
+  Logger.info('Installed weekly LSCode trigger', {
+    handler: 'notifyLSCodeChanges',
+    schedule: 'Mondays ~07:00 America/Los_Angeles',
+    note: 'Confirm in the Triggers panel that the owner is the automation account'
+  });
+}
+
+// ============================================================================
 // TEST
 // ============================================================================
 
