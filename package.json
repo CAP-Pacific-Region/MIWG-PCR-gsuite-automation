@@ -2,6 +2,7 @@
   "name": "miwg-pcr-gsuite-automation",
   "private": true,
   "scripts": {
+    "test": "node test/run-all.js",
     "status:seniors": "clasp status -P clasp-targets/seniors.clasp.json",
     "push:seniors": "clasp push -P clasp-targets/seniors.clasp.json",
     "pull:seniors": "clasp pull -P clasp-targets/seniors.clasp.json",
