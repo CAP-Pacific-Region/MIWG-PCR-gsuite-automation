@@ -131,16 +131,25 @@ function makeDrive(files) {
 }
 
 /**
- * A GmailApp stub that records every send instead of sending.
+ * A GmailApp stub that records every send instead of sending. `failAddresses`
+ * (optional) is a set of `from` addresses Gmail should reject with the same
+ * "Invalid argument" error the live tenant raises for an unowned Send-As alias —
+ * so a test can reproduce the wrong-identity failure.
  *
- * @returns {Object} { gmail, sent } where `sent` accumulates { to, subject, html }
+ * @param {Object} [opts] - { failFrom: string[] }
+ * @returns {Object} { gmail, sent } where `sent` accumulates { to, subject, html, from }
  */
-function makeGmail() {
+function makeGmail(opts) {
+  const failFrom = (opts && opts.failFrom) || [];
   const sent = [];
   return {
     gmail: {
       sendEmail: (to, subject, body, options) => {
-        sent.push({ to, subject, body, html: options && options.htmlBody });
+        const from = options && options.from;
+        if (from && failFrom.indexOf(from) !== -1) {
+          throw new Error('Invalid argument: ' + from);
+        }
+        sent.push({ to, subject, body, html: options && options.htmlBody, from: from });
       }
     },
     sent

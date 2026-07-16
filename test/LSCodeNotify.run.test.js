@@ -27,13 +27,13 @@ const { section, check, done } = makeChecker();
  * Builds a module instance over the given Drive contents.
  *
  * @param {Object} files - filename -> content, mutated in place by the module
- * @param {Object} [opts] - { enabled: boolean }
+ * @param {Object} [opts] - { enabled: boolean, failFrom: string[] }
  * @returns {Object} { m, sent, log }
  */
 function harness(files, opts) {
   const enabled = !opts || opts.enabled !== false;
   const { logger, calls } = makeLogger();
-  const { gmail, sent } = makeGmail();
+  const { gmail, sent } = makeGmail({ failFrom: (opts && opts.failFrom) || [] });
 
   const m = loadModule(MODULE, {
     Logger: logger,
@@ -319,6 +319,32 @@ section('12. A corrupt state file refuses to run rather than re-baselining');
   // first run while silently discarding every pending change.
   check('throws', threw, true);
   check('sends nothing', sent.length, 0);
+}
+
+// ---------------------------------------------------------------------------
+section('13. Wrong sender identity: digests fail, but the alarm still gets out');
+{
+  // Reproduce the live 2026-07-16 failure: the executing account cannot send as
+  // automation@cawgcap.org, so every digest bounces with "Invalid argument".
+  const files = { 'Member.txt': memberFile([{ capid: '1', orgid: '100', lscode: 'A' }]) };
+  const { m, sent } = harness(files, { failFrom: ['automation@cawgcap.org'] });
+  m.notifyLSCodeChanges();            // baseline, silent (no from used)
+
+  // Seed a real change, then run: the digest is attempted with from:
+  // automation@, which the stub rejects exactly as the live tenant did.
+  m.armLSCodeLiveTest('100');
+  const summary = m.notifyLSCodeChanges();
+
+  check('the digest failed (wrong identity)', summary.failedOrgs.length, 1);
+  check('nothing was recorded as sent', summary.sent, 0);
+
+  // The alarm to IT is the whole point: it must have gone out despite the same
+  // misconfiguration, because it does not set `from`.
+  const alarm = sent.filter(s => s.to === 'it.support@cawgcap.org');
+  check('the IT failure-summary was delivered', alarm.length, 1);
+  check('and it carried no from override', alarm[0].from, undefined);
+  check('no digest slipped through with the bad from',
+    sent.filter(s => s.from === 'automation@cawgcap.org').length, 0);
 }
 
 done();
