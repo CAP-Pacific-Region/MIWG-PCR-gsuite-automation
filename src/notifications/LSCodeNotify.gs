@@ -1,10 +1,13 @@
 /**
  * LSCode (FBI Background Check) Change Notification
  *
- * Version: 1.0.0
+ * Version: 1.1.0
  * Date: 2026-07-15
- * Changes: New module. Notifies squadron commanders when a member under their
- *   command gains or loses their FBI background check. See PCR_CHANGELOG.md.
+ * Changes: Report the window each change was detected in, and state it in the
+ *   digest. State file gains a per-member `seen` date (v2). Intended cadence is
+ *   weekly. (1.0.0: new module. Notifies squadron commanders when a member under
+ *   their command gains or loses their FBI background check.)
+ *   See PCR_CHANGELOG.md.
  *
  * Authors: Isaac Wilson IV
  *
@@ -42,18 +45,42 @@
  * news to anyone. Only a member whose *recorded* value differs from their
  * current one produces a notification.
  *
+ * WHY THE DIGEST DATES A WINDOW, NOT A DAY
+ * CAPWATCH publishes no date for an LSCode change. `Member.txt` carries `DateMod`
+ * (when the *record* was last modified) and `UsrID` (who modified it), but both
+ * are record-level: an address edit moves `DateMod` just as a background check
+ * does, so it cannot be quoted as the date a check cleared. There is no
+ * background-check table anywhere in the extract either.
+ *
+ * So the only defensible date is our own: the change happened somewhere between
+ * the last time we confirmed the old value and the run that saw the new one. The
+ * digest says exactly that and no more. On a weekly cadence the window is a week,
+ * which is the resolution this data actually supports.
+ *
+ * That window is per-member (`seen`), not a single global last-run date. A digest
+ * that fails to send leaves its members pending with their original `seen`
+ * intact, so when the retry lands a week later it still reports the week the
+ * change was really detected, rather than the week of the retry.
+ *
  * Setup:
  * 1. Set TENANT_PROFILE appropriately; this runs where RUN_LSCODE_NOTIFICATIONS
  *    is true (see config.gs).
  * 2. Run previewLSCodeChanges() first — it sends nothing and writes nothing.
  * 3. Run notifyLSCodeChanges() once by hand to lay down the baseline (silent).
- * 4. Add a time-driven trigger for notifyLSCodeChanges(), daily, after
- *    getCapwatch() has refreshed the extract.
+ * 4. Add a time-driven trigger for notifyLSCodeChanges(), WEEKLY, on a day and
+ *    hour that falls after getCapwatch() has refreshed the extract. The cadence
+ *    sets the width of the reported window, so changing it changes what the
+ *    digest claims — run it weekly and the digest says "detected 8–15 Jul".
  */
 
 const LSCODE_NOTIFY_CONFIG = {
   // Own state file, deliberately not CurrentMembers.txt — see module header.
   STATE_FILE_NAME: 'LSCodeState.txt',
+
+  // Bumped when the state file's shape changes. An unrecognised version is
+  // re-baselined silently rather than guessed at: a misread state file would
+  // either mail the whole wing or swallow real changes.
+  STATE_VERSION: 2,
 
   // The one value that means "passed the FBI background check".
   CLEARED: 'A',
@@ -118,8 +145,9 @@ function runLSCodeNotification_(options) {
 
   const prior = loadLSCodeState_();
   const isBaseline = !Object.keys(prior).length;
+  const todayIso = isoDate_(start);
 
-  const diff = diffLSCodes_(current, prior);
+  const diff = diffLSCodes_(current, prior, todayIso);
 
   Logger.info('LSCode diff complete', {
     members: Object.keys(current).length,
@@ -138,9 +166,12 @@ function runLSCodeNotification_(options) {
   // Departed members fall out of state naturally: state is rebuilt from the
   // current roster. If they return they read as first-seen (silent), which is
   // right — a returning member's existing clearance is not news.
+  //
+  // Everyone here is recorded as confirmed today. Members whose digest fails to
+  // send are rolled back below, which is what preserves their original window.
   const nextState = {};
   for (const capid in current) {
-    nextState[capid] = current[capid].lscode;
+    nextState[capid] = { c: current[capid].lscode, seen: todayIso };
   }
 
   const commanders = buildCommanderMap_();
@@ -184,7 +215,9 @@ function runLSCodeNotification_(options) {
         orgid: orgid,
         orgName: changes[0].orgName,
         to: commander.email,
-        members: changes.map(c => c.capid + ' ' + c.direction)
+        members: changes.map(c =>
+          c.capid + ' ' + c.direction + ' (' + formatWindow_(c.windowFrom, c.windowTo) + ')'
+        )
       });
       summary.sent++;
       continue;
@@ -225,6 +258,11 @@ function runLSCodeNotification_(options) {
  * Restores the prior recorded value for an org's changed members, so a run that
  * could not deliver their digest retries them next time.
  *
+ * Restoring the whole prior record — including its `seen` date, not just the
+ * value — is what makes the retry report the right week. Rewriting `seen` to
+ * today would leave the change pending but make next week's digest claim it was
+ * detected next week.
+ *
  * @param {Object} nextState - State being built for this run
  * @param {Array<Object>} changes - Changed members for one org
  * @param {Object} prior - State as loaded at the start of this run
@@ -232,11 +270,11 @@ function runLSCodeNotification_(options) {
  */
 function revertOrgState_(nextState, changes, prior) {
   changes.forEach(function (change) {
-    const previous = prior[change.capid];
-    if (previous === undefined) {
+    const record = prior[change.capid];
+    if (record === undefined) {
       delete nextState[change.capid];
     } else {
-      nextState[change.capid] = previous;
+      nextState[change.capid] = record;
     }
   });
 }
@@ -386,22 +424,29 @@ function buildCommanderMap_() {
  * A member with no recorded value is first-seen and never notified — this is
  * what keeps the first run, and every new member afterwards, silent.
  *
+ * Each change carries the window it was detected in: from the date we last
+ * confirmed the old value (the member's recorded `seen`) to today. See the module
+ * header for why a window rather than a date.
+ *
  * @param {Object} current - Map of CAPID to member info incl. lscode
- * @param {Object} prior - Map of CAPID to previously recorded lscode
+ * @param {Object} prior - Map of CAPID to { c, seen }
+ * @param {string} todayIso - This run's date, 'yyyy-MM-dd'
  * @returns {Object} { byOrg, granted, revoked, firstSeen, unchanged }
  */
-function diffLSCodes_(current, prior) {
+function diffLSCodes_(current, prior, todayIso) {
   const cleared = LSCODE_NOTIFY_CONFIG.CLEARED;
   const result = { byOrg: {}, granted: 0, revoked: 0, firstSeen: 0, unchanged: 0 };
 
   for (const capid in current) {
     const member = current[capid];
-    const previous = prior[capid];
+    const record = prior[capid];
 
-    if (previous === undefined) {
+    if (record === undefined) {
       result.firstSeen++;
       continue;
     }
+
+    const previous = record.c;
     if (previous === member.lscode) {
       result.unchanged++;
       continue;
@@ -436,7 +481,11 @@ function diffLSCodes_(current, prior) {
       charter: member.charter,
       from: previous,
       to: member.lscode,
-      direction: direction
+      direction: direction,
+      // The change happened somewhere in here. `seen` is the last date we
+      // confirmed the old value, so on a weekly cadence this spans a week.
+      windowFrom: record.seen,
+      windowTo: todayIso
     });
   }
 
@@ -448,9 +497,10 @@ function diffLSCodes_(current, prior) {
 // ============================================================================
 
 /**
- * Loads the recorded CAPID -> LSCode map.
+ * Loads the recorded state: CAPID -> { c: lscode, seen: 'yyyy-MM-dd' }, where
+ * `seen` is the date we last confirmed that member held that value.
  *
- * @returns {Object} Recorded state, or {} if this tenant has no state yet
+ * @returns {Object} Recorded members map, or {} if this tenant has no usable state
  */
 function loadLSCodeState_() {
   const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
@@ -464,8 +514,9 @@ function loadLSCodeState_() {
   const content = files.next().getBlob().getDataAsString();
   if (!content) return {};
 
+  let parsed;
   try {
-    return JSON.parse(content);
+    parsed = JSON.parse(content);
   } catch (e) {
     // Refusing to guess: returning {} here would look like a baseline and
     // silently swallow every pending change. Fail instead.
@@ -478,21 +529,38 @@ function loadLSCodeState_() {
       '(deleting re-baselines silently) before running again.'
     );
   }
+
+  if (!parsed || parsed.version !== LSCODE_NOTIFY_CONFIG.STATE_VERSION) {
+    // A v1 file (a flat CAPID -> lscode map) carries no `seen` date, so no window
+    // could be reported for anything already pending in it. Re-baseline instead:
+    // silent, and at worst it costs one cycle of notifications.
+    Logger.warn('LSCode state version not recognised — re-baselining silently', {
+      found: parsed ? parsed.version : null,
+      expected: LSCODE_NOTIFY_CONFIG.STATE_VERSION
+    });
+    return {};
+  }
+
+  return parsed.members || {};
 }
 
 /**
- * Writes the CAPID -> LSCode map, creating the file when absent.
+ * Writes the members map, creating the file when absent.
  *
  * saveCurrentMemberData() warns and does nothing when its file is missing,
  * which would leave this module permanently baselining. Create it instead.
  *
- * @param {Object} state - CAPID to LSCode map
+ * @param {Object} members - CAPID to { c, seen }
  * @returns {void}
  */
-function saveLSCodeState_(state) {
+function saveLSCodeState_(members) {
   const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
   const files = folder.getFilesByName(LSCODE_NOTIFY_CONFIG.STATE_FILE_NAME);
-  const content = JSON.stringify(state);
+  const content = JSON.stringify({
+    version: LSCODE_NOTIFY_CONFIG.STATE_VERSION,
+    written: isoDate_(new Date()),
+    members: members
+  });
 
   if (files.hasNext()) {
     files.next().setContent(content);
@@ -501,9 +569,62 @@ function saveLSCodeState_(state) {
   }
 
   Logger.info('LSCode state saved', {
-    memberCount: Object.keys(state).length,
+    memberCount: Object.keys(members).length,
     fileName: LSCODE_NOTIFY_CONFIG.STATE_FILE_NAME
   });
+}
+
+/**
+ * Formats a Date as 'yyyy-MM-dd' in the script's timezone. Dates are stored and
+ * compared as calendar days: the window is only ever reported to day precision,
+ * so a timestamp would imply accuracy this data does not have.
+ *
+ * @param {Date} date - Date to format
+ * @returns {string} 'yyyy-MM-dd'
+ */
+function isoDate_(date) {
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+/**
+ * Renders a detection window for a commander, e.g. '8–15 Jul 2026',
+ * '28 Jun – 5 Jul 2026', or '28 Dec 2025 – 4 Jan 2026'. Collapses the repeated
+ * month and year when both ends share them.
+ *
+ * @param {string} fromIso - Window start, 'yyyy-MM-dd'
+ * @param {string} toIso - Window end, 'yyyy-MM-dd'
+ * @returns {string} Human-readable range
+ */
+function formatWindow_(fromIso, toIso) {
+  const from = parseIsoDate_(fromIso);
+  const to = parseIsoDate_(toIso);
+  if (!from || !to) return '';
+
+  const tz = Session.getScriptTimeZone();
+  const fmt = (d, pattern) => Utilities.formatDate(d, tz, pattern);
+
+  if (fromIso === toIso) return fmt(to, 'd MMM yyyy');
+
+  const sameYear = fmt(from, 'yyyy') === fmt(to, 'yyyy');
+  const sameMonth = sameYear && fmt(from, 'MM') === fmt(to, 'MM');
+
+  if (sameMonth) return fmt(from, 'd') + '–' + fmt(to, 'd MMM yyyy');
+  if (sameYear) return fmt(from, 'd MMM') + ' – ' + fmt(to, 'd MMM yyyy');
+  return fmt(from, 'd MMM yyyy') + ' – ' + fmt(to, 'd MMM yyyy');
+}
+
+/**
+ * @param {string} iso - 'yyyy-MM-dd'
+ * @returns {Date|null} Parsed date, or null if unparseable
+ */
+function parseIsoDate_(iso) {
+  const parts = String(iso || '').split('-');
+  if (parts.length !== 3) return null;
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+  if (isNaN(year) || isNaN(month) || isNaN(day)) return null;
+  return new Date(year, month - 1, day);
 }
 
 /**
@@ -591,8 +712,11 @@ function sendCommanderDigest_(commander, changes) {
 function buildDigestHtml_(commander, granted, revoked) {
   const rows = list => list.map(m =>
     '<tr><td>' + escapeHtml_(m.name) + '</td><td>' + escapeHtml_(m.capid) +
-    '</td><td>' + escapeHtml_(m.type) + '</td></tr>'
+    '</td><td>' + escapeHtml_(m.type) + '</td><td>' +
+    escapeHtml_(formatWindow_(m.windowFrom, m.windowTo)) + '</td></tr>'
   ).join('');
+
+  const header = '<tr><th>Member</th><th>CAPID</th><th>Type</th><th>Detected</th></tr>';
 
   let html =
     '<html><head><style>' +
@@ -611,7 +735,7 @@ function buildDigestHtml_(commander, granted, revoked) {
   if (granted.length) {
     html +=
       '<h2>Background check now cleared (' + granted.length + ')</h2>' +
-      '<table><tr><th>Member</th><th>CAPID</th><th>Type</th></tr>' + rows(granted) + '</table>';
+      '<table>' + header + rows(granted) + '</table>';
   }
 
   if (revoked.length) {
@@ -620,13 +744,19 @@ function buildDigestHtml_(commander, granted, revoked) {
       '<p>These members previously showed a completed FBI background check and no ' +
       'longer do. This may reflect a records change rather than an action against ' +
       'the member — please verify in eServices before acting.</p></div>' +
-      '<table><tr><th>Member</th><th>CAPID</th><th>Type</th></tr>' + rows(revoked) + '</table>';
+      '<table>' + header + rows(revoked) + '</table>';
   }
 
+  // Say plainly what "Detected" means. CAPWATCH publishes no date for an LSCode
+  // change, so this is the window between our checks, not a date from eServices —
+  // a commander reading a date in an official-looking email will otherwise assume
+  // it came from the record.
   html +=
     '<hr><p class="footer">Automated notification derived from the CAPWATCH ' +
-    'extract (Member.txt, LSCode). eServices is authoritative. Questions: ' +
-    escapeHtml_(ITSUPPORT_EMAIL) + '.</p></body></html>';
+    'extract (Member.txt, LSCode). <strong>Detected</strong> is the period between ' +
+    'our checks in which the change appeared — CAPWATCH does not publish the date a ' +
+    'background check changed, so the exact date is not available here. eServices is ' +
+    'authoritative. Questions: ' + escapeHtml_(ITSUPPORT_EMAIL) + '.</p></body></html>';
 
   return html;
 }
@@ -704,13 +834,17 @@ function escapeHtml_(value) {
  * @returns {void}
  */
 function testLSCodeDigestToTestEmail() {
+  // A week-wide window, as a weekly trigger would produce.
+  const to = isoDate_(new Date());
+  const from = isoDate_(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+
   const commander = { rank: 'Maj', firstName: 'Pat', lastName: 'Example', email: TEST_EMAIL };
   const granted = [
-    { name: 'Capt Jamie Rivera', capid: '123456', type: 'SENIOR', direction: 'GRANTED' },
-    { name: '2d Lt Alex Chen', capid: '234567', type: 'SENIOR', direction: 'GRANTED' }
+    { name: 'Capt Jamie Rivera', capid: '123456', type: 'SENIOR', direction: 'GRANTED', windowFrom: from, windowTo: to },
+    { name: '2d Lt Alex Chen', capid: '234567', type: 'SENIOR', direction: 'GRANTED', windowFrom: from, windowTo: to }
   ];
   const revoked = [
-    { name: '1st Lt Sam Fitzgerald', capid: '345678', type: 'SENIOR', direction: 'REVOKED' }
+    { name: '1st Lt Sam Fitzgerald', capid: '345678', type: 'SENIOR', direction: 'REVOKED', windowFrom: from, windowTo: to }
   ];
 
   const htmlBody = buildDigestHtml_(commander, granted, revoked);

@@ -14,6 +14,28 @@ next to each entry below.
 
 ### Added
 
+- **`notifications/LSCodeNotify.gs` (v1.1.0)** — the digest now dates each change,
+  and the intended cadence is **weekly**.
+
+  CAPWATCH publishes no date for an LSCode change. `Member.txt` carries `DateMod`
+  (when the *record* was last modified) and `UsrID` (who modified it), but both are
+  record-level — an address edit moves `DateMod` exactly as a background check
+  does — and no background-check table exists anywhere in the extract. Quoting
+  `DateMod` as "the date your member cleared" would therefore be wrong whenever
+  anything else touched the record afterwards.
+
+  So the digest reports the **window** instead: the change appeared somewhere
+  between the last time we confirmed the old value and the run that saw the new
+  one. On a weekly trigger that reads as "detected 8–15 Jul 2026", which is the
+  resolution this data honestly supports. The footer says so in as many words, so
+  a commander does not read the date as coming from eServices.
+
+  The window is tracked **per member** (state file v2: `{ c, seen }`), not as one
+  global last-run date. That is what makes a retry truthful — a digest that fails
+  to send keeps its members' original `seen`, so when it lands a week later it
+  still reports the week the change was really detected rather than the week of
+  the retry. A v1 state file is re-baselined silently rather than misread.
+
 - **`notifications/LSCodeNotify.gs` (v1.0.0)** — new module. Squadron commanders
   now get an email when a member under their command gains or loses their FBI
   background check. `Member.txt` `LSCode` carries that flag (`A` = passed, blank
