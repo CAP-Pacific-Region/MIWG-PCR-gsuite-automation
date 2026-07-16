@@ -178,9 +178,15 @@ function runLSCodeNotification_(options) {
   const summary = {
     dryRun: dryRun,
     baseline: isBaseline,
+    members: Object.keys(current).length,
     granted: diff.granted,
     revoked: diff.revoked,
     firstSeen: diff.firstSeen,
+    // Carried so the returned summary accounts for every member read, not just
+    // the interesting ones: members = firstSeen + unchanged + granted + revoked
+    // (+ any non-boundary changes, which warn). A summary that cannot be
+    // reconciled against the roster hides whichever bucket is wrong.
+    unchanged: diff.unchanged,
     sent: 0,
     failedOrgs: [],
     noCommanderOrgs: [],
