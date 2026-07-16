@@ -66,15 +66,27 @@
  * intact, so when the retry lands a week later it still reports the week the
  * change was really detected, rather than the week of the retry.
  *
+ * SENDING IDENTITY — this bites, so read it before scheduling.
+ * Every send sets `from: AUTOMATION_SENDER_EMAIL`, and Gmail permits that only
+ * when the *executing* account owns that address as a verified Send-As alias.
+ * The trigger below must therefore be owned by the automation account (the same
+ * identity the retention mailer runs under) — not a personal or IT account.
+ * Running it as an account without the alias fails EVERY send with
+ * "Invalid argument: <address>" (proven 2026-07-16 running as it@cawgcap.org;
+ * re-running under the automation account delivered). Note the failure report to
+ * IT support uses the same `from`, so a wrong-identity run cannot even self-report
+ * — the giveaway is "Invalid argument" in the execution log.
+ *
  * Setup:
  * 1. Set TENANT_PROFILE appropriately; this runs where RUN_LSCODE_NOTIFICATIONS
  *    is true (see config.gs).
  * 2. Run previewLSCodeChanges() first — it sends nothing and writes nothing.
  * 3. Run notifyLSCodeChanges() once by hand to lay down the baseline (silent).
- * 4. Add a time-driven trigger for notifyLSCodeChanges(), WEEKLY, on a day and
- *    hour that falls after getCapwatch() has refreshed the extract. The cadence
- *    sets the width of the reported window, so changing it changes what the
- *    digest claims — run it weekly and the digest says "detected 8–15 Jul".
+ * 4. As the automation account (see SENDING IDENTITY above), add a time-driven
+ *    trigger for notifyLSCodeChanges(), WEEKLY, on a day and hour that falls
+ *    after getCapwatch() has refreshed the extract. The cadence sets the width of
+ *    the reported window, so changing it changes what the digest claims — run it
+ *    weekly and the digest says "detected 8–15 Jul".
  */
 
 const LSCODE_NOTIFY_CONFIG = {
