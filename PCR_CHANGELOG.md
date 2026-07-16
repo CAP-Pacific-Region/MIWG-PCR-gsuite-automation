@@ -10,6 +10,24 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-16] — LSCode failure-summary survives a bad sender identity
+
+### Fixed
+
+- **`notifications/LSCodeNotify.gs`** — the IT failure-summary email no longer sets
+  `from: AUTOMATION_SENDER_EMAIL`; it sends as the executing user (`name` display
+  only). The live test on 2026-07-16 showed why: the most likely reason a whole run
+  fails is that the executing account lacks the `AUTOMATION_SENDER_EMAIL` Send-As
+  alias, which bounces every digest with "Invalid argument". The summary is the
+  alarm that reports those failures — and it used the same `from`, so it failed the
+  same way and the failure went unreported. Sending it as the executing user means
+  the alarm gets through even when the sender identity is misconfigured; if the
+  trigger is ever run under the wrong account, IT now gets an "attention needed"
+  summary listing every org as failed. The digests themselves still send as
+  `AUTOMATION_SENDER_EMAIL` (the sender commanders should see), so the trigger must
+  still be owned by the automation account. Covered by a test that reproduces the
+  wrong-identity bounce and asserts the alarm is delivered without a `from`.
+
 ## [2026-07-15] — Commanders hear about background-check changes
 
 ### Added

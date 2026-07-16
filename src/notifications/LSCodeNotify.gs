@@ -67,15 +67,17 @@
  * change was really detected, rather than the week of the retry.
  *
  * SENDING IDENTITY — this bites, so read it before scheduling.
- * Every send sets `from: AUTOMATION_SENDER_EMAIL`, and Gmail permits that only
+ * Each digest sets `from: AUTOMATION_SENDER_EMAIL`, and Gmail permits that only
  * when the *executing* account owns that address as a verified Send-As alias.
  * The trigger below must therefore be owned by the automation account (the same
  * identity the retention mailer runs under) — not a personal or IT account.
- * Running it as an account without the alias fails EVERY send with
+ * Running it as an account without the alias fails EVERY digest with
  * "Invalid argument: <address>" (proven 2026-07-16 running as it@cawgcap.org;
- * re-running under the automation account delivered). Note the failure report to
- * IT support uses the same `from`, so a wrong-identity run cannot even self-report
- * — the giveaway is "Invalid argument" in the execution log.
+ * re-running under the automation account delivered). The IT failure-summary is
+ * deliberately sent WITHOUT `from` (as the executing user) so that this exact
+ * misconfiguration still gets reported instead of failing silently — so if the
+ * trigger identity is ever wrong, expect an "attention needed" summary listing
+ * every org as failed, plus "Invalid argument" in the execution log.
  *
  * Setup:
  * 1. Set TENANT_PROFILE appropriately; this runs where RUN_LSCODE_NOTIFICATIONS
@@ -807,6 +809,15 @@ function buildDigestHtml_(commander, granted, revoked) {
  * Reports undeliverable digests to IT support. Only sent when something needs a
  * human — a clean run stays quiet.
  *
+ * Unlike the digests, this deliberately does NOT set `from: AUTOMATION_SENDER_EMAIL`.
+ * The most likely reason a whole run fails is exactly that the executing account
+ * lacks the AUTOMATION_SENDER_EMAIL Send-As alias (proven live 2026-07-16: running
+ * as it@cawgcap.org bounced every digest with "Invalid argument"). If this alarm
+ * used the same `from`, it would fail the same way and the failure would never be
+ * reported. Sending as the executing user always works, so the alarm gets through
+ * even when the sender identity is misconfigured. `name` is a display string, not
+ * an address, so it never triggers the alias check.
+ *
  * @param {Object} summary - Run summary
  * @returns {void}
  */
@@ -840,9 +851,10 @@ function sendLSCodeSummaryEmail_(summary) {
 
     html += '</body></html>';
 
+    // No `from:` — see the function doc. This alarm must survive the sender-
+    // identity misconfiguration it exists to report.
     GmailApp.sendEmail(ITSUPPORT_EMAIL, 'LSCode notification — attention needed', 'See HTML version', {
       htmlBody: html,
-      from: AUTOMATION_SENDER_EMAIL,
       name: SENDER_NAME
     });
   } catch (e) {
