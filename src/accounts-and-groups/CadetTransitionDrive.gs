@@ -168,9 +168,8 @@ function migrateAllTransitionDrives() {
     processed++;
 
     if (!result.complete) {
-      // Ran out of time on this member; the continuation resumes it. Do not
-      // start another member in the same execution.
-      scheduleDriveContinuation_({ capid: String(capid) });
+      // Out of time on this member. migrateOneDrive_ has already scheduled the
+      // continuation scoped to it; just stop starting new members this run.
       break;
     }
   }
@@ -240,6 +239,11 @@ function migrateOneDrive_(row, started) {
   if (!folderResult.complete) {
     setTransitionField_(row._rowNumber, 'Notes',
       `Drive: folder structure in progress (${done.folderMap.size} folders)`);
+    // Reschedule from HERE, not from the caller: this per-member function is what
+    // every entry path funnels through (single, all, and each continuation), so
+    // owning the continuation here is the only place that keeps a paused run
+    // alive regardless of how it was started.
+    scheduleDriveContinuation_({ capid: String(row.CAPID) });
     return { folders: done.folderMap.size, files: done.fileCount, skipped: 0, complete: false };
   }
 
@@ -265,6 +269,7 @@ function migrateOneDrive_(row, started) {
     }
   } else {
     setTransitionField_(row._rowNumber, 'DriveCursor', fileResult.cursor);
+    scheduleDriveContinuation_({ capid: String(row.CAPID) });
   }
 
   return {
