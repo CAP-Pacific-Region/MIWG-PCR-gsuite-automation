@@ -115,18 +115,52 @@ section('7. A departed member produces nothing');
 }
 
 // ---------------------------------------------------------------------------
-section('8. Changes that never cross the cleared boundary warn, not mail');
+section('8. Changes between two non-cleared values are ignored, not mailed');
 {
+  // Two genuinely unrecognised values: no mail, counted as ignored, and warned
+  // because the module does not model them.
   calls.warn.length = 0;
   const d = m.diffLSCodes_({ '1': mk('1', 'X') }, { '1': rec('Y') }, TODAY);
   check('no mail for X -> Y', Object.keys(d.byOrg).length, 0);
-  check('but it warns', calls.warn.length, 1);
+  check('counted as ignored', d.ignored, 1);
+  check('and warned as unmodelled', calls.warn.length, 1);
 }
 {
   // Anything that is not 'A' counts as uncleared, so an unknown code -> A is
   // still a real grant rather than something to swallow.
   const d = m.diffLSCodes_({ '1': mk('1', 'A') }, { '1': rec('X') }, TODAY);
   check('unknown -> A is a grant', d.granted, 1);
+}
+
+// ---------------------------------------------------------------------------
+section('8b. The PENDING lifecycle: silent until it reaches cleared');
+{
+  // '' -> P: entering pending. No mail, ignored, and logged as info, NOT warn.
+  calls.warn.length = 0;
+  calls.info.length = 0;
+  const enter = m.diffLSCodes_({ '1': mk('1', 'P') }, { '1': rec('') }, TODAY);
+  check('entering pending mails nobody', Object.keys(enter.byOrg).length, 0);
+  check('counted as ignored', enter.ignored, 1);
+  check('does not warn (it is the expected step)', calls.warn.length, 0);
+  check('logs it as a pending transition', calls.info.length, 1);
+}
+{
+  // P -> A: the check passed. THIS is the grant the commander is told about.
+  const pass = m.diffLSCodes_({ '1': mk('1', 'A') }, { '1': rec('P') }, TODAY);
+  check('pending -> cleared is a grant', pass.granted, 1);
+  check('not ignored', pass.ignored, 0);
+}
+{
+  // A -> P: a cleared member reverts to pending. Crosses the boundary downward,
+  // so it is reported as no-longer-current, same as A -> blank.
+  const revert = m.diffLSCodes_({ '1': mk('1', 'P') }, { '1': rec('A') }, TODAY);
+  check('cleared -> pending is a revocation', revert.revoked, 1);
+}
+{
+  // P -> '': pending abandoned. Still not cleared either side; silent, ignored.
+  const drop = m.diffLSCodes_({ '1': mk('1', '') }, { '1': rec('P') }, TODAY);
+  check('pending -> blank mails nobody', Object.keys(drop.byOrg).length, 0);
+  check('counted as ignored', drop.ignored, 1);
 }
 
 // ---------------------------------------------------------------------------

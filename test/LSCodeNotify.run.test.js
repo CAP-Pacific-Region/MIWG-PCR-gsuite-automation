@@ -80,7 +80,8 @@ section('1. First run on a wing where members already hold an A');
   check('records all five as first-seen', summary.firstSeen, 5);
   check('reports itself as a baseline', summary.baseline, true);
   check('accounts for every member read',
-    summary.firstSeen + summary.unchanged + summary.granted + summary.revoked, summary.members);
+    summary.firstSeen + summary.unchanged + summary.granted + summary.revoked + summary.ignored,
+    summary.members);
 
   const state = JSON.parse(files['LSCodeState.txt']);
   check('writes a state file', typeof files['LSCodeState.txt'], 'string');

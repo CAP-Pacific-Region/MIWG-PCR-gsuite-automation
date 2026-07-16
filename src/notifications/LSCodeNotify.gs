@@ -12,10 +12,14 @@
  * Authors: Isaac Wilson IV
  *
  * WHAT LSCode IS
- * Member.txt column `LSCode` is the FBI background check flag: 'A' means the
- * member has passed, blank means they have not. Seniors and FIFTY YEAR members
- * carry 'A'; cadets and PATRON members are blank. Nothing else in this codebase
- * reads the column.
+ * Member.txt column `LSCode` is the FBI background check flag. Known values:
+ *   'A'  — passed (cleared)
+ *   'P'  — pending: fingerprints submitted, FBI result not yet returned
+ *   ''   — no check on file
+ * Only 'A' counts as cleared; 'P' and blank are both "not cleared", so the normal
+ * lifecycle '' -> P -> A notifies the commander once, at the final step. Seniors
+ * and FIFTY YEAR members carry 'A'; cadets and PATRON members are blank. Nothing
+ * else in this codebase reads the column.
  *
  * It is NOT a per-person "has a background check on file" flag. Cadets over 18
  * do undergo a check and still show blank (checked against CAPID 612148), so the
@@ -84,6 +88,13 @@ const LSCODE_NOTIFY_CONFIG = {
 
   // The one value that means "passed the FBI background check".
   CLEARED: 'A',
+
+  // Fingerprints submitted, FBI result not yet returned. Confirmed against live
+  // data 2026-07-16 (a cohort of new members showed '' -> 'P'). NOT a clearance,
+  // so it never triggers a notification; the normal lifecycle is '' -> P -> A,
+  // and the commander is told only at the final step. Named so a pending
+  // transition logs as the expected thing rather than an unknown-value warning.
+  PENDING: 'P',
 
   SUBJECT_GRANTED: 'Background check cleared in your unit',
   SUBJECT_REVOKED: 'Background check no longer current in your unit',
@@ -155,6 +166,7 @@ function runLSCodeNotification_(options) {
     unchanged: diff.unchanged,
     granted: diff.granted,
     revoked: diff.revoked,
+    ignored: diff.ignored,
     orgsAffected: Object.keys(diff.byOrg).length,
     baseline: isBaseline
   });
@@ -183,10 +195,12 @@ function runLSCodeNotification_(options) {
     revoked: diff.revoked,
     firstSeen: diff.firstSeen,
     // Carried so the returned summary accounts for every member read, not just
-    // the interesting ones: members = firstSeen + unchanged + granted + revoked
-    // (+ any non-boundary changes, which warn). A summary that cannot be
-    // reconciled against the roster hides whichever bucket is wrong.
+    // the interesting ones. The invariant holds exactly:
+    //   members = firstSeen + unchanged + granted + revoked + ignored
+    // A summary that cannot be reconciled against the roster hides whichever
+    // bucket is wrong. `ignored` is non-boundary changes (e.g. PENDING).
     unchanged: diff.unchanged,
+    ignored: diff.ignored,
     sent: 0,
     failedOrgs: [],
     noCommanderOrgs: [],
@@ -441,7 +455,11 @@ function buildCommanderMap_() {
  */
 function diffLSCodes_(current, prior, todayIso) {
   const cleared = LSCODE_NOTIFY_CONFIG.CLEARED;
-  const result = { byOrg: {}, granted: 0, revoked: 0, firstSeen: 0, unchanged: 0 };
+  const pending = LSCODE_NOTIFY_CONFIG.PENDING;
+  // `ignored` counts changes that don't cross the cleared boundary (e.g. entering
+  // or leaving PENDING). They mail nobody, but they're counted so the summary
+  // reconciles: members = firstSeen + unchanged + granted + revoked + ignored.
+  const result = { byOrg: {}, granted: 0, revoked: 0, firstSeen: 0, unchanged: 0, ignored: 0 };
 
   for (const capid in current) {
     const member = current[capid];
@@ -458,20 +476,26 @@ function diffLSCodes_(current, prior, todayIso) {
       continue;
     }
 
-    // '' -> 'A' is a grant; 'A' -> '' is a revocation. The column has no other
-    // observed values, but anything non-'A' is treated as "not cleared" rather
-    // than assumed away.
+    // 'A' means cleared; everything else (blank, PENDING, or anything new) is
+    // "not cleared". A notification fires only when that predicate flips, so the
+    // lifecycle '' -> P -> A tells the commander once, at the final step.
     const nowCleared = member.lscode === cleared;
     const wasCleared = previous === cleared;
     if (nowCleared === wasCleared) {
-      // Changed, but not across the cleared boundary (e.g. '' -> some new code).
-      // Not a background-check event; record it and move on rather than mailing
-      // a commander about something this module does not understand.
-      Logger.warn('LSCode changed without crossing the cleared boundary', {
-        capsn: capid,
-        from: previous,
-        to: member.lscode
-      });
+      // Changed, but not across the cleared boundary — mails nobody, still counted.
+      result.ignored++;
+      // A move into or out of PENDING is the expected mid-lifecycle step, not an
+      // anomaly, so log it as such. A change between two genuinely unrecognised
+      // values still warns, because that is something the module doesn't model.
+      if (member.lscode === pending || previous === pending) {
+        Logger.info('LSCode pending transition — no notification', {
+          capsn: capid, from: previous, to: member.lscode
+        });
+      } else {
+        Logger.warn('LSCode changed between two non-cleared values it does not model', {
+          capsn: capid, from: previous, to: member.lscode
+        });
+      }
       continue;
     }
 
