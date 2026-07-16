@@ -65,6 +65,8 @@ const TRANSITION_COLUMNS_ = [
   'NotifiedDate',     // when the member was told; blank means they have NOT been told
   'DriveMigrated',    // files copied. BLANK = nobody looked; 0 = deliberately nothing to copy
   'DriveCursor',      // Drive pageToken, for resuming a copy across executions
+  'ContactsMigrated', // contacts copied. BLANK = nobody looked; 0 = deliberately none
+  'ContactsCursor',   // People API pageToken, for resuming across executions
   'ForwardGroupCreated',
   'ForwardGroupExpires',
   'Notes'

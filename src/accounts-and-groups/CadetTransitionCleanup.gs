@@ -155,6 +155,13 @@ function whyNotCloseable_(row, now) {
       'DriveMigrated=0 if there is nothing to copy';
   }
 
+  // Same reasoning as Drive: personal contacts die with the account. Blank means
+  // nobody looked; 0 is a deliberate "nothing to copy".
+  if (String(row.ContactsMigrated || '') === '') {
+    return 'Contacts not handled — closing would destroy them. Copy them, or set ' +
+      'ContactsMigrated=0 if there is nothing to copy';
+  }
+
   const deleteAfter = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
   if (!deleteAfter) return 'no DeleteAfter set';
   if (now < deleteAfter) {

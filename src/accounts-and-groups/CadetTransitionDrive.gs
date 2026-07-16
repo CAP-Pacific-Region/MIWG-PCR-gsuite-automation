@@ -196,7 +196,14 @@ function continueCadetTransitionDriveMigration(e) {
   try { scope = raw ? JSON.parse(raw) : null; } catch (err) {}
 
   if (scope && scope.capid) {
-    migrateSingleTransitionDrive(scope.capid);
+    const result = migrateSingleTransitionDrive(scope.capid);
+    // If that member finished, look for others — but in a fresh execution, not
+    // this one. Starting another member's 4.5-min budget on top of the time
+    // already spent here could blow the 6-minute hard cap. If it paused instead,
+    // migrateOneDrive_ already scheduled its own continuation; do not stack a
+    // second. This is what lets one kickoff drain the whole queue rather than
+    // stopping after the member it was scoped to.
+    if (result && result.complete) scheduleDriveContinuation_({});
   } else {
     migrateAllTransitionDrives();
   }
