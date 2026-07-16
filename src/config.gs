@@ -122,6 +122,10 @@ const TENANT_PROFILES_ = {
     RUN_UNIT_VISIT_REPORT: false,      // region-only feature (buildRegionUnitVisitReport)
     RUN_SHARED_CONTACTS: false,        // wing handles shared contacts in a separate project
     RUN_AUTOMATION_CHAT_SPACES: false, // automation + user-additions chat spaces (region)
+    // Mail squadron commanders when a member's FBI background check (Member.txt
+    // LSCode) is granted or lapses. On here: this is the tenant that carries the
+    // fingerprinted members.
+    RUN_LSCODE_NOTIFICATIONS: true,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: true,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: true,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -168,6 +172,13 @@ const TENANT_PROFILES_ = {
     RUN_UNIT_VISIT_REPORT: false,
     RUN_SHARED_CONTACTS: false,
     RUN_AUTOMATION_CHAT_SPACES: false,
+    // Off: cadet records carry no LSCode, so there is nothing here to report on.
+    // This holds for cadets over 18 too — checked against CAPID 612148 (a cadet
+    // aged 18+), whose LSCode is blank. That is worth knowing rather than
+    // assuming: 18+ cadets do undergo a background check, so LSCode evidently
+    // tracks the senior-side record rather than "has a check on file" for
+    // everyone. Do not read the column as a universal background-check flag.
+    RUN_LSCODE_NOTIFICATIONS: false,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -217,6 +228,10 @@ const TENANT_PROFILES_ = {
     RUN_UNIT_VISIT_REPORT: true,       // region-wide unit visit report
     RUN_SHARED_CONTACTS: true,         // External Contacts sheet -> Domain Shared Contacts
     RUN_AUTOMATION_CHAT_SPACES: true,  // automation + user-additions chat spaces
+    // Off pending a decision: this is a single-unit region HQ, so the only
+    // "squadron commander" is the region commander, sitting alongside the ~50
+    // members a digest would describe. Flip to true if PCR/CC wants it.
+    RUN_LSCODE_NOTIFICATIONS: false,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [], // no subordinate squadrons

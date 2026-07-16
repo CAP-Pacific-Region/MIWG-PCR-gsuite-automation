@@ -10,6 +10,100 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-15] — Commanders hear about background-check changes
+
+### Added
+
+- **`test/`** — the repo's first tests. `npm test`, plain Node, no framework and no
+  dependencies, so it runs on a clean clone.
+
+  Apps Script has no local test runner: the only way to run a `.gs` file for real
+  is to push it to a live tenant and press **Run**, which here means production
+  Drive, Gmail and Workspace. That is a bad place to learn that a notification
+  module mails the whole wing. But a `.gs` file is only JavaScript whose globals
+  arrive from the platform — so the harness reads the source, injects fakes for
+  the globals it touches (`DriveApp`, `GmailApp`, `Logger`, `Utilities`, `CONFIG`,
+  `PROFILE_`), and the module's own logic runs unmodified under Node. **Our code
+  runs; Google is faked.** It does not replace a dry run against a tenant, it
+  makes the dry run the second check rather than the first.
+
+  Covers `LSCodeNotify.gs` end-to-end. The load-bearing case: a first run must
+  mail nobody, because most seniors already hold an `A` and reading those as news
+  would send every commander their entire roster. Inverting the first-seen rule
+  fails both test files, so the guard is genuinely held rather than merely
+  asserted.
+
+  Two conventions, both learned from this codebase's own history: fixtures copy
+  the **live** `Member.txt` / `Commanders.txt` headers verbatim, since modules
+  resolve columns by name and an invented header would prove nothing; and stubs
+  **throw** on anything unhandled rather than returning something plausible, so a
+  stub cannot turn a real bug into a passing test.
+
+  Nothing under `test/` reaches Apps Script — clasp's `rootDir` is `../src` and
+  `.claspignore` excludes everything outside `src/`.
+
+- **`notifications/LSCodeNotify.gs` (v1.1.0)** — the digest now dates each change,
+  and the intended cadence is **weekly**.
+
+  CAPWATCH publishes no date for an LSCode change. `Member.txt` carries `DateMod`
+  (when the *record* was last modified) and `UsrID` (who modified it), but both are
+  record-level — an address edit moves `DateMod` exactly as a background check
+  does — and no background-check table exists anywhere in the extract. Quoting
+  `DateMod` as "the date your member cleared" would therefore be wrong whenever
+  anything else touched the record afterwards.
+
+  So the digest reports the **window** instead: the change appeared somewhere
+  between the last time we confirmed the old value and the run that saw the new
+  one. On a weekly trigger that reads as "detected 8–15 Jul 2026", which is the
+  resolution this data honestly supports. The footer says so in as many words, so
+  a commander does not read the date as coming from eServices.
+
+  The window is tracked **per member** (state file v2: `{ c, seen }`), not as one
+  global last-run date. That is what makes a retry truthful — a digest that fails
+  to send keeps its members' original `seen`, so when it lands a week later it
+  still reports the week the change was really detected rather than the week of
+  the retry. A v1 state file is re-baselined silently rather than misread.
+
+- **`notifications/LSCodeNotify.gs` (v1.0.0)** — new module. Squadron commanders
+  now get an email when a member under their command gains or loses their FBI
+  background check. `Member.txt` `LSCode` carries that flag (`A` = passed, blank
+  = not), and nothing in the codebase read the column until now — seniors and
+  FIFTY YEAR members carry `A`; cadets and PATRON are blank. Note the column is
+  **not** a per-person background-check flag: cadets over 18 have had a check and
+  still show blank (checked against CAPID 612148), so it reflects the senior-side
+  record. Both directions are reported: a grant is the expected case, but
+  a clearance that stops being current is the one a commander needs sooner.
+  Delivery is one digest per commander per run, so a squadron that fingerprints
+  a dozen people at once produces one email rather than twelve.
+
+  CAPWATCH is a snapshot with no history, so detecting a *change* needs saved
+  state. `updateAllMembers()` already keeps one (`CurrentMembers.txt`) and this
+  deliberately does **not** use it. That function is the account-provisioning
+  job: if it sent commander mail and then threw before `saveCurrentMemberData()`,
+  the next run would re-detect and re-send to every commander. Worse,
+  `forceUpdateAllMembers()` writes that snapshot *without* diffing, so it would
+  silently swallow pending transitions and those commanders would never be told.
+  This module keeps its own `LSCodeState.txt`, runs on its own trigger, and
+  cannot be affected by either.
+
+  A member absent from the state file is recorded without notifying, which makes
+  the first run after deploy a silent baseline (otherwise every commander would
+  receive their entire roster) and keeps new members quiet — a joiner's existing
+  clearance is not news. State advances per-org: a digest that fails to send
+  leaves its members at their prior value to retry, so one bad send cannot
+  re-mail everyone else. A unit with LSCode changes but no commander on record
+  stays pending rather than being dropped, and is reported to IT support until a
+  commander exists to receive it.
+
+  Columns are resolved by header name, not position — per `docs/VERSIONING.md`
+  and the `Expiration`-column lesson below, `parseFile()` strips the header and
+  every positional index in this codebase is an unverified assumption. Off on the
+  `cadets` profile (cadet records carry no LSCode at all) and on `pacific`
+  (single-unit region HQ, pending a call from PCR/CC); on for `seniors` via
+  `PROFILE_.RUN_LSCODE_NOTIFICATIONS`.
+
+  Run `previewLSCodeChanges()` first — it sends nothing and writes nothing.
+
 ## [2026-07-15] — The ineligible-suspended reaper, repaired
 
 ### Fixed
