@@ -14,6 +14,34 @@ next to each entry below.
 
 ### Added
 
+- **`test/`** — the repo's first tests. `npm test`, plain Node, no framework and no
+  dependencies, so it runs on a clean clone.
+
+  Apps Script has no local test runner: the only way to run a `.gs` file for real
+  is to push it to a live tenant and press **Run**, which here means production
+  Drive, Gmail and Workspace. That is a bad place to learn that a notification
+  module mails the whole wing. But a `.gs` file is only JavaScript whose globals
+  arrive from the platform — so the harness reads the source, injects fakes for
+  the globals it touches (`DriveApp`, `GmailApp`, `Logger`, `Utilities`, `CONFIG`,
+  `PROFILE_`), and the module's own logic runs unmodified under Node. **Our code
+  runs; Google is faked.** It does not replace a dry run against a tenant, it
+  makes the dry run the second check rather than the first.
+
+  Covers `LSCodeNotify.gs` end-to-end. The load-bearing case: a first run must
+  mail nobody, because most seniors already hold an `A` and reading those as news
+  would send every commander their entire roster. Inverting the first-seen rule
+  fails both test files, so the guard is genuinely held rather than merely
+  asserted.
+
+  Two conventions, both learned from this codebase's own history: fixtures copy
+  the **live** `Member.txt` / `Commanders.txt` headers verbatim, since modules
+  resolve columns by name and an invented header would prove nothing; and stubs
+  **throw** on anything unhandled rather than returning something plausible, so a
+  stub cannot turn a real bug into a passing test.
+
+  Nothing under `test/` reaches Apps Script — clasp's `rootDir` is `../src` and
+  `.claspignore` excludes everything outside `src/`.
+
 - **`notifications/LSCodeNotify.gs` (v1.1.0)** — the digest now dates each change,
   and the intended cadence is **weekly**.
 
