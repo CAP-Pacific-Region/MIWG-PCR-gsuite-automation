@@ -10,6 +10,21 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-16] — LSCode weekly-trigger installer
+
+### Added
+
+- **`notifications/LSCodeNotify.gs`** — `installLSCodeWeeklyTrigger()`, a setup
+  helper that installs the weekly `notifyLSCodeChanges` time trigger (Mondays
+  ~07:00 America/Los_Angeles; edit the day/hour inline). Idempotent — it removes
+  any existing `notifyLSCodeChanges` triggers first, leaving other handlers alone,
+  so re-running never stacks duplicates. It **must be run signed in as the
+  automation account**: a trigger runs as whoever creates it, and only that
+  account owns the `AUTOMATION_SENDER_EMAIL` Send-As alias the digests need (see
+  the 2026-07-16 identity entry). The trigger was already installed by hand this
+  way; this captures the exact setup in version control so it is reproducible for
+  future tenants. Covered by a test asserting the dedupe and the weekly schedule.
+
 ## [2026-07-16] — LSCode failure-summary survives a bad sender identity
 
 ### Fixed
