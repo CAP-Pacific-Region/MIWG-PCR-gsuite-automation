@@ -10,6 +10,50 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-15] — Commanders hear about background-check changes
+
+### Added
+
+- **`notifications/LSCodeNotify.gs` (v1.0.0)** — new module. Squadron commanders
+  now get an email when a member under their command gains or loses their FBI
+  background check. `Member.txt` `LSCode` carries that flag (`A` = passed, blank
+  = not), and nothing in the codebase read the column until now — seniors and
+  FIFTY YEAR members carry `A`; cadets and PATRON are blank. Note the column is
+  **not** a per-person background-check flag: cadets over 18 have had a check and
+  still show blank (checked against CAPID 612148), so it reflects the senior-side
+  record. Both directions are reported: a grant is the expected case, but
+  a clearance that stops being current is the one a commander needs sooner.
+  Delivery is one digest per commander per run, so a squadron that fingerprints
+  a dozen people at once produces one email rather than twelve.
+
+  CAPWATCH is a snapshot with no history, so detecting a *change* needs saved
+  state. `updateAllMembers()` already keeps one (`CurrentMembers.txt`) and this
+  deliberately does **not** use it. That function is the account-provisioning
+  job: if it sent commander mail and then threw before `saveCurrentMemberData()`,
+  the next run would re-detect and re-send to every commander. Worse,
+  `forceUpdateAllMembers()` writes that snapshot *without* diffing, so it would
+  silently swallow pending transitions and those commanders would never be told.
+  This module keeps its own `LSCodeState.txt`, runs on its own trigger, and
+  cannot be affected by either.
+
+  A member absent from the state file is recorded without notifying, which makes
+  the first run after deploy a silent baseline (otherwise every commander would
+  receive their entire roster) and keeps new members quiet — a joiner's existing
+  clearance is not news. State advances per-org: a digest that fails to send
+  leaves its members at their prior value to retry, so one bad send cannot
+  re-mail everyone else. A unit with LSCode changes but no commander on record
+  stays pending rather than being dropped, and is reported to IT support until a
+  commander exists to receive it.
+
+  Columns are resolved by header name, not position — per `docs/VERSIONING.md`
+  and the `Expiration`-column lesson below, `parseFile()` strips the header and
+  every positional index in this codebase is an unverified assumption. Off on the
+  `cadets` profile (cadet records carry no LSCode at all) and on `pacific`
+  (single-unit region HQ, pending a call from PCR/CC); on for `seniors` via
+  `PROFILE_.RUN_LSCODE_NOTIFICATIONS`.
+
+  Run `previewLSCodeChanges()` first — it sends nothing and writes nothing.
+
 ## [2026-07-15] — The ineligible-suspended reaper, repaired
 
 ### Fixed
