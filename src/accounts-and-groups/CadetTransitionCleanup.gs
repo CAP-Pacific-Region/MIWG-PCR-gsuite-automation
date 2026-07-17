@@ -45,8 +45,14 @@ function closeCompletedTransitions(dryRun) {
     Logger.info('Transition cleanup skipped — not the source tenant');
     return { closed: 0, skipped: 0, failed: 0 };
   }
+  // A dry run only reads, so it needs no lock and should work even while another
+  // run holds it. A real close deletes accounts — serialize it.
+  if (dryRun !== false) return closeCompletedTransitions_(true);
+  return withTransitionLock_(() => closeCompletedTransitions_(false),
+    { closed: 0, skipped: 0, failed: 0 });
+}
 
-  const isDry = dryRun !== false;
+function closeCompletedTransitions_(isDry) {
   const rows = readTransitions_();
   const now = new Date();
   let closed = 0;
@@ -135,8 +141,33 @@ function whyNotCloseable_(row, now) {
     return 'mail is known to be unmigrated (see Notes) — handle it, then clear the note';
   }
 
-  if (TRANSITION_CONFIG.REQUIRE_MIGRATION_BEFORE_DELETE && !row.MessagesMigrated) {
+  if (TRANSITION_CONFIG.REQUIRE_MIGRATION_BEFORE_DELETE && isBlankField_(row.MessagesMigrated)) {
     return 'MessagesMigrated is empty — no evidence anything was actually moved';
+  }
+
+  // Deleting the account destroys the member's Drive with it, and this function
+  // knew nothing about Drive until now: mail was migrated, the row read COMPLETE,
+  // and closing would have silently taken gigabytes of files that were never
+  // copied. Cross-tenant ownership transfer does not exist and sharing does not
+  // survive the owner, so the files must be copied first — see
+  // CadetTransitionDrive.gs. Measured 2026-07-15: 43.5GB across 6511 files for
+  // four members, one holding 36.7GB.
+  //
+  // Refuses until DriveMigrated says otherwise. 0 is a legitimate answer for a
+  // member with an empty Drive and must be treated as handled; blank means nobody
+  // has looked. isBlankField_ is the whole point — a plain `|| ''` or `!value`
+  // check coalesces 0 to empty and blocks the close forever, which it did.
+  if (isBlankField_(row.DriveMigrated)) {
+    return 'Drive not handled — closing would destroy it. Copy it, or set ' +
+      'DriveMigrated=0 if there is nothing to copy';
+  }
+
+  // Same reasoning as Drive: personal contacts die with the account. Blank means
+  // nobody looked; 0 is a deliberate "nothing to copy". EVERY member so far has
+  // 0 saved contacts, so the falsy-zero bug here blocked all of them.
+  if (isBlankField_(row.ContactsMigrated)) {
+    return 'Contacts not handled — closing would destroy them. Copy them, or set ' +
+      'ContactsMigrated=0 if there is nothing to copy';
   }
 
   const deleteAfter = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
@@ -320,8 +351,11 @@ function createForwardingGroup_(oldAddress, forwardTo, name) {
  */
 function expireForwardingGroups(dryRun) {
   if (TRANSITION_CONFIG.ROLE !== 'source') return { removed: 0 };
+  if (dryRun !== false) return expireForwardingGroups_(true);
+  return withTransitionLock_(() => expireForwardingGroups_(false), { removed: 0 });
+}
 
-  const isDry = dryRun !== false;
+function expireForwardingGroups_(isDry) {
   const rows = readTransitions_();
   const now = new Date();
   let removed = 0;

@@ -1,6 +1,11 @@
 /**
  * Cadet → senior tenant transition.
  *
+ * Version: 1.0.0
+ * Date: 2026-07-16
+ * Changes: 1.0.0 — initial release. Detection + state for the cadet→senior
+ *   lifecycle; the Transitions sheet is authoritative for who is mid-flight.
+ *
  * When a cadet turns 21, or converts voluntarily after 18, CAPWATCH flips their
  * type and they leave the cadet tenant for the senior one. Before this module
  * existed the cadet tenant simply suspended them and deleted the account ~30
@@ -63,6 +68,10 @@ const TRANSITION_COLUMNS_ = [
   'MessagesMigrated',
   'LastCursor',       // Gmail pageToken, so a run that hits the 6-minute limit resumes
   'NotifiedDate',     // when the member was told; blank means they have NOT been told
+  'DriveMigrated',    // files copied. BLANK = nobody looked; 0 = deliberately nothing to copy
+  'DriveCursor',      // Drive pageToken, for resuming a copy across executions
+  'ContactsMigrated', // contacts copied. BLANK = nobody looked; 0 = deliberately none
+  'ContactsCursor',   // People API pageToken, for resuming across executions
   'ForwardGroupCreated',
   'ForwardGroupExpires',
   'Notes'
@@ -218,6 +227,98 @@ function setTransitionField_(rowNumber, column, value) {
 }
 
 /**
+ * Reads one field of one row, fresh from the sheet.
+ *
+ * The row objects from readTransitions_() are a snapshot; this reads the live
+ * cell, needed when appending to a value (like Notes) that earlier writes in the
+ * same execution may have changed.
+ *
+ * @param {number} rowNumber - 1-indexed sheet row
+ * @param {string} column
+ * @returns {string}
+ */
+function getTransitionField_(rowNumber, column) {
+  const index = transitionHeader_get_().indexOf(column);
+  if (index < 0) return '';
+  const v = getTransitionsSheet_().getRange(rowNumber, index + 1).getValue();
+  return v instanceof Date ? v.toISOString() : String(v == null ? '' : v);
+}
+
+/**
+ * Runs fn holding a script-wide lock, so only one transition operation touches
+ * the Transitions sheet and the mailboxes/Drives at a time.
+ *
+ * Without it, a scheduled trigger firing while a continuation (or a manual run)
+ * is mid-flight would process the same cursor twice and duplicate imports/copies
+ * — the cursor discipline guards an interrupted run, not a concurrent one. The
+ * late arrival backs off rather than waiting, matching processSendAsNamesBatch:
+ * whoever holds the lock is already doing the work and will schedule the next
+ * continuation, so a second execution has nothing to add.
+ *
+ * Acquired ONLY at top-level entry points, never in the per-member workers they
+ * call, so a call chain never tries to take the lock twice.
+ *
+ * @param {function(): T} fn
+ * @param {T} bailValue - returned if the lock is held by another execution
+ * @returns {T}
+ * @template T
+ */
+function withTransitionLock_(fn, bailValue) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    Logger.warn('Transition operation skipped — another run holds the script lock');
+    return bailValue;
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * True only for a genuinely empty sheet field — '', null, or undefined.
+ *
+ * Exists to avoid the falsy-zero trap: `!value` and `value || ''` both treat the
+ * NUMBER 0 as empty, so a legitimate "0 items migrated" reads as "never handled"
+ * and blocks the close permanently. A count field where 0 is a real, deliberate
+ * value must test blankness this way, not by truthiness. (0 blocked every member,
+ * since all four had 0 personal contacts.)
+ *
+ * @param {*} v
+ * @returns {boolean}
+ */
+function isBlankField_(v) {
+  return v === '' || v === null || v === undefined;
+}
+
+/**
+ * Durably records a skipped item that must block deletion — written the instant
+ * the skip happens, NOT deferred to a completion handler.
+ *
+ * This exists because the obvious design (collect skips in an array, write the
+ * note when the mailbox finishes) silently loses them: a large migration spans
+ * many time-limited executions, and a skip in an execution that then pauses is
+ * discarded when that execution ends, while the cursor advances past the skipped
+ * item so no later run re-encounters it. The skip gets logged but the note that
+ * should refuse the close is never written — which is exactly how a genuinely
+ * missing message reached a COMPLETE row with no DO NOT DELETE marker.
+ *
+ * Idempotent via dedupKey (the source item id): a crash mid-page can re-skip the
+ * same item on resume, and appending it twice would just be noise.
+ *
+ * @param {number} rowNumber
+ * @param {string} dedupKey - unique id of the skipped item (message/file id)
+ * @param {string} description - human-readable, includes the id
+ */
+function recordSkip_(rowNumber, dedupKey, description) {
+  const current = getTransitionField_(rowNumber, 'Notes');
+  if (current.indexOf(dedupKey) > -1) return;   // already recorded this item
+  const entry = 'DO NOT DELETE — ' + description;
+  setTransitionField_(rowNumber, 'Notes', current ? current + ' | ' + entry : entry);
+}
+
+/**
  * Appends a new transition row, ordered to match the sheet rather than the
  * constant — see transitionHeader_get_().
  *
@@ -257,7 +358,10 @@ function detectCadetTransitions() {
     });
     return { detected: 0, updated: 0, existing: 0 };
   }
+  return withTransitionLock_(detectCadetTransitions_, { detected: 0, updated: 0, existing: 0 });
+}
 
+function detectCadetTransitions_() {
   const start = new Date();
   Logger.info('Starting cadet transition detection');
 
@@ -615,7 +719,10 @@ function resolveTransitionDestinations() {
     Logger.info('Destination resolution skipped — not the source tenant');
     return { resolved: 0, stillPending: 0 };
   }
+  return withTransitionLock_(resolveTransitionDestinations_, { resolved: 0, stillPending: 0 });
+}
 
+function resolveTransitionDestinations_() {
   const rows = readTransitions_();
   const peerByCapid = peerCapidToEmail_();
   let resolved = 0;
