@@ -807,7 +807,8 @@ const TRANSITION_TRIGGER_FUNCTIONS_ = [
   'resolveTransitionDestinations',
   'migrateCadetTransitions',
   'migrateAllTransitionDrives',
-  'migrateAllTransitionContacts'
+  'migrateAllTransitionContacts',
+  'remindPendingTransitionCloses'
 ];
 
 /**
@@ -852,7 +853,10 @@ function armTransitionTriggers() {
     ['resolveTransitionDestinations', 4],
     ['migrateCadetTransitions', 5],
     ['migrateAllTransitionDrives', 6],
-    ['migrateAllTransitionContacts', 7]
+    ['migrateAllTransitionContacts', 7],
+    // After migration, so the ready/stuck picture reflects the day's work.
+    // Deletion is NOT automated; this only emails IT that the timer is up.
+    ['remindPendingTransitionCloses', 8]
   ];
 
   schedule.forEach(function (pair) {
@@ -860,8 +864,9 @@ function armTransitionTriggers() {
     Logger.info('Transition trigger armed', { handler: pair[0], atHour: pair[1] });
   });
 
-  console.log('Armed ' + schedule.length + ' daily transition triggers (detect → migrate).');
-  console.log('NO close/delete trigger — run closeCompletedTransitions(false) by hand.');
+  console.log('Armed ' + schedule.length + ' daily transition triggers (detect → migrate → remind).');
+  console.log('NO close/delete trigger — remindPendingTransitionCloses just EMAILS when the');
+  console.log('timer is up; you still run closeCompletedTransitions(false) by hand.');
   console.log('These are owned by whoever ran this — confirm it is automation@cawgcadets.org.');
   return { armed: schedule.length };
 }

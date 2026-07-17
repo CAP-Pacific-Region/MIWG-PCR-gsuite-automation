@@ -193,6 +193,90 @@ function whyNotCloseable_(row, now) {
 }
 
 /**
+ * Emails IT when transitioned accounts have passed their grace and need the
+ * manual close — the nudge that closes the loop, since deletion is deliberately
+ * not automated.
+ *
+ * Read-only (no lock needed). Two buckets, both keyed off whyNotCloseable_ so
+ * they match exactly what a real close would do:
+ *   - READY: grace elapsed and every guard passes → run closeCompletedTransitions(false).
+ *   - STUCK: grace elapsed but something still blocks it (a DO NOT DELETE hold,
+ *     an un-notified member) → needs a human to resolve the block first.
+ *
+ * Sends only when there is something to report, so it goes quiet on its own once
+ * the closes are done. Meant to run daily (armTransitionTriggers installs it).
+ *
+ * @returns {{ready: number, stuck: number}}
+ */
+function remindPendingTransitionCloses() {
+  if (TRANSITION_CONFIG.ROLE !== 'source') return { ready: 0, stuck: 0 };
+
+  const rows = readTransitions_();
+  const now = new Date();
+  const ready = [];
+  const stuck = [];
+
+  for (const capid in rows) {
+    const row = rows[capid];
+    if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.COMPLETE) continue;
+    if (row.ForwardGroupCreated) continue;                 // already closed
+
+    const deleteAfter = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
+    if (!deleteAfter || now < deleteAfter) continue;       // grace not up yet
+
+    const reason = whyNotCloseable_(row, now);
+    if (reason === '') ready.push(row);
+    else stuck.push({ row: row, reason: reason });
+  }
+
+  if (!ready.length && !stuck.length) {
+    Logger.info('No transition accounts past grace — no reminder sent');
+    return { ready: 0, stuck: 0 };
+  }
+
+  const lines = [];
+  lines.push('Transitioned cadet accounts have passed their deletion grace period.');
+  lines.push('');
+
+  if (ready.length) {
+    lines.push('READY TO DELETE (' + ready.length + ') — run closeCompletedTransitions(false)');
+    lines.push('on the cadets Apps Script project, signed in as ' + AUTOMATION_SENDER_EMAIL + ':');
+    ready.forEach(function (r) {
+      lines.push('  ' + r.CAPID + '  ' + r.Name + '  ' +
+        r.CadetEmail + ' -> ' + r.SeniorEmail);
+    });
+    lines.push('');
+  }
+
+  if (stuck.length) {
+    lines.push('PAST GRACE BUT BLOCKED (' + stuck.length + ') — needs a human before it can close:');
+    stuck.forEach(function (s) {
+      lines.push('  ' + s.row.CAPID + '  ' + s.row.Name + '  — ' + s.reason);
+    });
+    lines.push('');
+  }
+
+  lines.push('Deletion is permanent — no archive, no undo. Review before running.');
+  lines.push('closeCompletedTransitions(true) shows the full picture first.');
+
+  const subject = '[Action] ' + ready.length + ' cadet account(s) ready to delete' +
+    (stuck.length ? ', ' + stuck.length + ' stuck' : '');
+
+  executeWithRetry(function () {
+    GmailApp.sendEmail(ITSUPPORT_EMAIL, subject, lines.join('\n'), {
+      replyTo: ITSUPPORT_EMAIL,
+      from: AUTOMATION_SENDER_EMAIL,
+      name: SENDER_NAME
+    });
+  });
+
+  Logger.info('Pending-close reminder sent', {
+    to: ITSUPPORT_EMAIL, ready: ready.length, stuck: stuck.length
+  });
+  return { ready: ready.length, stuck: stuck.length };
+}
+
+/**
  * Closes one account: catch up, verify, delete, forward.
  *
  * @param {Object} row
