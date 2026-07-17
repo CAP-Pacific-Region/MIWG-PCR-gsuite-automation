@@ -1,6 +1,9 @@
-# Pacific Region Reconciliation & Divergence Report
+# Region-Tenant Reconciliation & Divergence Report
 
-**Status: COMPLETE — deployed to Pacific 2026-07-09.** All three tenants now run identical
+> Records the reconciliation of the **`region`** profile (formerly `pacific`); the deploying
+> instance is Pacific Region. Kept as the pattern for future single-unit region tenants.
+
+**Status: COMPLETE — deployed to the region tenant (Pacific) 2026-07-09.** All three tenants now run identical
 `src/`, differentiated only by configuration. This document is the record of that reconciliation:
 what diverged, the decisions taken, and the migration that was executed (§6). Retained for history
 and as the pattern for future tenants.
@@ -20,12 +23,12 @@ diverges, what to keep, what to drop, and how to fold Pacific onto the shared co
 
 Earlier notes claimed the Pacific project was owned by `it@pcr.cap.gov` and that `clasp`
 access was blocked. **That was wrong.** The real cause was a **stale `scriptId`** in
-`clasp-targets/pacific.clasp.json` pointing at a dead project
+`clasp-targets/region.clasp.json` pointing at a dead project
 (`1Y_7HIPo83OIOaC5opnPb7hmjvy7SDL2cMkuBhJNOYmM4BgZLXXSPitfi`).
 
 The live project is **"PCR Automation"**, scriptId
 `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0`, fully readable with the
-`automation@pcr.cap.gov` clasp login. `clasp-targets/pacific.clasp.json` has been
+`automation@pcr.cap.gov` clasp login. `clasp-targets/region.clasp.json` has been
 corrected in this change. (Mission provisioning lives in a separate project, "PCR Mission
 Automaton" — out of scope here.)
 
@@ -42,25 +45,25 @@ Automaton" — out of scope here.)
 | Managed unit | **PCR-PCR-001 only** (single region HQ unit) |
 | SA project | `pcr-capwatch` |
 
-These non-secret values are now recorded in `config-tenants/pacific.json` (previously an
+These non-secret values are now recorded in `config-tenants/region.json` (previously an
 all-blank stub) so they can be loaded into Script Properties during migration.
 
 Pacific-specific behavioral values found in its live `config.gs`, and how the shared model
-now covers them (see `pacific` profile in `config.gs`, §5):
+now covers them (see `region` profile in `config.gs`, §5):
 
 - `MEMBER_TYPES.ACTIVE = ['CADET','SENIOR','FIFTY YEAR','LIFE','AEM']` — live used legacy
   `LIFE` and `AEM`. **Region confirmed (2026-07-09): no AEM automation, and all senior
-  members are typed `INDEFINITE`.** The `pacific` profile therefore uses
+  members are typed `INDEFINITE`.** The `region` profile therefore uses
   `['SENIOR','FIFTY YEAR','INDEFINITE','CADET']` — no `LIFE`, no `AEM`.
 - `EXCLUDED_ORG_IDS = ['1345','']` — different holding unit than seniors/cadets; now the
-  `pacific` profile's `EXCLUDED_ORG_IDS: ['1345']`.
-- `SPECIAL_ORGS.AEM_UNIT = '182'` — dropped (no AEM); `pacific` profile `AEM_UNIT: ''`.
+  `region` profile's `EXCLUDED_ORG_IDS: ['1345']`.
+- `SPECIAL_ORGS.AEM_UNIT = '182'` — dropped (no AEM); `region` profile `AEM_UNIT: ''`.
 - `REGION_CAPWATCH_DATA_FOLDER_ID = '1lU9yWHPf1Eij3AEQPmMR8ki7EpgslV9z'` — a region-level
   CAPWATCH folder with no equivalent in the shared config. Confirm whether it's still used;
   not currently modeled.
 
-**Resolved:** Pacific runs on the shared code via a dedicated **`pacific` profile**
-(`TENANT_PROFILE=pacific`) — single-unit, no AEM, INDEFINITE, org-path sync + squadron
+**Resolved:** Pacific runs on the shared code via a dedicated **`region` profile**
+(`TENANT_PROFILE=region`) — single-unit, no AEM, INDEFINITE, org-path sync + squadron
 groups off. See §5.
 
 ---
@@ -108,15 +111,15 @@ So the region-used modules are **folded into `src/` and gated off for the wing**
 
 | File | Decision | Detail |
 |---|---|---|
-| `updateRegionGroupChats.js` | **Fold into `src/`; gate OFF for wing** | `updateRegionGroupChats()` — region duty groups + duty chat spaces. Present in shared code; enabled only for `pacific`. |
-| `UnitVisitReport.js` | **Fold into `src/`; gate OFF for wing** | `buildRegionUnitVisitReport()` — region-wide unit-visit spreadsheet. Present in shared code; enabled only for `pacific`. |
+| `updateRegionGroupChats.js` | **Fold into `src/`; gate OFF for wing** | `updateRegionGroupChats()` — region duty groups + duty chat spaces. Present in shared code; enabled only for `region`. |
+| `UnitVisitReport.js` | **Fold into `src/`; gate OFF for wing** | `buildRegionUnitVisitReport()` — region-wide unit-visit spreadsheet. Present in shared code; enabled only for `region`. |
 | `SharedContacts.js` | **Fold into `src/`; enable for Pacific** | `runExternalContactsToDomainSharedContacts()` — syncs the "External Contacts" sheet tab into Domain Shared Contacts. Already CONFIG-driven (`AUTOMATION_SPREADSHEET_ID`/`DOMAIN`/`WING`) + uses shared `sanitizeEmail()`. Region uses it; wing handles shared contacts in a separate project, so wing keeps it disabled. |
 | `PCRCAP.ORG.js` | **Drop (not automation)** | One-off, read-only audit that lists every `@pcrcap.org` user/group/alias/resource. Hardcoded domain; declares top-level `DOMAIN_TO_FIND` / `CUSTOMER_ID` globals (collision risk). Not part of the shared codebase — re-paste into the editor if the audit is ever needed again. |
 
 **Gating mechanism:** add per-feature profile flags (e.g. `RUN_REGION_GROUP_CHATS`,
 `RUN_UNIT_VISIT_REPORT`, `RUN_SHARED_CONTACTS`) to `TENANT_PROFILES_`. Each entry point
 guards on its flag (`if (!PROFILE_.RUN_… ) return;`) so it no-ops on tenants where it's off,
-even if run manually. Wing profiles (`seniors`/`cadets`) set them `false`; `pacific` `true`.
+even if run manually. Wing profiles (`seniors`/`cadets`) set them `false`; `region` `true`.
 Triggers are only scheduled where the feature is on.
 
 > ℹ️ **`UpdateChatSpaces` convergence — analyzed 2026-07-09 (function-level diff).** Pacific's
@@ -160,7 +163,7 @@ doesn't run as a side effect:
 1. **`getCapwatch()` calls `syncOrgPaths()` at the end.** On a single-unit region this
    should be a no-op, but `syncOrgPaths` filters on `region === 'PCR' && wing === CONFIG.WING`
    and emails IT. Gate it behind a profile flag (e.g. `SYNC_ORG_PATHS: false` for the
-   `pacific` profile) rather than relying on it being harmless.
+   `region` profile) rather than relying on it being harmless.
 2. Any squadron-group provisioning called from the member/group sync path must be
    likewise gated by the profile.
 
@@ -171,11 +174,11 @@ doesn't run as a side effect:
 Fold Pacific onto shared `src/` by moving everything region-specific into Script Properties
 and a profile — never into forked code.
 
-**Script Properties (identity)** — load from `config-tenants/pacific.json` via
+**Script Properties (identity)** — load from `config-tenants/region.json` via
 `setupTenantConfig()`, then `validateTenantConfig()`. Secrets (`SA_PRIVATE_KEY`,
 `CAPWATCH_AUTHORIZATION`) stay in Script Properties only, never committed.
 
-**`pacific` profile in `TENANT_PROFILES_` (src/config.gs)** — added (PR #10) to carry the
+**`region` profile in `TENANT_PROFILES_` (src/config.gs)** — added (PR #10) to carry the
 region behavior the `seniors` profile doesn't:
 - `MEMBER_TYPES_ACTIVE = ['SENIOR','FIFTY YEAR','INDEFINITE','CADET']` — no `LIFE`, no
   `AEM` (region confirmed).
@@ -196,8 +199,8 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 
 **Code-side (landed in PRs #9–#11):**
 
-1. ~~**Add the `pacific` profile.**~~ **Done — PR #10** (`reconcile/pacific-profile`):
-   `pacific` profile + profile-driven `EXCLUDED_ORG_IDS`/`AEM_UNIT` + `SYNC_ORG_PATHS` gate.
+1. ~~**Add the `region` profile.**~~ **Done — PR #10** (`reconcile/pacific-profile`):
+   `region` profile + profile-driven `EXCLUDED_ORG_IDS`/`AEM_UNIT` + `SYNC_ORG_PATHS` gate.
 2. ~~**Fold the region modules into `src/`** with per-feature profile flags.~~ **Done —
    PR #10.** `src/region/UpdateRegionGroupChats.gs`, `src/region/UnitVisitReport.gs`,
    `src/accounts-and-groups/SharedContacts.gs`, each guarded by a `RUN_*` flag (wing off,
@@ -210,8 +213,8 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
 **Deploy-side (executed 2026-07-09 as `automation@pcr.cap.gov` — the internal owner; an external-org account gets a 403 on push, see §0/ADMIN_GUIDE):**
 
 4. **Back up** the live "PCR Automation" project (versioned clasp pull, archived).
-5. **Set Script Properties** on "PCR Automation" from `config-tenants/pacific.json`
-   (`setupTenantConfig()` → `validateTenantConfig()`), plus `TENANT_PROFILE=pacific` and
+5. **Set Script Properties** on "PCR Automation" from `config-tenants/region.json`
+   (`setupTenantConfig()` → `validateTenantConfig()`), plus `TENANT_PROFILE=region` and
    the SA secrets. Includes the new region keys: `TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`,
    `TENANT_UNIT_VISIT_SPREADSHEET_ID`, `TENANT_UNIT_VISIT_CALENDAR_ID`.
 6. **Re-authorize** — the added `contacts` scope forces re-consent at the first push/run on
@@ -219,7 +222,7 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
    the dry run.
 7. **Dry run:** with the shared code loaded, preview member/group/license/chat actions and
    diff against current behavior before any write.
-8. **Push shared `src/`** to Pacific (`npm run push:pacific`). With everything folded in,
+8. **Push shared `src/`** to Pacific (`npm run push:region`). With everything folded in,
    the only files removed are the deliberately-dropped `PCRCAP.ORG` — no region
    functionality is lost.
 9. **Recreate the trigger set** under `automation@pcr.cap.gov` — the lean member/group/
@@ -251,11 +254,11 @@ All disposition questions are **resolved**; what remains is one deploy-time veri
 - ~~`UpdateResources`, `UnitVisitReport`, `updateRegionGroupChats`, `SharedContacts`,
   `PCRCAP.ORG`, `UpdateChatSpaces`, `REGION_CAPWATCH_DATA_FOLDER_ID`~~ — **all resolved**
   (§3–§6). `REGION_CAPWATCH_DATA_FOLDER_ID` is modeled as the `TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`
-  Script Property (set in `config-tenants/pacific.json`).
+  Script Property (set in `config-tenants/region.json`).
 - **Deploy-time verification (Pacific dry-run):** confirm the added `contacts` scope suffices
   for the M8 Domain Shared Contacts feed.
 
 ---
 
-*Related: `config-tenants/pacific.json` (identity), `clasp-targets/pacific.clasp.json`
+*Related: `config-tenants/region.json` (identity), `clasp-targets/region.clasp.json`
 (corrected scriptId), `docs/ADMIN_GUIDE.md` (secrets & tenant setup), `PCR_CHANGELOG.md`.*

@@ -103,7 +103,7 @@ other wings, etc.). **Header-keyed** (order doesn't matter); read by `getMembers
 | `Primary Phone` | Recovery phone |
 
 ### `External Contacts` — Domain Shared Contacts (region feature)
-Only used when `RUN_SHARED_CONTACTS` is on (the `pacific` profile). Synced into Google Domain
+Only used when `RUN_SHARED_CONTACTS` is on (the `region` profile). Synced into Google Domain
 Shared Contacts by `SharedContacts.gs`. **Header-keyed**:
 
 `CAPID, LastName, FirstName, MiddleName, Suffix, OrgID, Rank, DutyID, Assistant, Type, Status,
@@ -193,7 +193,7 @@ For a standard wing (no region features):
    `validateTenantConfig()`.
 
 A **region** deployment adds the `External Contacts` tab and turns on the region `RUN_*`
-flags (see [PACIFIC_DIFF.md](PACIFIC_DIFF.md) and the `pacific` profile in `config.gs`).
+flags (see [REGION_DIFF.md](REGION_DIFF.md) and the `region` profile in `config.gs`).
 
 ---
 

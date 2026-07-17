@@ -10,6 +10,29 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-17] — Renamed the 'pacific' profile to the generic 'region'
+
+### Changed
+
+- **`config.gs` (v1.6.0)** — the third behavioral profile was named `pacific`; renamed
+  to **`region`** so the shared code reads sensibly for any region-level tenant, not just
+  the Pacific Region. Renamed with it: `clasp-targets/pacific.clasp.json` →
+  `region.clasp.json`, `config-tenants/pacific.json` → `region.json`,
+  `config-tenants/setup-pacific.gs` → `setup-region.gs` (+ its
+  `setupPacificScriptProperties` → `setupRegionScriptProperties`),
+  `docs/PACIFIC_DIFF.md` → `docs/REGION_DIFF.md`, and the `npm run *:pacific` scripts →
+  `*:region`.
+
+  **No coordinated property flip is required.** `PROFILE_ALIASES_ = { pacific: 'region' }`
+  maps a legacy `TENANT_PROFILE=pacific` to `region` at resolution, so the live region
+  project keeps working whether or not its Script Property is updated — without the alias
+  it would have fallen through to the **seniors** profile (the `|| TENANT_PROFILES_.seniors`
+  default), silently running a region tenant as a wing. Flipping the property to `region`
+  (or re-running `setupRegionScriptProperties()`) is optional cleanup.
+
+  "Pacific Region" / "PCR" is preserved wherever it names the actual deploying org or the
+  `CAP-Pacific-Region` GitHub repo; only the profile identifier and its tooling changed.
+
 ## [2026-07-17] — Housekeeping: dead scope branch + duplicate helper
 
 ### Fixed

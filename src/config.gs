@@ -3,10 +3,14 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0, 1.5.0)
- * Version: 1.5.0
- * Date: 2026-07-15
- * Changes: Added LICENSE_CONFIG.MIN_MEMBER_ROWS, a floor under the CAPWATCH
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0, 1.5.0, 1.6.0)
+ * Version: 1.6.0
+ * Date: 2026-07-17
+ * Changes: Renamed the 'pacific' behavioral profile to the generic 'region' (so the
+ *   code reads sensibly outside the Pacific Region). PROFILE_ALIASES_ maps a legacy
+ *   TENANT_PROFILE=pacific to 'region', so the live tenant needs no coordinated
+ *   property flip — it keeps working whether or not the property is updated.
+ *   1.5.0: Added LICENSE_CONFIG.MIN_MEMBER_ROWS, a floor under the CAPWATCH
  *   Member.txt row count. deleteIneligibleSuspendedUsers() reads a missing
  *   CAPWATCH record as proof a member lapsed long ago, so a truncated extract
  *   would make current members look deletable; the deletion path now refuses to
@@ -100,15 +104,27 @@ const TENANT = getTenantConfig_();
  * *behavior*: the cadets tenant processes only CADET members, runs cadet-lite,
  * and creates a smaller set of squadron groups. Those values live here as coded
  * profiles (so the structure stays version-controlled) and are selected by the
- * `TENANT_PROFILE` Script Property ('seniors' | 'cadets'; defaults to 'seniors').
+ * `TENANT_PROFILE` Script Property ('seniors' | 'cadets' | 'region'; defaults to
+ * 'seniors').
  *
  * Like TENANT_*, the selector is a Script Property, so a shared-config `clasp
  * push` cannot clobber a tenant's behavior — set `TENANT_PROFILE=cadets` on the
  * cadets project and it keeps cadet behavior across every push.
+ *
+ * LEGACY ALIAS: the 'region' profile was called 'pacific' before it was
+ * generalized for use outside the Pacific Region. A tenant whose Script Property
+ * still reads 'pacific' is transparently mapped to 'region' below, so the rename
+ * needs no coordinated property flip — the live region project keeps working
+ * whether or not TENANT_PROFILE is updated to 'region'.
  */
-const TENANT_PROFILE = String(
-  PropertiesService.getScriptProperties().getProperty('TENANT_PROFILE') || 'seniors'
-).trim().toLowerCase();
+const PROFILE_ALIASES_ = { pacific: 'region' };
+
+const TENANT_PROFILE = (function () {
+  const raw = String(
+    PropertiesService.getScriptProperties().getProperty('TENANT_PROFILE') || 'seniors'
+  ).trim().toLowerCase();
+  return PROFILE_ALIASES_[raw] || raw;
+})();
 
 const TENANT_PROFILES_ = {
   seniors: {
@@ -214,10 +230,12 @@ const TENANT_PROFILES_ = {
       EMIT_PLACEHOLDERS: true
     }
   },
-  // Pacific Region — single-unit region HQ (PCR-PCR-001). Runs the shared code,
-  // differentiated only by config. Region confirmed: no AEM automation, and all
-  // senior members are typed INDEFINITE (legacy LIFE dropped). See docs/PACIFIC_DIFF.md.
-  pacific: {
+  // Region — a single-unit region HQ profile (the deploying instance is Pacific
+  // Region, PCR-PCR-001). Runs the shared code, differentiated only by config. No
+  // AEM automation, and all senior members are typed INDEFINITE (legacy LIFE
+  // dropped). Formerly the 'pacific' profile; see PROFILE_ALIASES_. See
+  // docs/REGION_DIFF.md.
+  region: {
     MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET', ''],
     CADET_LITE: false,
     TRANSITION_ROLE: '',          // single tenant holds both cadets and seniors: nothing to cross
@@ -420,7 +438,7 @@ CADET_LITE_EXCLUDED_GRADES: [
    * in UpdateMembers.gs) never eligible for accounts or group membership,
    * regardless of member type. Holding units differ by wing/region, so this is
    * per-tenant via TENANT_PROFILE. Seniors/cadets: 1297 = CALIF WING HQ SQ
-   * (CA-000) + 368 = CALIF LEGISLATIVE SQ (CA-999). Pacific: 1345.
+   * (CA-000) + 368 = CALIF LEGISLATIVE SQ (CA-999). Region: 1345.
    */
   EXCLUDED_ORG_IDS: PROFILE_.EXCLUDED_ORG_IDS,
 
@@ -639,7 +657,7 @@ const RETENTION_CONFIG = {
  *   'destination' — seniors tenant. Only exempts transitioning members from the
  *                   Level I gate so the destination account exists to receive
  *                   mail. No migration work happens here.
- *   ''            — off (pacific).
+ *   ''            — off (region).
  *
  * Deliberately single-owner: the source tenant polls the peer directory for the
  * destination account rather than the two tenants signaling each other, so there

@@ -1,19 +1,24 @@
 /**
- * ONE-TIME Pacific Region setup — paste into the "PCR Automation" Apps Script
- * editor, select setupPacificScriptProperties, and Run once.
+ * ONE-TIME region-tenant setup — paste into the "PCR Automation" Apps Script
+ * editor, select setupRegionScriptProperties, and Run once. (The deploying
+ * instance is Pacific Region; the profile itself is the generic 'region'.)
  *
- * Writes the NON-SECRET tenant identity (parsed from the project's old config.gs,
- * canonical copy in config-tenants/pacific.json) to Script Properties, which the
- * refactored shared config.gs reads via getTenantConfig_(). Safe to re-run:
- * existing values are overwritten with the same data; blanks are skipped.
+ * Writes the NON-SECRET tenant identity (canonical copy in
+ * config-tenants/region.json) to Script Properties, which the shared config.gs
+ * reads via getTenantConfig_(). Safe to re-run: existing values are overwritten
+ * with the same data; blanks are skipped.
+ *
+ * Running this sets TENANT_PROFILE='region', migrating the live tenant off the
+ * legacy 'pacific' value (both resolve to the same profile — see PROFILE_ALIASES_
+ * in config.gs — so nothing breaks either way).
  *
  * NOT set here (leave your existing values / set by hand):
  *   SA_IMPERSONATION_EMAIL, SA_PRIVATE_KEY, SA_PRIVATE_KEY_ID  (already present —
  *   the live SA delegation works), and CAPWATCH_AUTHORIZATION.
  */
-function setupPacificScriptProperties() {
+function setupRegionScriptProperties() {
   const values = {
-    TENANT_PROFILE: "pacific",
+    TENANT_PROFILE: "region",
     TENANT_DOMAIN: "pcr.cap.gov",
     TENANT_EMAIL_DOMAIN: "@pcr.cap.gov",
     TENANT_CAPWATCH_ORGID: "434",
