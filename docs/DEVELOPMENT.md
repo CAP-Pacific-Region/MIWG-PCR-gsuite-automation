@@ -68,7 +68,7 @@ Per-tenant identity and behavior live in that project's **Script Properties**, w
 touch:
 
 - **Identity** (`TENANT_DOMAIN`, `TENANT_EMAIL_DOMAIN`, `TENANT_CAPWATCH_ORGID`, `TENANT_WING`, `TENANT_REGION`, the folder/spreadsheet IDs, contact emails) — read at runtime by `getTenantConfig_()` in `config.gs`. Canonical non-secret values per tenant are version-controlled in [`config-tenants/<tenant>.json`](../config-tenants/README.md).
-- **Behavior** (`TENANT_PROFILE` = `seniors` | `cadets` | `pacific`) — selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
+- **Behavior** (`TENANT_PROFILE` = `seniors` | `cadets` | `region`) — selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
 - **Secrets** (`SA_*`, `XT_PEER_*`, `MISSION_WEBHOOK_SECRET`, the per-user `CAPWATCH_AUTHORIZATION`) — never committed.
 
 Apply values once per project with `setupTenantConfig()` (or by hand in **Project Settings →
@@ -359,7 +359,7 @@ var summary = Logger.getSummary();
 4. **Roll out to the other tenants** once seniors looks healthy:
    ```bash
    npm run push:cadets
-   npm run push:pacific
+   npm run push:region
    ```
    Push one at a time and confirm each — never push all three blind. Remember each push resets that
    project's `config.gs` to the shared copy (identity stays in Script Properties).
@@ -908,10 +908,10 @@ Deployment is `clasp push` per tenant. The npm scripts wrap
 
 | Action | Seniors | Cadets | Pacific |
 |--------|---------|--------|---------|
-| Status (what would change) | `npm run status:seniors` | `npm run status:cadets` | `npm run status:pacific` |
-| Push (`src/` → project) | `npm run push:seniors` | `npm run push:cadets` | `npm run push:pacific` |
-| Pull (project → `src/`) | `npm run pull:seniors` | `npm run pull:cadets` | `npm run pull:pacific` |
-| Open in browser | `npm run open:seniors` | `npm run open:cadets` | `npm run open:pacific` |
+| Status (what would change) | `npm run status:seniors` | `npm run status:cadets` | `npm run status:region` |
+| Push (`src/` → project) | `npm run push:seniors` | `npm run push:cadets` | `npm run push:region` |
+| Pull (project → `src/`) | `npm run pull:seniors` | `npm run pull:cadets` | `npm run pull:region` |
+| Open in browser | `npm run open:seniors` | `npm run open:cadets` | `npm run open:region` |
 
 ### Deployment Process
 
@@ -921,7 +921,7 @@ Deployment is `clasp push` per tenant. The npm scripts wrap
    ```bash
    npm run push:seniors    # then run a preview fn + check Executions
    npm run push:cadets
-   npm run push:pacific
+   npm run push:region
    ```
    The three projects are pushed **independently and can silently drift** — `master` is not proof of
    what is live on any tenant. If you set a new `TENANT_*`/profile field, set it in Script Properties

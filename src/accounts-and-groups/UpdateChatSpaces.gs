@@ -1,9 +1,13 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 2.0.0
- * Date: 2026-07-09
+ * Version: 2.0.1
+ * Date: 2026-07-17
  * Author: Lt Col Noel Luneau, Pacific Region
- * Changes: Converged as the single shared ChatSpaces module (adopted the
+ * Contributors: Maj Isaac Wilson IV, California Wing (2.0.1)
+ * Changes: 2.0.1 — buildCommitteeSpaceName() tested orgScope === 'SQUADRON', a
+ *   value CAPWATCH never emits (Organization.txt Scope is UNIT/GROUP/WING/REGION),
+ *   so unit-level committee spaces silently got no prefix. Corrected to 'UNIT'.
+ *   2.0.0 — Converged as the single shared ChatSpaces module (adopted the
  *   Pacific superset). vs the prior wing version this adds automation-group and
  *   user-additions chat spaces — gated behind PROFILE_.RUN_AUTOMATION_CHAT_SPACES
  *   (off for the wing) — plus an empty-vs-null cache-safety fix. Two corrections
@@ -647,7 +651,10 @@ function buildCommitteeSpaceName(org, committeeName) {
     const match = orgName.match(/GROUP\s*(\d+)/i);
     const groupStr = match ? 'GP' + match[1] : '';
     prefix = orgWing + 'WG' + (groupStr ? '-' + groupStr : '') + ' - ';
-  } else if (orgScope === 'SQUADRON') {
+  } else if (orgScope === 'UNIT') {
+    // CAPWATCH's Organization.txt Scope column is UNIT/GROUP/WING/REGION — never
+    // the literal 'SQUADRON' this branch used to test, so squadron-level committee
+    // spaces silently fell through to no prefix. (Verified against a real extract.)
     prefix = orgWing + orgUnit + ' - ';
   }
 

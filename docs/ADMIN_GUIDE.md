@@ -90,12 +90,12 @@ These IDs are the load-bearing facts. Keep this table current — it is the map 
 |--------|--------|---------------|--------------|------------------------|
 | Seniors (the driver) | `cawgcap.org` | `automation@cawgcap.org` | `clasp-targets/seniors.clasp.json` | `1ZjkCGQ2Dt-goAYO6n9y6cDwUnvm3Jor6DV0sLIsdCu4iB5zSzS9gmjAi` |
 | Cadets | `cawgcadets.org` | `automation@cawgcadets.org` | `clasp-targets/cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
-| Pacific Region | `pcr.cap.gov` | `automation@pcr.cap.gov` (project in a `pcr.cap.gov` Shared Drive) | `clasp-targets/pacific.clasp.json` | `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0` |
+| Pacific Region | `pcr.cap.gov` | `automation@pcr.cap.gov` (project in a `pcr.cap.gov` Shared Drive) | `clasp-targets/region.clasp.json` | `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0` |
 
 Open any project in the browser from the repo with e.g. `npm run open:seniors`.
 
 > **Pacific is deployed and verified (2026-07-09).** It runs the shared `src/` with
-> `TENANT_PROFILE=pacific`. Two things to know for future pushes:
+> `TENANT_PROFILE=region`. Two things to know for future pushes:
 > - The project lives in a **`pcr.cap.gov` Shared Drive**. An external-org account (e.g.
 >   `automation@cawgcap.org`) can `clasp pull` but gets a 403 *"User has not enabled the Apps
 >   Script API"* on **push** — that message is misleading; it's a **cross-org write block**, not
@@ -122,7 +122,7 @@ Open any project in the browser from the repo with e.g. `npm run open:seniors`.
 > [`config-tenants/seniors.json`](../config-tenants/seniors.json), not in `config.gs`. Each tenant
 > has its own set: cadets in [`config-tenants/cadets.json`](../config-tenants/cadets.json)
 > (ORGID `188`, `cawgcadets.org`), Pacific in
-> [`config-tenants/pacific.json`](../config-tenants/pacific.json) (ORGID `434`, `pcr.cap.gov`). The
+> [`config-tenants/region.json`](../config-tenants/region.json) (ORGID `434`, `pcr.cap.gov`). The
 > cadet cross-tenant nesting is **not** addressed via `CONFIG.DOMAIN`; see
 > [Section 5](#5-the-three-tenants-and-how-code-gets-deployed). To trust a value for a tenant, read
 > that tenant's `config-tenants/*.json` (or its live Script Properties), not the shared `config.gs`.
@@ -221,7 +221,7 @@ Apps Script projects via three clasp targets. Each target is just a `{ scriptId,
 clasp-targets/
 ├── seniors.clasp.json   → cawgcap.org project      (seniors tenant + cross-tenant driver)
 ├── cadets.clasp.json    → cawgcadets.org project   (cadets tenant)
-└── pacific.clasp.json   → Pacific Region project   (pcr.cap.gov Shared Drive; deployed)
+└── region.clasp.json   → Pacific Region project   (pcr.cap.gov Shared Drive; deployed)
 ```
 
 ### How the cadet split *actually* works
@@ -296,7 +296,7 @@ and see [Section 7](#7-secrets-and-script-properties-the-part-that-breaks-silent
 ```bash
 npm run push:seniors    # push src/ to the seniors project
 npm run push:cadets     # then cadets
-npm run push:pacific    # then pacific
+npm run push:region    # then pacific
 ```
 
 Push to one, confirm it's healthy (run a preview function, check Executions), then the next.
@@ -324,10 +324,10 @@ Without this, `clasp push`/`pull` fail with an API-disabled error.
 
 | Action | Seniors | Cadets | Pacific |
 |--------|---------|--------|---------|
-| Status (what would change) | `npm run status:seniors` | `npm run status:cadets` | `npm run status:pacific` |
-| Push (deploy `src/` → project) | `npm run push:seniors` | `npm run push:cadets` | `npm run push:pacific` |
-| Pull (project → `src/`) | `npm run pull:seniors` | `npm run pull:cadets` | `npm run pull:pacific` |
-| Open in browser | `npm run open:seniors` | `npm run open:cadets` | `npm run open:pacific` |
+| Status (what would change) | `npm run status:seniors` | `npm run status:cadets` | `npm run status:region` |
+| Push (deploy `src/` → project) | `npm run push:seniors` | `npm run push:cadets` | `npm run push:region` |
+| Pull (project → `src/`) | `npm run pull:seniors` | `npm run pull:cadets` | `npm run pull:region` |
+| Open in browser | `npm run open:seniors` | `npm run open:cadets` | `npm run open:region` |
 
 Under the hood each is `clasp <cmd> -P clasp-targets/<tenant>.clasp.json`.
 
@@ -478,7 +478,7 @@ an internal helper. **Preview/test functions never modify Workspace** — use th
 
 ### Region features (Pacific only — profile-gated)
 These ship in the shared `src/` but no-op unless their profile flag is on (`true` only for
-`TENANT_PROFILE=pacific`; `false`/unscheduled on the wing tenants):
+`TENANT_PROFILE=region`; `false`/unscheduled on the wing tenants):
 - `updateRegionGroupChats()` — region duty groups + duty Chat spaces, built from the region
   CAPWATCH folder (`RUN_REGION_GROUP_CHATS`; `TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`).
 - `buildRegionUnitVisitReport()` — region-wide unit-visit spreadsheet, one tab per wing

@@ -104,7 +104,7 @@ Canonical non-secret values live in `config-tenants/seniors.json` / `cadets.json
 
 Do this **once per wing project** (seniors and cadets). Pacific needs none of it. The two
 projects are mirror images — each reads the *other* tenant. Nothing here touches the
-`pacific` project.
+`region` project.
 
 ### 0. Repo changes that ship with `clasp push` (already in `src/`)
 

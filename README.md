@@ -25,7 +25,7 @@ per-tenant code branches, no forks.
 |--------|--------|---------|------|
 | **Seniors** | `cawgcap.org` | `seniors` (default) | CAWG senior members; also the **cross-tenant driver** |
 | **Cadets** | `cawgcadets.org` | `cadets` | CAWG cadets (cadet-lite accounts, smaller group set) |
-| **Pacific Region** | `pcr.cap.gov` | `pacific` | Region-level features (mission webhook, unit-visit report, region chats) |
+| **Pacific Region** | `pcr.cap.gov` | `region` | Region-level features (mission webhook, unit-visit report, region chats) |
 
 The **same code** runs on all three. Each project carries its own `TENANT_*` identity and a
 `TENANT_PROFILE` selector in Script Properties (which `clasp push` never touches), so a deploy can
@@ -87,7 +87,7 @@ never repoint one tenant at another's domain. Canonical non-secret values are ve
    │  SENIORS     │    │   CADETS     │    │  PACIFIC     │
    │ cawgcap.org  │◄──►│cawgcadets.org│    │  pcr.cap.gov │
    │ profile:     │xt  │ profile:     │    │ profile:     │
-   │  seniors     │    │  cadets      │    │  pacific     │
+   │  seniors     │    │  cadets      │    │  region      │
    └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
          │ Admin SDK / Calendar / Chat / Groups Settings APIs
          ▼                   ▼                   ▼
@@ -125,7 +125,7 @@ src/                          # The shared codebase — deployed unchanged to al
 └── recruiting-and-retention/ # Age-out / expiration / welcome emails + HTML templates
 
 config-tenants/               # Canonical NON-SECRET per-tenant values (repo-only; never pushed)
-├── seniors.json  cadets.json  pacific.json
+├── seniors.json  cadets.json  region.json
 clasp-targets/                # {scriptId, rootDir:../src} pointers, one per tenant
 docs/                         # Admin Guide, cross-tenant, migration, troubleshooting, etc.
 ```
@@ -149,11 +149,11 @@ npm run status:seniors            # preview what would change on a tenant
 npm run push:seniors              # deploy src/ → seniors project
 npm run pull:seniors              # pull project → src/ (to inspect drift)
 npm run open:seniors              # open the project in the browser
-# ...and the :cadets / :pacific equivalents
+# ...and the :cadets / :region equivalents
 ```
 
 **Recommended change flow:** branch → edit `src/` → `push:seniors` → run the relevant `preview…`
-function and check **Executions** → push `cadets`, then `pacific` → update
+function and check **Executions** → push `cadets`, then `region` → update
 [PCR_CHANGELOG.md](PCR_CHANGELOG.md) → open a PR to **`CAP-Pacific-Region/MIWG-PCR-gsuite-automation`
 master** (not the upstream `cap-miwg` repo). Full details in
 [Admin Guide §6](docs/ADMIN_GUIDE.md#6-local-development-with-clasp) and
@@ -168,7 +168,7 @@ A project's identity and behavior come entirely from **Script Properties**, set 
 and never overwritten by a push:
 
 - **Identity** — `TENANT_DOMAIN`, `TENANT_EMAIL_DOMAIN`, `TENANT_CAPWATCH_ORGID`, `TENANT_WING`, `TENANT_REGION`, the Drive folder / spreadsheet IDs, and contact addresses. Canonical values live in [`config-tenants/<tenant>.json`](config-tenants/README.md).
-- **Behavior** — `TENANT_PROFILE` (`seniors` | `cadets` | `pacific`) selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
+- **Behavior** — `TENANT_PROFILE` (`seniors` | `cadets` | `region`) selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
 - **Secrets** — `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` (per-tenant service account), `XT_PEER_*` (cross-tenant peer SA), `MISSION_WEBHOOK_SECRET`, and the per-user `CAPWATCH_AUTHORIZATION` token. Never committed.
 
 Apply values with `setupTenantConfig()` (or by hand), then run `validateTenantConfig()`. There is
@@ -222,7 +222,7 @@ automation account** ([Accounts & Groups module](src/accounts-and-groups/README.
 
 - **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the operational runbook (start here for anything live).
 - **[Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md)** — seniors ⇄ cadets shared-contact sync.
-- **[Pacific Diff](docs/PACIFIC_DIFF.md)** / **[GCP Project Migration](docs/GCP_PROJECT_MIGRATION.md)** — Pacific-specific setup and the standard-GCP-project migration.
+- **[Pacific Diff](docs/REGION_DIFF.md)** / **[GCP Project Migration](docs/GCP_PROJECT_MIGRATION.md)** — Pacific-specific setup and the standard-GCP-project migration.
 - **[Spreadsheet Setup](docs/SPREADSHEET_SETUP.md)** — the automation config spreadsheet tabs.
 - **[API Reference](docs/API_REFERENCE.md)** · **[Utilities](docs/UTILITIES.md)** · **[Development Guide](docs/DEVELOPMENT.md)** · **[Troubleshooting](docs/TROUBLESHOOTING.md)** — internals, inherited from the upstream single-wing project and reconciled for the multi-tenant model (each carries a note on what changed).
 - **[SECURITY.md](SECURITY.md)** · **[PCR_CHANGELOG.md](PCR_CHANGELOG.md)** / **[CHANGELOG.md](CHANGELOG.md)** · **[Versioning](docs/VERSIONING.md)**.

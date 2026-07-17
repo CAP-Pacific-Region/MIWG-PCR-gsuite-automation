@@ -11,9 +11,9 @@
     "push:cadets": "clasp push -P clasp-targets/cadets.clasp.json",
     "pull:cadets": "clasp pull -P clasp-targets/cadets.clasp.json",
     "open:cadets": "clasp open-script -P clasp-targets/cadets.clasp.json",
-    "status:pacific": "clasp status -P clasp-targets/pacific.clasp.json",
-    "push:pacific": "clasp push -P clasp-targets/pacific.clasp.json",
-    "pull:pacific": "clasp pull -P clasp-targets/pacific.clasp.json",
-    "open:pacific": "clasp open-script -P clasp-targets/pacific.clasp.json"
+    "status:region": "clasp status -P clasp-targets/region.clasp.json",
+    "push:region": "clasp push -P clasp-targets/region.clasp.json",
+    "pull:region": "clasp pull -P clasp-targets/region.clasp.json",
+    "open:region": "clasp open-script -P clasp-targets/region.clasp.json"
   }
 }
