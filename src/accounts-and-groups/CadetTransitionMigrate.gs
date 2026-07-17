@@ -455,6 +455,14 @@ function migrateOneTransition_(row, started, opts) {
 
         const detail = describeMessage_(row.CadetEmail, sourceToken, group[i].id);
         skipped.push(detail);
+
+        // Write the DO NOT DELETE note NOW, not at completion. A skip in an
+        // execution that later pauses would otherwise be lost across the
+        // continuation boundary — the skip that reached a COMPLETE row unnoted.
+        recordSkip_(row._rowNumber, detail.id,
+          `Gmail message too large to migrate: [${detail.sizeEstimate}] ${detail.date} ` +
+          `"${detail.subject}" from ${detail.from} (id ${detail.id})`);
+
         Logger.error('Message too large to migrate — SKIPPED, will not survive deletion', {
           capid: row.CAPID,
           messageId: group[i].id,
@@ -512,22 +520,14 @@ function migrateOneTransition_(row, started, opts) {
   setTransitionField_(row._rowNumber, 'MessagesMigrated', imported);
   setTransitionField_(row._rowNumber, 'LastCursor', '');
 
-  // Skipped messages are mail that will NOT be in the destination when the
-  // source is deleted. Recording them with a marker that whyNotCloseable_()
-  // refuses on: the account cannot be closed until a human has dealt with them
-  // and cleared it. Silently deleting the source would destroy the only copy of
-  // exactly the mail we already know we could not move.
+  // The DO NOT DELETE notes were already written at skip time by recordSkip_ —
+  // durably, so they survive the continuations a large mailbox needs. Nothing to
+  // write here; just log this execution's contribution. (Writing a summary to
+  // Notes here would clobber skips recorded by earlier executions of the same
+  // migration.)
   if (skipped.length) {
-    const summary = skipped
-      .map(s => `[${s.sizeEstimate}] ${s.date} "${s.subject}" from ${s.from} (id ${s.id})`)
-      .join(' | ');
-
-    setTransitionField_(row._rowNumber, 'Notes',
-      `SKIPPED ${skipped.length} message(s) too large to migrate — DO NOT DELETE ` +
-      `until handled manually: ${summary}`);
-
-    Logger.error('Migration finished with skipped messages — deletion is blocked', {
-      capid: row.CAPID, skipped: skipped.length
+    Logger.error('This execution skipped messages — deletion is blocked by recordSkip_', {
+      capid: row.CAPID, skippedThisRun: skipped.length
     });
   }
 

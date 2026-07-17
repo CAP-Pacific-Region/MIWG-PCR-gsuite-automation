@@ -222,6 +222,50 @@ function setTransitionField_(rowNumber, column, value) {
 }
 
 /**
+ * Reads one field of one row, fresh from the sheet.
+ *
+ * The row objects from readTransitions_() are a snapshot; this reads the live
+ * cell, needed when appending to a value (like Notes) that earlier writes in the
+ * same execution may have changed.
+ *
+ * @param {number} rowNumber - 1-indexed sheet row
+ * @param {string} column
+ * @returns {string}
+ */
+function getTransitionField_(rowNumber, column) {
+  const index = transitionHeader_get_().indexOf(column);
+  if (index < 0) return '';
+  const v = getTransitionsSheet_().getRange(rowNumber, index + 1).getValue();
+  return v instanceof Date ? v.toISOString() : String(v == null ? '' : v);
+}
+
+/**
+ * Durably records a skipped item that must block deletion — written the instant
+ * the skip happens, NOT deferred to a completion handler.
+ *
+ * This exists because the obvious design (collect skips in an array, write the
+ * note when the mailbox finishes) silently loses them: a large migration spans
+ * many time-limited executions, and a skip in an execution that then pauses is
+ * discarded when that execution ends, while the cursor advances past the skipped
+ * item so no later run re-encounters it. The skip gets logged but the note that
+ * should refuse the close is never written — which is exactly how a genuinely
+ * missing message reached a COMPLETE row with no DO NOT DELETE marker.
+ *
+ * Idempotent via dedupKey (the source item id): a crash mid-page can re-skip the
+ * same item on resume, and appending it twice would just be noise.
+ *
+ * @param {number} rowNumber
+ * @param {string} dedupKey - unique id of the skipped item (message/file id)
+ * @param {string} description - human-readable, includes the id
+ */
+function recordSkip_(rowNumber, dedupKey, description) {
+  const current = getTransitionField_(rowNumber, 'Notes');
+  if (current.indexOf(dedupKey) > -1) return;   // already recorded this item
+  const entry = 'DO NOT DELETE — ' + description;
+  setTransitionField_(rowNumber, 'Notes', current ? current + ' | ' + entry : entry);
+}
+
+/**
  * Appends a new transition row, ordered to match the sheet rather than the
  * constant — see transitionHeader_get_().
  *

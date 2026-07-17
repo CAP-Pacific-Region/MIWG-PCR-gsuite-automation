@@ -260,12 +260,11 @@ function migrateOneDrive_(row, started) {
   if (fileResult.complete) {
     setTransitionField_(row._rowNumber, 'DriveMigrated', done.fileCount + fileResult.copied);
     setTransitionField_(row._rowNumber, 'DriveCursor', '');
+    // Skip notes were written durably at skip time by recordSkip_; do not
+    // overwrite Notes here (it would clobber skips from earlier executions).
     if (fileResult.skipped.length) {
-      setTransitionField_(row._rowNumber, 'Notes',
-        `Drive copied, but SKIPPED ${fileResult.skipped.length} item(s) — DO NOT DELETE ` +
-        `until handled: ` + fileResult.skipped.join(' | '));
-      Logger.error('Drive migration finished with skips — deletion blocked', {
-        capid: row.CAPID, skipped: fileResult.skipped.length
+      Logger.error('Drive migration finished with skips — deletion blocked by recordSkip_', {
+        capid: row.CAPID, skippedThisRun: fileResult.skipped.length
       });
     } else {
       Logger.info('Drive migration complete', {
@@ -538,6 +537,10 @@ function copyFiles_(row, srcToken, destToken, rootId, done, started) {
       grants.forEach((res, i) => {
         if (res.ok) { copyable.push(group[i]); return; }
         skipped.push(`"${group[i].name}" (${group[i].id}): grant failed`);
+        // Durable, at skip time — see recordSkip_. A skip in an execution that
+        // later pauses would otherwise vanish across the continuation boundary.
+        recordSkip_(row._rowNumber, group[i].id,
+          `Drive file could not be shared: "${group[i].name}" (id ${group[i].id})`);
         Logger.error('Drive file could not be shared — SKIPPED', {
           capid: row.CAPID, fileId: group[i].id, name: group[i].name, error: res.error
         });
@@ -573,6 +576,8 @@ function copyFiles_(row, srcToken, destToken, rootId, done, started) {
           // strand the entire Drive, so record it as a skip that blocks deletion
           // and press on.
           skipped.push(`"${copyable[i].name}" (${copyable[i].id}): copy failed`);
+          recordSkip_(row._rowNumber, copyable[i].id,
+            `Drive file copy failed: "${copyable[i].name}" (id ${copyable[i].id})`);
           Logger.error('Drive file copy failed — SKIPPED, will not survive deletion', {
             capid: row.CAPID, fileId: copyable[i].id, name: copyable[i].name, error: res.error
           });
