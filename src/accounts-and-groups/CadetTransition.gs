@@ -240,6 +240,22 @@ function getTransitionField_(rowNumber, column) {
 }
 
 /**
+ * True only for a genuinely empty sheet field — '', null, or undefined.
+ *
+ * Exists to avoid the falsy-zero trap: `!value` and `value || ''` both treat the
+ * NUMBER 0 as empty, so a legitimate "0 items migrated" reads as "never handled"
+ * and blocks the close permanently. A count field where 0 is a real, deliberate
+ * value must test blankness this way, not by truthiness. (0 blocked every member,
+ * since all four had 0 personal contacts.)
+ *
+ * @param {*} v
+ * @returns {boolean}
+ */
+function isBlankField_(v) {
+  return v === '' || v === null || v === undefined;
+}
+
+/**
  * Durably records a skipped item that must block deletion — written the instant
  * the skip happens, NOT deferred to a completion handler.
  *

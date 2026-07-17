@@ -135,7 +135,7 @@ function whyNotCloseable_(row, now) {
     return 'mail is known to be unmigrated (see Notes) — handle it, then clear the note';
   }
 
-  if (TRANSITION_CONFIG.REQUIRE_MIGRATION_BEFORE_DELETE && !row.MessagesMigrated) {
+  if (TRANSITION_CONFIG.REQUIRE_MIGRATION_BEFORE_DELETE && isBlankField_(row.MessagesMigrated)) {
     return 'MessagesMigrated is empty — no evidence anything was actually moved';
   }
 
@@ -147,17 +147,19 @@ function whyNotCloseable_(row, now) {
   // CadetTransitionDrive.gs. Measured 2026-07-15: 43.5GB across 6511 files for
   // four members, one holding 36.7GB.
   //
-  // Refuses until DriveMigrated says otherwise. '0' is a legitimate answer for a
-  // member with an empty Drive and must be set deliberately; blank means nobody
-  // has looked, which is not the same thing.
-  if (String(row.DriveMigrated || '') === '') {
+  // Refuses until DriveMigrated says otherwise. 0 is a legitimate answer for a
+  // member with an empty Drive and must be treated as handled; blank means nobody
+  // has looked. isBlankField_ is the whole point — a plain `|| ''` or `!value`
+  // check coalesces 0 to empty and blocks the close forever, which it did.
+  if (isBlankField_(row.DriveMigrated)) {
     return 'Drive not handled — closing would destroy it. Copy it, or set ' +
       'DriveMigrated=0 if there is nothing to copy';
   }
 
   // Same reasoning as Drive: personal contacts die with the account. Blank means
-  // nobody looked; 0 is a deliberate "nothing to copy".
-  if (String(row.ContactsMigrated || '') === '') {
+  // nobody looked; 0 is a deliberate "nothing to copy". EVERY member so far has
+  // 0 saved contacts, so the falsy-zero bug here blocked all of them.
+  if (isBlankField_(row.ContactsMigrated)) {
     return 'Contacts not handled — closing would destroy them. Copy them, or set ' +
       'ContactsMigrated=0 if there is nothing to copy';
   }

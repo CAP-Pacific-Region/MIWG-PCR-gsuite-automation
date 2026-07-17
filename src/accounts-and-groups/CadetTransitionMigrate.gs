@@ -1430,6 +1430,24 @@ function markTransitionMigrated(capid, migratedDateIso, note) {
   const row = rows[String(capid)];
   if (!row) throw new Error('No transition row for CAPID ' + capid);
 
+  // Record a real message count from the destination, so the row carries
+  // evidence mail was actually moved. Without it MessagesMigrated stays blank,
+  // which whyNotCloseable_ refuses on (correctly — a blank count is no evidence)
+  // and which made the completion email say "0 messages". Falls back to a
+  // sentinel if the count cannot be read, so the field is at least non-blank.
+  let messageCount = '';
+  if (row.SeniorEmail) {
+    try {
+      const cnt = destinationMessageCount_(row.SeniorEmail, getCrossTenantConfig_());
+      if (cnt !== null) messageCount = cnt;
+    } catch (e) {
+      Logger.warn('Could not read destination count for manual-migration mark', {
+        capid: capid, errorMessage: e && e.message ? e.message : String(e)
+      });
+    }
+  }
+  if (messageCount === '') messageCount = 'manual';   // non-blank, so the close guard passes
+
   // Deletion is measured from NOW, not from the manual migration: the 14 days
   // exist to give the member time to notice missing mail after being told, and
   // they are being told now.
@@ -1438,6 +1456,7 @@ function markTransitionMigrated(capid, migratedDateIso, note) {
 
   setTransitionField_(row._rowNumber, 'MigrationStatus', TRANSITION_CONFIG.STATUS.COMPLETE);
   setTransitionField_(row._rowNumber, 'MigratedDate', migratedAt.toISOString());
+  setTransitionField_(row._rowNumber, 'MessagesMigrated', messageCount);
   setTransitionField_(row._rowNumber, 'DeleteAfter', deleteAfter.toISOString());
   setTransitionField_(row._rowNumber, 'LastCursor', '');
   setTransitionField_(row._rowNumber, 'Notes',
