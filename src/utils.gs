@@ -227,15 +227,20 @@ function calculateGroup(orgid, squadrons) {
 }
 
 /**
- * Converts a string to Title Case (first letter upper, rest lower for each word)
+ * Converts a string to Title Case (first letter upper, rest lower for each word).
+ *
+ * Sole definition — a second copy lived in UpdateMembers.gs, and in Apps Script's
+ * one shared namespace the later-loaded file silently won. This is the stronger of
+ * the two: `\b\w+` breaks on hyphens, apostrophes and periods, so "AUBURN-STARR",
+ * "O'BRIEN" and "L.A." become "Auburn-Starr", "O'Brien", "L.A." rather than
+ * "Auburn-starr", "O'brien", "L.a.".
+ *
  * @param {string} str
  * @returns {string}
  */
 function toTitleCase(str) {
   if (!str || typeof str !== 'string') return '';
-  return str.replace(/\w\S*/g, txt =>
-    txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
-  );
+  return str.toLowerCase().replace(/\b\w+/g, t => t[0].toUpperCase() + t.substring(1));
 }
 
 /**

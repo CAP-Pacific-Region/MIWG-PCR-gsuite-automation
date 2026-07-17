@@ -10,6 +10,22 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-17] — Housekeeping: dead scope branch + duplicate helper
+
+### Fixed
+
+- **`UpdateChatSpaces.gs` (v2.0.1)** — `buildCommitteeSpaceName()` branched on
+  `orgScope === 'SQUADRON'`, a value CAPWATCH never emits — `Organization.txt`'s Scope
+  column is `UNIT`/`GROUP`/`WING`/`REGION`. Unit-level committee spaces therefore fell
+  through with no prefix. Corrected to `'UNIT'`.
+- **`utils.gs` / `UpdateMembers.gs` (v1.13.1)** — `toTitleCase()` was defined in **both**
+  files with **different** implementations; in Apps Script's single shared namespace the
+  later-loaded copy silently won, so behavior was load-order-dependent. Consolidated to
+  one definition in `utils.gs`, keeping the stronger `\b\w+` variant (breaks on hyphens,
+  apostrophes and periods: "Auburn-Starr", "O'Brien", "L.A." — the weaker copy produced
+  "Auburn-starr", "O'brien", "L.a."). Also fixes the calendar and cross-tenant-contact
+  callers that could have inherited the weaker behavior.
+
 ## [2026-07-17] — Account deletion gated behind a per-tenant Script Property
 
 ### Changed

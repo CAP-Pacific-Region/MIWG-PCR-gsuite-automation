@@ -1,10 +1,13 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.13.0
- * Date: 2026-07-14
+ * Version: 1.13.1
+ * Date: 2026-07-17
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.13.0)
- * Changes: getPublicRank() now maps CADET grades; it had none, so a cadet signature
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.13.1)
+ * Changes: 1.13.1 — removed the duplicate toTitleCase() (the stronger copy now lives
+ *   solely in utils.gs); it and this file's copy differed, and Apps Script's shared
+ *   namespace made the winner load-order-dependent.
+ *   1.13.0 — getPublicRank() now maps CADET grades; it had none, so a cadet signature
  *   rendered the raw CAPWATCH value ("C/Amn Jane Doe", "CADET Jane Doe"). Display
  *   forms come from the grade list in CAP's own signature generator, including the
  *   "Cadet " prefix it prepends. Note CAPWATCH's cadet spellings are NOT the senior
@@ -2391,11 +2394,8 @@ function pushAllSignatures() {
 // SHARED SIGNATURE HELPERS
 // ==========================================================================
 
-function toTitleCase(str) {
-  return (str || '')
-    .toLowerCase()
-    .replace(/\b\w+/g, t => t[0].toUpperCase() + t.substring(1));
-}
+// toTitleCase() lives in utils.gs (single definition). It was duplicated here;
+// the utils copy now carries this file's stronger \b\w+ implementation.
 
 function formatPhone(phone) {
   if (!phone) return '';
