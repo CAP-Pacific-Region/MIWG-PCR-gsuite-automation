@@ -793,3 +793,112 @@ function previewCadetTransitions() {
   console.log('');
   console.log('By status: ' + JSON.stringify(buckets));
 }
+
+// ============================================================================
+// TRIGGERS
+// ============================================================================
+
+/**
+ * Lifecycle handlers that run on a daily schedule. Deliberately excludes the
+ * close/delete step — deletion is permanent and stays a human decision.
+ */
+const TRANSITION_TRIGGER_FUNCTIONS_ = [
+  'detectCadetTransitions',
+  'resolveTransitionDestinations',
+  'migrateCadetTransitions',
+  'migrateAllTransitionDrives',
+  'migrateAllTransitionContacts'
+];
+
+/**
+ * Installs the daily time-driven triggers that run the transition lifecycle
+ * hands-off, from detection through migration.
+ *
+ * ⚠️ RUN THIS AS automation@cawgcadets.org. Apps Script triggers are owned by,
+ * and visible only to, the account that creates them, and the completion email's
+ * send-as identity is that account. Run it as anyone else and the jobs execute
+ * as the wrong identity — the emails fall back to the runner's address, and the
+ * triggers won't show up for the automation account.
+ *
+ * ⚠️ NO close/delete trigger is installed, on purpose. closeCompletedTransitions
+ * permanently deletes accounts with no archive and no undo; it stays manual —
+ * `closeCompletedTransitions(true)` to review, then `(false)` to act. Same
+ * discipline the license-lifecycle reaper landed on: automate the reversible
+ * work, keep a human on the irreversible step.
+ *
+ * Idempotent: clears the lifecycle triggers first, so re-running re-arms cleanly
+ * rather than duplicating. Continuation triggers are left alone — they are
+ * transient and self-delete.
+ *
+ * The hours are staggered so each phase feeds the next within a day, and they
+ * must sit AFTER the daily CAPWATCH pull, since detection needs a fresh
+ * Member.txt. If getCapwatch runs later than ~2 AM, shift these later to match.
+ *
+ * @returns {{armed: number}}
+ */
+function armTransitionTriggers() {
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    throw new Error('Transition triggers belong only on the source (cadets) tenant');
+  }
+
+  disarmTransitionTriggers();
+
+  // detect -> resolve -> migrate Gmail -> Drive -> Contacts, an hour apart. Each
+  // phase only acts on rows the previous one made ready, so a member who does
+  // not finish one phase in a day is simply picked up the next day — well inside
+  // the 14/90-day windows.
+  const schedule = [
+    ['detectCadetTransitions', 3],
+    ['resolveTransitionDestinations', 4],
+    ['migrateCadetTransitions', 5],
+    ['migrateAllTransitionDrives', 6],
+    ['migrateAllTransitionContacts', 7]
+  ];
+
+  schedule.forEach(function (pair) {
+    ScriptApp.newTrigger(pair[0]).timeBased().everyDays(1).atHour(pair[1]).create();
+    Logger.info('Transition trigger armed', { handler: pair[0], atHour: pair[1] });
+  });
+
+  console.log('Armed ' + schedule.length + ' daily transition triggers (detect → migrate).');
+  console.log('NO close/delete trigger — run closeCompletedTransitions(false) by hand.');
+  console.log('These are owned by whoever ran this — confirm it is automation@cawgcadets.org.');
+  return { armed: schedule.length };
+}
+
+/**
+ * Removes the lifecycle triggers armTransitionTriggers installed. Leaves the
+ * transient continuation triggers alone.
+ *
+ * @returns {{removed: number}}
+ */
+function disarmTransitionTriggers() {
+  var removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (TRANSITION_TRIGGER_FUNCTIONS_.indexOf(t.getHandlerFunction()) > -1) {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+  Logger.info('Transition lifecycle triggers removed', { removed: removed });
+  return { removed: removed };
+}
+
+/**
+ * Read-only: lists the transition triggers currently installed and who would
+ * own them. Run to confirm state after arming.
+ */
+function listTransitionTriggers() {
+  const mine = ScriptApp.getProjectTriggers().filter(function (t) {
+    return TRANSITION_TRIGGER_FUNCTIONS_.indexOf(t.getHandlerFunction()) > -1;
+  });
+  if (!mine.length) {
+    console.log('No transition lifecycle triggers installed.');
+    return;
+  }
+  mine.forEach(function (t) {
+    console.log(t.getHandlerFunction() + '  (' + t.getEventType() + ')');
+  });
+  console.log('');
+  console.log(mine.length + ' installed. Continuation triggers (transient) are not listed.');
+}

@@ -128,7 +128,10 @@ function migrateCadetTransitions(notify) {
     Logger.info('Transition migration skipped — not the source tenant');
     return { migrated: 0, incomplete: 0, failed: 0 };
   }
-  return withTransitionLock_(() => migrateCadetTransitions_(notify),
+  // Coerce to a clean boolean: a time-driven trigger calls this with an event
+  // object as the first arg, which must read as "notify on", not be threaded
+  // through (and serialized into the continuation scope) as an object.
+  return withTransitionLock_(() => migrateCadetTransitions_(notify !== false),
     { migrated: 0, incomplete: 0, failed: 0 });
 }
 
