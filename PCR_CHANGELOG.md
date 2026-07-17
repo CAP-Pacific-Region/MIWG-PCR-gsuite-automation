@@ -10,6 +10,28 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-17] — Account deletion gated behind a per-tenant Script Property
+
+### Changed
+
+- **`ManageLicenses.gs` (v1.3.0)** — real account deletion now requires the tenant to
+  be explicitly armed via a Script Property, **`LICENSE_DELETION_ARMED`**. Both
+  `deleteIneligibleSuspendedUsers()` and `deleteIneligibleWorkspaceUsers()` refuse to
+  call `AdminDirectory.Users.remove()` unless that property is exactly `true`
+  (case-insensitive, trimmed) — **even when passed `dryRun=false`** — and
+  `manageLicenseLifecycle()` passes `dryRun = !armed`.
+
+  Deletion is permanent and this Workspace edition has no Archived-User fallback, so
+  it stays off until a property is set on the **specific project**. Previously arming
+  meant editing `manageLicenseLifecycle()` to pass `false`: fragile (every `clasp
+  push` reverts `src/` to the safe default) and dangerous (committing `false` would
+  arm **every** tenant at once). A Script Property survives push and is per-project.
+
+  Truth table (verified): `remove()` fires **iff** `dryRun === false` **and** the
+  property is exactly `true`. Property absent → dry run. `'1'`, `'yes'`, or a typo like
+  `'ture'` → stays safe. No tenant is armed by this change; the monthly reaper keeps
+  reporting what it *would* take until someone sets the property deliberately.
+
 ## [2026-07-16] — LSCode weekly-trigger installer
 
 ### Added
