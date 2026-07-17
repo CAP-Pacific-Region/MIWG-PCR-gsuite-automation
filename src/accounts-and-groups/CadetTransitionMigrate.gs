@@ -1,6 +1,11 @@
 /**
  * Cadet → senior mail migration.
  *
+ * Version: 1.0.0
+ * Date: 2026-07-16
+ * Changes: 1.0.0 — initial release. Parallel Gmail import into the senior
+ *   mailbox, resumable across the 6-minute limit and serialized by a script lock.
+ *
  * Runs on the CADETS tenant (TRANSITION_CONFIG.ROLE === 'source'), reading the
  * cadet mailbox with the local SA and writing into the senior mailbox with the
  * peer SA. See CadetTransition.gs for detection, state, and why the cadets

@@ -241,6 +241,16 @@ differentiated only by Script Properties (`TENANT_*` identity + `TENANT_PROFILE`
   on `cawgcadets.org` directly. **Re-enabled 2026-07-09**; its time-driven triggers run under the
   role account **`automation@cawgcadets.org`**.
 
+**Crossing the split (aging out).** When a cadet turns 21 or converts, they leave the cadets tenant
+for the seniors tenant, and their `cawgcadets.org` mailbox would otherwise be deleted with no archive
+behind it. The **cadet→senior transition** subsystem (`CadetTransition*.gs`) handles this: the cadets
+tenant (`TRANSITION_CONFIG.ROLE=source`) migrates their mail/Drive/contacts to the new
+`cawgcap.org` account, then deletes the old account and forwards its address; the seniors tenant
+(`ROLE=destination`) just exempts them from the Level I gate so the receiving account exists. It runs
+on triggers **except** the final delete, which stays manual. Full detail:
+[Section 9](#9-entry-point-function-reference) and the
+[module README](../src/accounts-and-groups/README.md#4-cadettransitiongs---cadet--senior-account-transition).
+
 > **History (resolved).** This section used to describe the cadets project as a dormant
 > "byte-for-byte clone" pointed at `cawgcap.org` with no triggers. That was a symptom of the
 > shared-`config.gs` clobber (below), since fixed: the cadets project now carries its own `TENANT_*`
@@ -414,7 +424,12 @@ their own cadence where enabled. **Confirm the actual triggers in each project**
 the intended design, not a guarantee of what is currently scheduled.
 
 > The **cadets** tenant runs largely the same schedule **except** resource management
-> (`MANAGE_RESOURCES=false`). The **Pacific** tenant runs a **leaner core** (single unit
+> (`MANAGE_RESOURCES=false`), **plus** the cadet→senior transition lifecycle: five daily
+> triggers staggered 3–7 AM (`detectCadetTransitions` → `resolveTransitionDestinations`
+> → `migrateCadetTransitions` → `migrateAllTransitionDrives` → `migrateAllTransitionContacts`),
+> installed by `armTransitionTriggers()`. The account-deleting `closeCompletedTransitions()`
+> is **deliberately not scheduled** — it stays a manual review-then-act step (see [Section 9](#9-entry-point-function-reference)).
+> The **Pacific** tenant runs a **leaner core** (single unit
 > PCR-PCR-001 → no squadron groups, no org-path sync, no resources) **plus its own region
 > features**, enabled by profile flags that are `false` on the wing tenants:
 > `updateRegionGroupChats()` (`RUN_REGION_GROUP_CHATS`), `buildRegionUnitVisitReport()`
@@ -496,6 +511,22 @@ These ship in the shared `src/` but no-op unless their profile flag is on (`true
 - `auditWorkspaceUsersForRemoval()`, `deleteIneligibleWorkspaceUsers(dryRun=true)` — audit tooling (**dry run by default**).
 - `manualReactivateArchivedUser(email)` — one-off manual reactivation.
 
+### Cadet → senior transition (`CadetTransition*.gs`) — **cadets tenant only**
+Carries a converting cadet's mail, Drive, and contacts to their new seniors-tenant
+account before the cadet account is deleted (`TRANSITION_CONFIG.ROLE === 'source'`;
+no-ops elsewhere). State lives in the `Transitions` sheet. See the
+[module README](../src/accounts-and-groups/README.md#4-cadettransitiongs---cadet--senior-account-transition).
+- `armTransitionTriggers()` — install the five daily lifecycle triggers (detect →
+  migrate, 3–7 AM). **Run as `automation@cawgcadets.org`** — triggers are owned by
+  their creator and the completion email's Send-As is that account.
+  `disarmTransitionTriggers()` / `listTransitionTriggers()` manage/inspect them.
+- `detectCadetTransitions()`, `resolveTransitionDestinations()` — open rows, resolve destinations.
+- `migrateCadetTransitions(notify)`, `migrateAllTransitionDrives()`, `migrateAllTransitionContacts()` — the three migration phases (resumable).
+- `previewCadetTransitions()` — **preview** the queue.
+- `closeCompletedTransitions(dryRun=true)` — **the only destructive step; not triggered.**
+  Deletes the cadet account and forwards its address once migration is COMPLETE and
+  the 90-day hold has expired. Review with `(true)`, act with `(false)`.
+
 ### Group administration utilities (`groupAdministration.gs`)
 - Reporting: `groupAdministration_writeAllGroupsReport()`, `..._writeNoMemberGroupsReport()`,
   `..._previewStaleGroups()`, `..._previewConfiguredGroups()`.
@@ -535,7 +566,11 @@ src/
 │   ├── UpdateChatSpaces.gs        # Unit/committee Chat spaces (Chat advanced service, runs as executing user).
 │   ├── UpdateCalendars.gs         # Share unit calendars with members; writer groups.
 │   ├── ManageLicenses.gs          # Lifecycle: reactivate/suspend/delete to manage seats.
-│   └── groupAdministration.gs     # Ad-hoc group reporting & cleanup utilities.
+│   ├── groupAdministration.gs     # Ad-hoc group reporting & cleanup utilities.
+│   └── CadetTransition*.gs         # Cadet→senior cross-tenant transition (cadets tenant only):
+│                                  #   CadetTransition.gs (detect/state/triggers),
+│                                  #   ...Migrate.gs (Gmail), ...Drive.gs, ...Contacts.gs,
+│                                  #   ...Cleanup.gs (manual delete + forward).
 │
 ├── squadron-groups/
 │   └── SquadronGroups.gs          # Per-squadron all-hands/cadets/seniors/parents + public-contact

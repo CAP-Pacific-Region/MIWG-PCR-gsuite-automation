@@ -44,6 +44,7 @@ never repoint one tenant at another's domain. Canonical non-secret values are ve
 - **Calendars & Chat** — shares unit calendars with new/transferred members; syncs squadron and committee Chat spaces.
 - **Calendar resources** — aircraft and vehicles as bookable Calendar resources, with squadrons as buildings (seniors only).
 - **License lifecycle** — suspends expired members, and deletes long-ineligible accounts to stay under the Workspace-for-Nonprofits seat cap.
+- **Cadet → senior transition** — when a cadet ages out or converts, the cadets tenant carries their mail, Drive, and contacts to their new seniors-tenant account before the old account is deleted, then forwards the freed address (cadets tenant only; the final delete stays a manual step).
 - **Region features** (Pacific only) — region duty groups + Chat spaces, a region-wide unit-visit report, and an on-demand **mission provisioning webhook** (Group + Chat space + Drive folder per mission).
 
 ### Key characteristics
@@ -115,7 +116,7 @@ src/                          # The shared codebase — deployed unchanged to al
 ├── GetCapwatch.gs            # Download CAPWATCH ZIP → Drive; credential storage
 ├── SyncOrgPaths.gs           # ORGID→OU map; auto-creates OUs for new squadrons
 ├── appsscript.json           # Manifest: advanced services, OAuth scopes, web-app config
-├── accounts-and-groups/      # Members, groups, licenses, calendars, chat, cross-tenant cadet groups
+├── accounts-and-groups/      # Members, groups, licenses, calendars, chat, cross-tenant cadet groups + cadet→senior transition
 ├── squadron-groups/          # Per-squadron distribution lists (profile-driven set)
 ├── calendar-resources/       # Aircraft/vehicle resources + squadron buildings (seniors only)
 ├── cross-tenant-contacts/    # Peer-tenant directory → this tenant's shared contacts (seniors ⇄ cadets)
@@ -198,11 +199,18 @@ Cross-tenant (`updateCAWGCadetGroups()`, `syncCrossTenantContacts`) and region-o
 run where their profile flag enables them. Confirm the **actual** triggers per project — the table
 is the intended design. See [Admin Guide §8–9](docs/ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule).
 
+The **cadets** tenant additionally runs the cadet→senior transition lifecycle: `armTransitionTriggers()`
+installs five daily triggers staggered 3–7 AM — `detectCadetTransitions` → `resolveTransitionDestinations`
+→ `migrateCadetTransitions` → `migrateAllTransitionDrives` → `migrateAllTransitionContacts`. The final
+`closeCompletedTransitions()` deletes the old account and is **deliberately not triggered** — it stays a
+manual review-then-act step. These belong only on the source (cadets) tenant and must be armed **as the
+automation account** ([Accounts & Groups module](src/accounts-and-groups/README.md#4-cadettransitiongs---cadet--senior-account-transition)).
+
 ## Modules
 
 | Module | Purpose |
 |--------|---------|
-| [Accounts & Groups](src/accounts-and-groups/README.md) | Members, email groups, licenses, calendars, Chat spaces, cross-tenant cadet groups |
+| [Accounts & Groups](src/accounts-and-groups/README.md) | Members, email groups, licenses, calendars, Chat spaces, cross-tenant cadet groups, cadet→senior transition |
 | [Squadron Groups](src/squadron-groups) | Per-squadron distribution lists (profile-driven set) |
 | [Calendar Resources](src/calendar-resources/README.md) | Aircraft/vehicle resources + squadron buildings (seniors only) |
 | [Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md) | Publish the peer tenant's members into this tenant's Global Address List |

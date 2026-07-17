@@ -17,11 +17,12 @@ This module handles the core automation for synchronizing CAPWATCH member data w
 
 ## Overview
 
-This module consists of three main components:
+This module consists of four main components:
 
 1. **UpdateMembers.gs** - User account lifecycle management
 2. **UpdateGroups.gs** - Email group membership synchronization
 3. **ManageLicenses.gs** - License optimization and account archival
+4. **CadetTransition*.gs** - Cadet → senior cross-tenant account transition (PCR only; cadets tenant)
 
 Together, these scripts ensure that your Google Workspace environment stays synchronized with CAPWATCH membership data automatically.
 
@@ -197,6 +198,69 @@ DELETED (permanent removal)
 - Active member checks before deletion
 - Detailed email reports
 - Comprehensive logging
+
+### 4. CadetTransition*.gs - Cadet → Senior Account Transition
+
+**Purpose**: Carries a member's mailbox, Drive, and contacts from the **cadets**
+tenant to the **seniors** tenant when they age out at 21 or convert after 18,
+*before* their cadet account is deleted. Without this, the cadet tenant would
+suspend and delete the account ~30 days later and the mailbox would be gone — this
+edition has no Archived User licenses, so deletion is the only way to free a seat
+and there is no archive to recover from.
+
+**Where it runs**: The **cadets** tenant only (`TRANSITION_CONFIG.ROLE === 'source'`).
+Every entry point no-ops on any other tenant. The seniors tenant's only role is
+`destination`: it exempts these members from the Level I gate in `updateAllMembers()`
+so the destination mailbox exists to receive the migrated mail. Single-tenant
+profiles (e.g. Pacific) set `ROLE: ''` and the feature is inert. See
+`TRANSITION_CONFIG` in `config.gs`.
+
+**Files**:
+- **CadetTransition.gs** — detection, the `Transitions` sheet (authoritative state),
+  peer-directory polling, and the trigger installer.
+- **CadetTransitionMigrate.gs** — Gmail migration (parallel import, resumable).
+- **CadetTransitionDrive.gs** — copies owned Drive files.
+- **CadetTransitionContacts.gs** — copies personal Contacts.
+- **CadetTransitionCleanup.gs** — deletes the old account, then forwards its address.
+
+**Lifecycle**:
+```
+Cadet type flips in CAPWATCH (SENIOR / PATRON / …), status still ACTIVE
+    ↓  detectCadetTransitions()          opens a Transitions row, starts the 90-day hold
+    ↓  resolveTransitionDestinations()   fills SeniorEmail once the senior account appears
+    ↓  migrateCadetTransitions()         copies mail into the senior mailbox
+    ↓  migrateAllTransitionDrives()      copies owned Drive files
+    ↓  migrateAllTransitionContacts()    copies personal contacts
+    ↓  closeCompletedTransitions(false)  MANUAL — deletes the cadet account + forwards
+```
+
+**Key Functions** (all cadets-tenant only):
+- `armTransitionTriggers()` - installs the five daily triggers (detect → migrate),
+  staggered 3–7 AM. Run **as `automation@cawgcadets.org`** — triggers are owned by
+  and visible only to their creator, and the completion email's Send-As is that
+  account. `disarmTransitionTriggers()` / `listTransitionTriggers()` manage them.
+- `detectCadetTransitions()` - opens a `Transitions` row per converting member.
+- `migrateCadetTransitions(notify)` / `migrateAllTransitionDrives()` / `migrateAllTransitionContacts()` - the three migration phases.
+- `closeCompletedTransitions(dryRun)` - closes accounts whose migration is COMPLETE
+  and whose hold has expired. **Not triggered** — see below.
+- `previewCadetTransitions()` - read-only summary of the queue.
+
+**The close step is deliberately manual**. `closeCompletedTransitions()` permanently
+deletes accounts with no archive and no undo, so `armTransitionTriggers()` installs
+**no** close/delete trigger — matching the license-lifecycle discipline (automate the
+reversible copying, keep a human on the irreversible delete). Review with
+`closeCompletedTransitions(true)`, then act with `closeCompletedTransitions(false)`.
+
+**Why a 90-day hold**: `TRANSITION_CONFIG.HOLD_DAYS` (90) waits out National's
+fingerprint/Level I processing so a PATRON who later converts to SENIOR still has a
+mailbox to migrate. `deleteIneligibleSuspendedUsers()` skips any CAPID with an open
+transition row (`getHeldTransitionCapids()`), so the ordinary license reaper never
+deletes a mailbox mid-flight. `FAILED` rows hold indefinitely and need a human.
+
+**Service-account scopes** (on the SA's domain-wide-delegation grant, *not* in
+`appsscript.json`): cadets SA needs `gmail.readonly` + Drive/Contacts read; seniors
+(peer) SA needs `gmail.insert` + `gmail.labels` to import, and `gmail.metadata` for
+the duplicate-guard check. Missing scopes fail loudly per phase.
 
 ## How It Works
 

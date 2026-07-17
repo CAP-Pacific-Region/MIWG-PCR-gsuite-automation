@@ -1,6 +1,12 @@
 /**
  * Cadet → senior transition: closing the old account.
  *
+ * Version: 1.0.0
+ * Date: 2026-07-16
+ * Changes: 1.0.0 — initial release. Catches up late mail, deletes the cadet
+ *   account, then forwards its address to the senior mailbox. The only step that
+ *   destroys data — kept manual, never triggered.
+ *
  * The end of the lifecycle. Runs on the CADETS tenant
  * (TRANSITION_CONFIG.ROLE === 'source'). See CadetTransition.gs for detection
  * and state, CadetTransitionMigrate.gs for the mail move.

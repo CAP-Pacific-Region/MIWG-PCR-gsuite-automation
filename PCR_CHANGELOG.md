@@ -43,6 +43,74 @@ next to each entry below.
   still be owned by the automation account. Covered by a test that reproduces the
   wrong-identity bounce and asserts the alarm is delivered without a `from`.
 
+## [2026-07-16] — Cadet → senior account transition
+
+### Added
+
+- **`CadetTransition.gs` · `CadetTransitionMigrate.gs` · `CadetTransitionDrive.gs`
+  · `CadetTransitionContacts.gs` · `CadetTransitionCleanup.gs` (all v1.0.0)** — a
+  new subsystem that carries a member across tenants when they age out of the
+  cadet program at 21 or convert voluntarily after 18. Previously the cadets
+  tenant just suspended and deleted the account ~30 days later, destroying the
+  mailbox: this edition provisions **no** Archived User licenses, so deletion is
+  the only way to reclaim a seat and there is no archive behind it.
+
+  Runs on the **cadets** tenant only (`TRANSITION_CONFIG.ROLE === 'source'`);
+  every entry point no-ops elsewhere. The seniors tenant is `destination` and its
+  sole involvement is exempting these members from the Level I gate in
+  `updateAllMembers()` so the receiving mailbox exists. The cadets tenant owns the
+  whole lifecycle and **polls** the peer directory for the destination account
+  rather than the two tenants signalling each other, so there is no shared state
+  to drift. Single-tenant profiles (Pacific) set `ROLE: ''` and the feature is
+  inert.
+
+  The lifecycle: `detectCadetTransitions()` opens a row in a new **`Transitions`**
+  sheet (authoritative state, so a human can see a stuck migration and step in) →
+  `resolveTransitionDestinations()` fills in the senior address once that account
+  appears → `migrateCadetTransitions()` imports Gmail in parallel batches →
+  `migrateAllTransitionDrives()` copies owned Drive files →
+  `migrateAllTransitionContacts()` copies personal contacts →
+  `closeCompletedTransitions(false)` deletes the cadet account and forwards its
+  freed address to the senior mailbox via a Group.
+
+  Design points worth carrying forward:
+  - **Suspended mailboxes stay readable.** SA impersonation works against
+    suspended users (verified), so members are suspended on day 0 exactly as
+    before — preserving the seat-cap discipline PATRON accounts blew in June
+    2026 — and mail is migrated at leisure inside the hold window. Nothing here
+    ever unsuspends an account.
+  - **A 90-day hold, timed from `DetectedDate`, not the license clock.**
+    `LICENSE_CONFIG` grace times a member *lapsing*, which a transitioning cadet
+    is not doing. `TRANSITION_CONFIG.HOLD_DAYS` waits out National's fingerprint /
+    Level I processing so a PATRON who later converts still has a mailbox to move.
+    `deleteIneligibleSuspendedUsers()` now skips any CAPID with an open transition
+    row (`getHeldTransitionCapids()`), so the license reaper never deletes a
+    mailbox mid-flight. `FAILED` rows hold indefinitely and need a human.
+  - **Resumable across the 6-minute limit.** A four-year mailbox holds thousands
+    of messages, so each phase stops at a page boundary before the ceiling,
+    records its cursor, and schedules its own continuation. Cursors advance only
+    after a full page lands, so an expected time-limit stop cannot duplicate.
+  - **Runs are serialized by a script lock** (`withTransitionLock_`) so an
+    overlapping trigger and a manual run cannot import the same pages twice.
+  - **`0 migrated` is a real value, not "unhandled."** The count fields treat a
+    genuine zero (e.g. a member with no personal contacts) as done, via
+    `isBlankField_()` — an earlier truthiness check read `0` as "never looked" and
+    blocked the close for all four pilot members.
+  - **The close is deliberately manual.** `armTransitionTriggers()` installs five
+    daily triggers (detect → migrate, staggered 3–7 AM) but **no** close/delete
+    trigger — the same discipline the license reaper landed on: automate the
+    reversible copying, keep a human on the irreversible delete. Review with
+    `closeCompletedTransitions(true)`, act with `(false)`. The triggers must be
+    armed **as `automation@cawgcadets.org`** (triggers are owned by and visible
+    only to their creator, and the completion email's Send-As is that account).
+
+  Requires DWD scopes on the service accounts (set in the Admin console, *not*
+  `appsscript.json`): cadets SA `gmail.readonly` + Drive/Contacts read; seniors
+  (peer) SA `gmail.insert` + `gmail.labels` to import and `gmail.metadata` for the
+  duplicate-guard check. Exercised on the initial pilot members. Going live is a
+  deliberate operational step: run `armTransitionTriggers()` as the automation
+  account and confirm with `listTransitionTriggers()`.
+
 ## [2026-07-15] — Commanders hear about background-check changes
 
 ### Added

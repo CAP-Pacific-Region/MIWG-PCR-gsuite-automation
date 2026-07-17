@@ -1,6 +1,11 @@
 /**
  * Cadet → senior transition: Drive.
  *
+ * Version: 1.0.0
+ * Date: 2026-07-16
+ * Changes: 1.0.0 — initial release. Copies a member's owned Drive files into the
+ *   senior account before the cadet account is deleted, resumable across runs.
+ *
  * Runs on the CADETS tenant (TRANSITION_CONFIG.ROLE === 'source'). See
  * CadetTransition.gs for the lifecycle this belongs to.
  *
