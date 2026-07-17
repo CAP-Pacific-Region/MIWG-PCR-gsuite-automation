@@ -1,6 +1,11 @@
 /**
  * Cadet → senior tenant transition.
  *
+ * Version: 1.0.0
+ * Date: 2026-07-16
+ * Changes: 1.0.0 — initial release. Detection + state for the cadet→senior
+ *   lifecycle; the Transitions sheet is authoritative for who is mid-flight.
+ *
  * When a cadet turns 21, or converts voluntarily after 18, CAPWATCH flips their
  * type and they leave the cadet tenant for the senior one. Before this module
  * existed the cadet tenant simply suspended them and deleted the account ~30
@@ -240,6 +245,38 @@ function getTransitionField_(rowNumber, column) {
 }
 
 /**
+ * Runs fn holding a script-wide lock, so only one transition operation touches
+ * the Transitions sheet and the mailboxes/Drives at a time.
+ *
+ * Without it, a scheduled trigger firing while a continuation (or a manual run)
+ * is mid-flight would process the same cursor twice and duplicate imports/copies
+ * — the cursor discipline guards an interrupted run, not a concurrent one. The
+ * late arrival backs off rather than waiting, matching processSendAsNamesBatch:
+ * whoever holds the lock is already doing the work and will schedule the next
+ * continuation, so a second execution has nothing to add.
+ *
+ * Acquired ONLY at top-level entry points, never in the per-member workers they
+ * call, so a call chain never tries to take the lock twice.
+ *
+ * @param {function(): T} fn
+ * @param {T} bailValue - returned if the lock is held by another execution
+ * @returns {T}
+ * @template T
+ */
+function withTransitionLock_(fn, bailValue) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    Logger.warn('Transition operation skipped — another run holds the script lock');
+    return bailValue;
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
  * True only for a genuinely empty sheet field — '', null, or undefined.
  *
  * Exists to avoid the falsy-zero trap: `!value` and `value || ''` both treat the
@@ -321,7 +358,10 @@ function detectCadetTransitions() {
     });
     return { detected: 0, updated: 0, existing: 0 };
   }
+  return withTransitionLock_(detectCadetTransitions_, { detected: 0, updated: 0, existing: 0 });
+}
 
+function detectCadetTransitions_() {
   const start = new Date();
   Logger.info('Starting cadet transition detection');
 
@@ -679,7 +719,10 @@ function resolveTransitionDestinations() {
     Logger.info('Destination resolution skipped — not the source tenant');
     return { resolved: 0, stillPending: 0 };
   }
+  return withTransitionLock_(resolveTransitionDestinations_, { resolved: 0, stillPending: 0 });
+}
 
+function resolveTransitionDestinations_() {
   const rows = readTransitions_();
   const peerByCapid = peerCapidToEmail_();
   let resolved = 0;

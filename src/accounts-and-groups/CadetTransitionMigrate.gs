@@ -128,7 +128,11 @@ function migrateCadetTransitions(notify) {
     Logger.info('Transition migration skipped — not the source tenant');
     return { migrated: 0, incomplete: 0, failed: 0 };
   }
+  return withTransitionLock_(() => migrateCadetTransitions_(notify),
+    { migrated: 0, incomplete: 0, failed: 0 });
+}
 
+function migrateCadetTransitions_(notify) {
   const started = new Date();
   const rows = readTransitions_();
   let migrated = 0;
@@ -194,7 +198,11 @@ function migrateSingleTransition(capid, notify) {
   if (TRANSITION_CONFIG.ROLE !== 'source') {
     throw new Error('Not the source tenant');
   }
+  return withTransitionLock_(() => migrateSingleTransition_(capid, notify),
+    { complete: false, imported: 0 });
+}
 
+function migrateSingleTransition_(capid, notify) {
   const rows = readTransitions_();
   const row = rows[String(capid)];
   if (!row) throw new Error('No transition row for CAPID ' + capid);
@@ -1332,7 +1340,10 @@ function catchUpTransitionMail() {
     Logger.info('Catch-up skipped — not the source tenant');
     return { caughtUp: 0, imported: 0 };
   }
+  return withTransitionLock_(catchUpTransitionMail_, { caughtUp: 0, imported: 0 });
+}
 
+function catchUpTransitionMail_() {
   const started = new Date();
   const rows = readTransitions_();
   let caughtUp = 0;

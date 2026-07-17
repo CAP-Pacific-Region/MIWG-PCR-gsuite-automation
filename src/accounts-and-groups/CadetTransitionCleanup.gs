@@ -45,8 +45,14 @@ function closeCompletedTransitions(dryRun) {
     Logger.info('Transition cleanup skipped — not the source tenant');
     return { closed: 0, skipped: 0, failed: 0 };
   }
+  // A dry run only reads, so it needs no lock and should work even while another
+  // run holds it. A real close deletes accounts — serialize it.
+  if (dryRun !== false) return closeCompletedTransitions_(true);
+  return withTransitionLock_(() => closeCompletedTransitions_(false),
+    { closed: 0, skipped: 0, failed: 0 });
+}
 
-  const isDry = dryRun !== false;
+function closeCompletedTransitions_(isDry) {
   const rows = readTransitions_();
   const now = new Date();
   let closed = 0;
@@ -345,8 +351,11 @@ function createForwardingGroup_(oldAddress, forwardTo, name) {
  */
 function expireForwardingGroups(dryRun) {
   if (TRANSITION_CONFIG.ROLE !== 'source') return { removed: 0 };
+  if (dryRun !== false) return expireForwardingGroups_(true);
+  return withTransitionLock_(() => expireForwardingGroups_(false), { removed: 0 });
+}
 
-  const isDry = dryRun !== false;
+function expireForwardingGroups_(isDry) {
   const rows = readTransitions_();
   const now = new Date();
   let removed = 0;

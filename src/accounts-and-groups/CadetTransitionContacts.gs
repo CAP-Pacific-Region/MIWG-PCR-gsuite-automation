@@ -55,7 +55,11 @@ const CONTACTS_CONTINUATION_SCOPE_PROP_ = 'CONTACTS_CONTINUATION_SCOPE';
  */
 function migrateSingleTransitionContacts(capid) {
   if (TRANSITION_CONFIG.ROLE !== 'source') throw new Error('Not the source tenant');
+  return withTransitionLock_(() => migrateSingleTransitionContacts_(capid),
+    { copied: 0, complete: false });
+}
 
+function migrateSingleTransitionContacts_(capid) {
   const rows = readTransitions_();
   const row = rows[String(capid)];
   if (!row) throw new Error('No transition row for CAPID ' + capid);
@@ -74,7 +78,10 @@ function migrateAllTransitionContacts() {
     Logger.info('Contacts migration skipped — not the source tenant');
     return { processed: 0 };
   }
+  return withTransitionLock_(migrateAllTransitionContacts_, { processed: 0 });
+}
 
+function migrateAllTransitionContacts_() {
   const started = new Date();
   const rows = readTransitions_();
   let processed = 0;

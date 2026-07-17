@@ -85,7 +85,11 @@ const DRIVE_CONTINUATION_SCOPE_PROP_ = 'DRIVE_CONTINUATION_SCOPE';
  */
 function migrateSingleTransitionDrive(capid) {
   if (TRANSITION_CONFIG.ROLE !== 'source') throw new Error('Not the source tenant');
+  return withTransitionLock_(() => migrateSingleTransitionDrive_(capid),
+    { folders: 0, files: 0, skipped: 0, complete: false });
+}
 
+function migrateSingleTransitionDrive_(capid) {
   const rows = readTransitions_();
   const row = rows[String(capid)];
   if (!row) throw new Error('No transition row for CAPID ' + capid);
@@ -153,7 +157,10 @@ function migrateAllTransitionDrives() {
     Logger.info('Drive migration skipped — not the source tenant');
     return { processed: 0 };
   }
+  return withTransitionLock_(migrateAllTransitionDrives_, { processed: 0 });
+}
 
+function migrateAllTransitionDrives_() {
   const started = new Date();
   const rows = readTransitions_();
   let processed = 0;
