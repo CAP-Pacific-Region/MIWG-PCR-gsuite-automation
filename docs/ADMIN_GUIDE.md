@@ -424,11 +424,13 @@ their own cadence where enabled. **Confirm the actual triggers in each project**
 the intended design, not a guarantee of what is currently scheduled.
 
 > The **cadets** tenant runs largely the same schedule **except** resource management
-> (`MANAGE_RESOURCES=false`), **plus** the cadet→senior transition lifecycle: five daily
-> triggers staggered 3–7 AM (`detectCadetTransitions` → `resolveTransitionDestinations`
-> → `migrateCadetTransitions` → `migrateAllTransitionDrives` → `migrateAllTransitionContacts`),
-> installed by `armTransitionTriggers()`. The account-deleting `closeCompletedTransitions()`
-> is **deliberately not scheduled** — it stays a manual review-then-act step (see [Section 9](#9-entry-point-function-reference)).
+> (`MANAGE_RESOURCES=false`), **plus** the cadet→senior transition lifecycle: six daily
+> triggers staggered 3–8 AM (`detectCadetTransitions` → `resolveTransitionDestinations`
+> → `migrateCadetTransitions` → `migrateAllTransitionDrives` → `migrateAllTransitionContacts`
+> → `remindPendingTransitionCloses`), installed by `armTransitionTriggers()`. The
+> account-deleting `closeCompletedTransitions()` is **deliberately not scheduled** — it stays
+> a manual review-then-act step, and `remindPendingTransitionCloses` just emails IT when
+> accounts are past grace and due for that manual close (see [Section 9](#9-entry-point-function-reference)).
 > The **Pacific** tenant runs a **leaner core** (single unit
 > PCR-PCR-001 → no squadron groups, no org-path sync, no resources) **plus its own region
 > features**, enabled by profile flags that are `false` on the wing tenants:
@@ -511,21 +513,44 @@ These ship in the shared `src/` but no-op unless their profile flag is on (`true
 - `auditWorkspaceUsersForRemoval()`, `deleteIneligibleWorkspaceUsers(dryRun=true)` — audit tooling (**dry run by default**).
 - `manualReactivateArchivedUser(email)` — one-off manual reactivation.
 
+> **Arming real deletion — `LICENSE_DELETION_ARMED`.** Every deletion path stays a **dry run
+> until the per-tenant Script Property `LICENSE_DELETION_ARMED` is exactly `true`** — even when
+> a caller passes `dryRun=false`. `manageLicenseLifecycle()` itself passes `dryRun=!armed`, and
+> `deleteIneligibleSuspendedUsers()` / `deleteIneligibleWorkspaceUsers()` re-check the property
+> before any `Users.remove()`. It is a **property, not a code flag**, on purpose: `clasp push`
+> overwrites all of `src/`, so a committed `false→true` edit would be reverted by the next push
+> **and** would arm every tenant at once. A property survives push and is per-project, so each
+> tenant is armed deliberately and independently.
+>
+> **To arm one tenant:** Project Settings → Script Properties → `LICENSE_DELETION_ARMED = true`.
+> **Always dry-run first** — `deleteIneligibleSuspendedUsers(true)` — and read the buckets:
+> `WOULD DELETE`, `SPARED within grace`, `SPARED current-member-ineligible-by-type` (PATRON etc.,
+> a human call), and `SPARED left-the-wing` (a member absent from CAPWATCH but recently active is
+> treated as a **wing transfer**, not a lapse, and put on a departure timer — this guard is what
+> stops a transferred member being wrongly deleted). Grace is 30 days from the CAPWATCH
+> Expiration date; deletion is permanent (this edition has no Archived-User fallback).
+> **Deploy status:** armed on **seniors** (2026-07-17); **cadets** and **region** remain dry-run.
+
 ### Cadet → senior transition (`CadetTransition*.gs`) — **cadets tenant only**
 Carries a converting cadet's mail, Drive, and contacts to their new seniors-tenant
 account before the cadet account is deleted (`TRANSITION_CONFIG.ROLE === 'source'`;
 no-ops elsewhere). State lives in the `Transitions` sheet. See the
 [module README](../src/accounts-and-groups/README.md#4-cadettransitiongs---cadet--senior-account-transition).
-- `armTransitionTriggers()` — install the five daily lifecycle triggers (detect →
-  migrate, 3–7 AM). **Run as `automation@cawgcadets.org`** — triggers are owned by
+- `armTransitionTriggers()` — install the six daily lifecycle triggers (detect →
+  migrate → remind, 3–8 AM). **Run as `automation@cawgcadets.org`** — triggers are owned by
   their creator and the completion email's Send-As is that account.
   `disarmTransitionTriggers()` / `listTransitionTriggers()` manage/inspect them.
 - `detectCadetTransitions()`, `resolveTransitionDestinations()` — open rows, resolve destinations.
 - `migrateCadetTransitions(notify)`, `migrateAllTransitionDrives()`, `migrateAllTransitionContacts()` — the three migration phases (resumable).
-- `previewCadetTransitions()` — **preview** the queue.
+- `previewCadetTransitions()`, `previewCadetTransitionMigration()`, `previewSingleTransitionDrive(capid)`, `previewSingleTransitionContacts(capid)` — **preview** the queue and prove credentials without copying.
+- `remindPendingTransitionCloses()` — emails IT (`TENANT_ITSUPPORT_EMAIL`) when accounts have
+  passed grace and are ready for the manual close (or are stuck past grace on a `DO NOT DELETE`
+  hold). Read-only; silent when nothing is due. Runs daily at 08:00.
 - `closeCompletedTransitions(dryRun=true)` — **the only destructive step; not triggered.**
-  Deletes the cadet account and forwards its address once migration is COMPLETE and
-  the 90-day hold has expired. Review with `(true)`, act with `(false)`.
+  Deletes the cadet account and forwards its old address (12-month Group) once migration is
+  COMPLETE and the hold has expired — **14 days after a verified migration**, or the full
+  90-day `HOLD_DAYS` for rows never migrated (e.g. a member who stayed PATRON). Review with
+  `(true)`, act with `(false)`.
 
 ### Group administration utilities (`groupAdministration.gs`)
 - Reporting: `groupAdministration_writeAllGroupsReport()`, `..._writeNoMemberGroupsReport()`,
