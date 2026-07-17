@@ -1,9 +1,16 @@
 /**
  * License Lifecycle Management Module
  *
- * Version: 1.2.0
- * Date: 2026-07-15
- * Changes: 1.2.0 — members who leave the wing get the same 30-day grace as
+ * Version: 1.3.0
+ * Date: 2026-07-17
+ * Changes: 1.3.0 — real account deletion is now gated on a per-tenant Script
+ *   Property, LICENSE_DELETION_ARMED. Both deleteIneligibleSuspendedUsers() and
+ *   deleteIneligibleWorkspaceUsers() refuse to call AdminDirectory.Users.remove()
+ *   unless the property is exactly 'true', EVEN when passed dryRun=false — and
+ *   manageLicenseLifecycle() passes dryRun=!armed. Arming previously meant editing
+ *   the trigger to pass `false`, which clasp push reverts and which would arm every
+ *   tenant at once if committed. A property survives push and is per-project.
+ *   1.2.0 — members who leave the wing get the same 30-day grace as
  *   members who lapse, timed from first sighting via a departure register in a
  *   Script Property. No real departure date is reachable: MbrTransfer.txt is
  *   inbound-only and a departing member is dropped from the wing-scoped extract
@@ -42,6 +49,31 @@
  * 
  * @returns {Object} Summary of actions taken
  */
+
+/**
+ * Script Property that arms real account deletion. Absent, or anything other than
+ * the exact string 'true' (case-insensitive), keeps deletion a DRY RUN on every
+ * path — even when a caller explicitly passes dryRun=false.
+ *
+ * WHY A PROPERTY AND NOT A CODE FLAG: deletion is permanent and this Workspace
+ * edition has no Archived-User fallback. Arming used to mean editing
+ * manageLicenseLifecycle() to pass `false` — but all of src/ is overwritten on
+ * every `clasp push` (see config.gs), so that was both fragile (the next push
+ * reverts it to safe) and dangerous (committing `false` would arm EVERY tenant at
+ * once). A Script Property survives push and is per-project, so each tenant is
+ * armed deliberately and independently.
+ *
+ * Arm one tenant: Project Settings > Script Properties > LICENSE_DELETION_ARMED = true
+ */
+const LICENSE_DELETION_ARMED_PROPERTY = 'LICENSE_DELETION_ARMED';
+
+/** True only when this project is explicitly armed for real account deletion. */
+function isLicenseDeletionArmed_() {
+  const v = PropertiesService.getScriptProperties()
+    .getProperty(LICENSE_DELETION_ARMED_PROPERTY);
+  return String(v || '').trim().toLowerCase() === 'true';
+}
+
 function manageLicenseLifecycle() {
   const start = new Date();
   Logger.info('Starting license lifecycle management');
@@ -88,11 +120,18 @@ function manageLicenseLifecycle() {
     // CadetTransition.gs holds their mailbox open on its own 90-day clock and
     // deletes it once their mail has been migrated across.
     //
-    // STILL A DRY RUN. The grace period now measures the right thing (days since
-    // CAPWATCH expiry, not days since last login), so this list is a safe delete
-    // set — but nobody has watched it run live yet, and deletion is permanent on
-    // this edition. Flip to false to arm the monthly reaper.
-    summary.ineligibleResult = deleteIneligibleSuspendedUsers(true);
+    // Dry run UNLESS this tenant is armed via the LICENSE_DELETION_ARMED Script
+    // Property. The grace period now measures the right thing (days since CAPWATCH
+    // expiry, not days since last login), so this is a safe delete set — but
+    // deletion is permanent on this edition, so it stays off until a property is
+    // set on the specific project. deleteIneligibleSuspendedUsers() re-checks the
+    // same property, so passing dryRun=false here can never delete on its own.
+    const armed = isLicenseDeletionArmed_();
+    Logger.info('License deletion arming', {
+      armed: armed,
+      property: LICENSE_DELETION_ARMED_PROPERTY
+    });
+    summary.ineligibleResult = deleteIneligibleSuspendedUsers(!armed);
     summary.deletedIneligible = summary.ineligibleResult.deleted;
 
   } catch (err) {
@@ -794,6 +833,22 @@ function deleteIneligibleSuspendedUsers(dryRun = true) {
       departedWithinGrace: departedWithinGrace.length,
       graceDays: graceDays
     });
+    return summary;
+  }
+
+  // Hard gate, independent of dryRun: real deletion requires this tenant to be
+  // explicitly armed via LICENSE_DELETION_ARMED. dryRun=false is necessary but not
+  // sufficient — deletion is permanent and this edition has no archive to undo it.
+  // Treated exactly like a dry run (register untouched, so no clock starts).
+  if (!isLicenseDeletionArmed_()) {
+    console.log(`\nNOT ARMED — deletion blocked until Script Property ` +
+      `${LICENSE_DELETION_ARMED_PROPERTY}=true. Nothing deleted (${candidates.length} candidate(s)).\n`);
+    Logger.warn('deleteIneligibleSuspendedUsers called live but tenant is not armed; no deletions performed.', {
+      wouldDelete: candidates.length,
+      property: LICENSE_DELETION_ARMED_PROPERTY
+    });
+    summary.dryRun = true;
+    summary.notArmed = true;
     return summary;
   }
 
@@ -1512,7 +1567,7 @@ function sendLicenseManagementReport(summary) {
         <div class="${previewOnly ? 'warning' : 'success'}">
           <h2>Ineligible Suspended Accounts — ${previewOnly ? 'Would Be Deleted' : 'Deleted'} (${ineligible.candidates.length})</h2>
           <p>${previewOnly
-            ? '<strong>Nothing was deleted.</strong> Automated deletion is not armed yet; this is what the reaper would take on its next live run.'
+            ? '<strong>Nothing was deleted.</strong> Automated deletion is not armed on this tenant (Script Property <code>LICENSE_DELETION_ARMED</code> is not set to <code>true</code>); this is what the reaper would take on its next live run.'
             : 'These accounts were permanently deleted to free seats against the 2000-user cap.'}
           Grace period is ${ineligible.graceDays} days measured from CAPWATCH membership expiry.
           "No CAPWATCH record" means the member lapsed beyond the extract's ~3-month window.</p>
@@ -2423,6 +2478,19 @@ function deleteIneligibleWorkspaceUsers(dryRun = true) {
   if (dryRun) {
     Logger.info('Dry run complete - no accounts deleted. Call deleteIneligibleWorkspaceUsers(false) to actually delete.');
     return toDelete.map(c => Object.assign({}, c, { deleted: false, dryRun: true }));
+  }
+
+  // Hard gate, independent of dryRun: real deletion requires this tenant to be
+  // explicitly armed via LICENSE_DELETION_ARMED. Deletion is permanent and this
+  // edition has no archive, so dryRun=false alone must not be enough.
+  if (!isLicenseDeletionArmed_()) {
+    console.log(`\nNOT ARMED — set Script Property ${LICENSE_DELETION_ARMED_PROPERTY}=true ` +
+      `to enable deletion. Nothing deleted (${toDelete.length} candidate(s)).\n`);
+    Logger.warn('deleteIneligibleWorkspaceUsers called live but tenant is not armed; no deletions performed.', {
+      wouldDelete: toDelete.length,
+      property: LICENSE_DELETION_ARMED_PROPERTY
+    });
+    return toDelete.map(c => Object.assign({}, c, { deleted: false, dryRun: true, notArmed: true }));
   }
 
   toDelete.forEach(c => {
