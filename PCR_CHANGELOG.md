@@ -10,6 +10,30 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-17] — Cadet transition: close reminder; license reaper armed on seniors
+
+### Added
+
+- **`CadetTransition.gs` · `CadetTransitionCleanup.gs` (v1.1.0)** —
+  `remindPendingTransitionCloses()`, a daily **08:00** trigger that emails IT
+  (`TENANT_ITSUPPORT_EMAIL`) when transitioned cadet accounts have passed their grace and are
+  ready for the manual `closeCompletedTransitions(false)` — or are stuck past grace on a
+  `DO NOT DELETE` hold. Read-only, keyed off `whyNotCloseable_` so its "ready" list is exactly
+  what a real close would act on; silent when nothing is due. `armTransitionTriggers()` now
+  installs **six** daily triggers (was five), adding this after the migration phases. Deletion
+  itself stays manual — there is still no close/delete trigger.
+
+### Operational
+
+- **License reaper ARMED on the seniors tenant** — `LICENSE_DELETION_ARMED=true` set on the
+  seniors project (2026-07-17). **cadets** and **region** remain dry-run. Preceded by a clean
+  dry-run (0 deletable that day; the wing-transfer guard correctly spared a member who had
+  moved to another wing; both PATRONs held for a human call). The next monthly
+  `manageLicenseLifecycle` run reaps the accounts past their 30-day grace, minus any who renew.
+  See [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md) §9 (“Arming real deletion”).
+- **All three tenants synced to this commit** (config **v1.6.0**); the seniors tenant was
+  brought current at the same time.
+
 ## [2026-07-17] — Renamed the 'pacific' profile to the generic 'region'
 
 ### Changed

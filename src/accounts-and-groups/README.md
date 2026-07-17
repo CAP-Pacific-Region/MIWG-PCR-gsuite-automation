@@ -235,12 +235,14 @@ Cadet type flips in CAPWATCH (SENIOR / PATRON / …), status still ACTIVE
 ```
 
 **Key Functions** (all cadets-tenant only):
-- `armTransitionTriggers()` - installs the five daily triggers (detect → migrate),
-  staggered 3–7 AM. Run **as `automation@cawgcadets.org`** — triggers are owned by
+- `armTransitionTriggers()` - installs the six daily triggers (detect → migrate → remind),
+  staggered 3–8 AM. Run **as `automation@cawgcadets.org`** — triggers are owned by
   and visible only to their creator, and the completion email's Send-As is that
   account. `disarmTransitionTriggers()` / `listTransitionTriggers()` manage them.
 - `detectCadetTransitions()` - opens a `Transitions` row per converting member.
 - `migrateCadetTransitions(notify)` / `migrateAllTransitionDrives()` / `migrateAllTransitionContacts()` - the three migration phases.
+- `remindPendingTransitionCloses()` - emails IT when accounts pass grace and are due for the
+  manual close (or are stuck past grace). Read-only; silent when nothing is due.
 - `closeCompletedTransitions(dryRun)` - closes accounts whose migration is COMPLETE
   and whose hold has expired. **Not triggered** — see below.
 - `previewCadetTransitions()` - read-only summary of the queue.
@@ -251,11 +253,15 @@ deletes accounts with no archive and no undo, so `armTransitionTriggers()` insta
 reversible copying, keep a human on the irreversible delete). Review with
 `closeCompletedTransitions(true)`, then act with `closeCompletedTransitions(false)`.
 
-**Why a 90-day hold**: `TRANSITION_CONFIG.HOLD_DAYS` (90) waits out National's
+**The two hold clocks**: `TRANSITION_CONFIG.HOLD_DAYS` (90) waits out National's
 fingerprint/Level I processing so a PATRON who later converts to SENIOR still has a
-mailbox to migrate. `deleteIneligibleSuspendedUsers()` skips any CAPID with an open
-transition row (`getHeldTransitionCapids()`), so the ordinary license reaper never
-deletes a mailbox mid-flight. `FAILED` rows hold indefinitely and need a human.
+mailbox to migrate — it governs rows that have **not** been migrated. Once a mailbox
+**is** migrated, `DeleteAfter` is pulled in to `POST_MIGRATION_DELETE_DAYS` (14): the
+account can't be deleted until the forwarding Group can take its address, so a longer
+wait only keeps the old address dead. `deleteIneligibleSuspendedUsers()` skips any CAPID
+with an open transition row (`getHeldTransitionCapids()`), so the ordinary license reaper
+never deletes a mailbox mid-flight. `FAILED` rows, and any row carrying a `DO NOT DELETE`
+skip note, hold indefinitely and need a human.
 
 **Service-account scopes** (on the SA's domain-wide-delegation grant, *not* in
 `appsscript.json`): cadets SA needs `gmail.readonly` + Drive/Contacts read; seniors

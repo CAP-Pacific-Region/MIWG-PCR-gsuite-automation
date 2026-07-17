@@ -1,10 +1,12 @@
 /**
  * Cadet → senior tenant transition.
  *
- * Version: 1.0.0
- * Date: 2026-07-16
- * Changes: 1.0.0 — initial release. Detection + state for the cadet→senior
- *   lifecycle; the Transitions sheet is authoritative for who is mid-flight.
+ * Version: 1.1.0
+ * Date: 2026-07-17
+ * Changes: 1.1.0 — added the six-trigger scheduler (armTransitionTriggers /
+ *   disarm / list) and the daily close reminder wiring; 1.0.0 — initial release.
+ *   Detection + state for the cadet→senior lifecycle; the Transitions sheet is
+ *   authoritative for who is mid-flight.
  *
  * When a cadet turns 21, or converts voluntarily after 18, CAPWATCH flips their
  * type and they leave the cadet tenant for the senior one. Before this module
