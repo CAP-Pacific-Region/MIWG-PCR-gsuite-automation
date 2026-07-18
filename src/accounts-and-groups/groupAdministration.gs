@@ -2,7 +2,12 @@
  * Group Administration Utilities
  *
  * Filename: groupAdministration.gs
- * Saved: 2026-04-07 18:52 PDT
+ * Saved: 2026-07-17
+ * Changes: Added groupAdministration_stageLegacyDlGroups() (read-only bulk scan
+ *   for legacy 'DL-CAWG-*' migration groups/aliases -> review sheet) and
+ *   groupAdministration_resolveLegacyAddress() (definitive single-address
+ *   group/alias/not-a-group check). Neither touches per-user Gmail autocomplete
+ *   ("Other contacts"), which is not centrally removable. See PCR_CHANGELOG.md.
  *
  * Apps Script equivalents for common GAM group-admin tasks.
  *
@@ -85,6 +90,17 @@
  *   tenant (via SQUADRON_DISTRIBUTION_TOGGLES) and writes them to a worklist tab
  *   ("Delete Groups" by default) for review. Does NOT delete — feed the reviewed
  *   sheet to groupAdministration_bulkDeleteGroupsFromSheet().
+ *
+ * - groupAdministration_stageLegacyDlGroups(prefix, sheetName)
+ *   READ-ONLY. Inventories live Groups whose primary address or an alias starts
+ *   with a legacy prefix (default "dl-cawg") to a review tab ("Legacy DL
+ *   Cleanup"), split into PRIMARY (delete the group) vs ALIAS (remove only the
+ *   alias) so the two are not conflated. Does NOT clear per-user autocomplete.
+ *
+ * - groupAdministration_resolveLegacyAddress(email)
+ *   READ-ONLY. Says definitively whether one address is a live group's own
+ *   address, an alias on a current group, or not a live directory object at all
+ *   (in which case any lingering autocomplete is per-user "Other contacts").
  *
  * Notes:
  * - Google Groups cannot be restored after deletion.
@@ -701,6 +717,179 @@ function groupAdministration_stageOrphanedSquadronGroups(sheetName) {
   });
 
   return { staged: orphans.length, sheet: targetSheetName, groups: orphans };
+}
+
+/**
+ * READ-ONLY. Inventories live directory Groups whose primary address OR any
+ * alias begins with a legacy prefix (default 'dl-cawg'), writing them to a
+ * review worklist for a human to triage before any deletion.
+ *
+ * WHY: after the M365 -> Google migration, distribution lists were recreated
+ * with verbose 'DL-CAWG-...' names; the current automation manages the same
+ * lists under the modern 'ca###.all' convention. The legacy names linger either
+ * as duplicate groups or as aliases on the modern group, cluttering the GAL and
+ * re-seeding users' Gmail autocomplete each time someone mails them.
+ *
+ * WHAT THIS DOES NOT DO: it changes nothing, and it does NOT clear the addresses
+ * from anyone's Gmail autocomplete / "Other contacts" — those are per-user and
+ * not centrally removable (see groupAdministration_deleteUserContactsForAllUsers_notSupported).
+ * Deleting a live directory object stops it re-seeding autocomplete and removes
+ * GAL clutter; it does not retroactively scrub existing per-user suggestions.
+ *
+ * The two match types need DIFFERENT remediation — do not conflate them:
+ *   - PRIMARY : the legacy name is the group's OWN address. Safe to delete the
+ *               group (feed the primary rows to
+ *               groupAdministration_bulkDeleteGroupsFromSheet) — but confirm it
+ *               is an unused duplicate first (check members / whether people
+ *               still send to it).
+ *   - ALIAS   : the legacy name is only an ALIAS on a still-current group (e.g.
+ *               dl-cawg-...-110-all aliased onto ca110.all). Do NOT delete the
+ *               group; remove just the alias with
+ *               AdminDirectory.Groups.Aliases.remove(groupEmail, legacyAddress).
+ *
+ * Alias detection relies on aliases returned by Groups.list. For a definitive
+ * check of one address, use groupAdministration_resolveLegacyAddress().
+ *
+ * @param {string=} prefix    Legacy local-part prefix to match (default 'dl-cawg').
+ * @param {string=} sheetName Target review tab (default 'Legacy DL Cleanup').
+ * @returns {{prefix:string, scanned:number, primary:number, alias:number, sheet:string, matches:Array<Object>}}
+ */
+function groupAdministration_stageLegacyDlGroups(prefix, sheetName) {
+  const wantPrefix = String(prefix || 'dl-cawg').trim().toLowerCase();
+  if (!wantPrefix) throw new Error('prefix must be a non-empty string');
+  const targetSheetName = String(sheetName || 'Legacy DL Cleanup').trim();
+
+  const matches = [];
+  let scanned = 0;
+  let pageToken = '';
+
+  do {
+    const res = executeWithRetry(() => AdminDirectory.Groups.list({
+      customer: CONFIG.CUSTOMER_ID || 'my_customer',
+      maxResults: 200,
+      pageToken: pageToken
+    }));
+
+    const groups = res.groups || [];
+    for (let i = 0; i < groups.length; i++) {
+      scanned++;
+      const g = groups[i];
+      const email = String(g.email || '').toLowerCase();
+      const base = {
+        name: String(g.name || ''),
+        directMembersCount: Number(g.directMembersCount || 0),
+        adminCreated: String(g.adminCreated || ''),
+        id: String(g.id || '')
+      };
+
+      if (email.split('@')[0].startsWith(wantPrefix)) {
+        matches.push(Object.assign({
+          matchType: 'PRIMARY',
+          legacyAddress: email,
+          groupEmail: email
+        }, base));
+      }
+
+      const nonEditable = (g.nonEditableAliases || []).map(a => String(a).toLowerCase());
+      const aliases = [].concat(g.aliases || [], g.nonEditableAliases || []);
+      for (let a = 0; a < aliases.length; a++) {
+        const alias = String(aliases[a] || '').toLowerCase();
+        if (!alias || !alias.split('@')[0].startsWith(wantPrefix)) continue;
+        matches.push(Object.assign({
+          matchType: nonEditable.indexOf(alias) > -1 ? 'ALIAS (non-editable)' : 'ALIAS',
+          legacyAddress: alias,
+          groupEmail: email
+        }, base));
+      }
+    }
+
+    pageToken = res.nextPageToken || '';
+  } while (pageToken);
+
+  matches.sort((a, b) => a.legacyAddress.localeCompare(b.legacyAddress));
+
+  const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
+  const sheet = getOrCreateSheet_(ss, targetSheetName);
+  const rows = [['legacyAddress', 'matchType', 'groupEmail', 'name', 'directMembersCount', 'adminCreated', 'groupId']];
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    rows.push([m.legacyAddress, m.matchType, m.groupEmail, m.name, m.directMembersCount, m.adminCreated, m.id]);
+  }
+  writeTabularData_(sheet, rows);
+
+  const primary = matches.filter(m => m.matchType === 'PRIMARY').length;
+  const alias = matches.length - primary;
+
+  Logger.info('Legacy DL group scan complete', {
+    prefix: wantPrefix,
+    scanned: scanned,
+    matched: matches.length,
+    primary: primary,
+    alias: alias,
+    sheet: targetSheetName,
+    sample: matches.slice(0, 20)
+  });
+
+  return { prefix: wantPrefix, scanned: scanned, primary: primary, alias: alias, sheet: targetSheetName, matches: matches };
+}
+
+/**
+ * READ-ONLY. Definitively resolves ONE legacy address: is it a live group's own
+ * address, an alias on a current group, or not a live directory object at all?
+ * Uses Groups.get, which resolves both primary emails and aliases, so it is the
+ * authoritative spot-check the bulk scan's list-based alias detection is not.
+ *
+ * A 'NOT_A_GROUP' result means the address is not a live Group or group alias —
+ * so if it still autocompletes for a user, it is a per-user contact / "Other
+ * contacts" entry, which is not centrally removable.
+ *
+ * @param {string=} email Address to resolve; falls back to GROUP_EMAIL run input.
+ * @returns {Object} resolution incl. kind and remediation guidance.
+ */
+function groupAdministration_resolveLegacyAddress(email) {
+  const target = sanitizeEmail(
+    String(email || (GROUP_ADMINISTRATION_RUN_INPUTS && GROUP_ADMINISTRATION_RUN_INPUTS.GROUP_EMAIL) || '').trim()
+  );
+  if (!target) throw new Error('Pass an email, or set GROUP_ADMINISTRATION_RUN_INPUTS.GROUP_EMAIL.');
+
+  let group;
+  try {
+    group = executeWithRetry(() => AdminDirectory.Groups.get(target));
+  } catch (e) {
+    if (e.details && e.details.code === 404) {
+      const miss = {
+        address: target,
+        live: false,
+        kind: 'NOT_A_GROUP',
+        remediation: 'No live Group or group alias resolves this address. If it still autocompletes, it is a per-user contact / "Other contacts" entry — remove it via the user\'s Gmail autocomplete (hover the suggestion, click the X) or contacts.google.com; it cannot be cleared centrally.'
+      };
+      Logger.info('Resolved legacy address', miss);
+      return miss;
+    }
+    throw e;
+  }
+
+  const primary = String(group.email || '').toLowerCase();
+  const nonEditable = (group.nonEditableAliases || []).map(a => String(a).toLowerCase());
+  const isPrimary = primary === target;
+  const isNonEditable = nonEditable.indexOf(target) > -1;
+
+  const result = {
+    address: target,
+    live: true,
+    kind: isPrimary ? 'GROUP_PRIMARY' : (isNonEditable ? 'GROUP_ALIAS_NONEDITABLE' : 'GROUP_ALIAS'),
+    groupEmail: primary,
+    groupName: String(group.name || ''),
+    directMembersCount: Number(group.directMembersCount || 0),
+    remediation: isPrimary
+      ? 'Legacy name is the group\'s OWN address. If it is an unused duplicate of the modern list, delete the group (groupAdministration_deleteGroup) — check members/usage first.'
+      : (isNonEditable
+        ? 'Non-editable alias (derived, e.g. from a secondary domain). Cannot be removed directly; it clears when its source is removed.'
+        : 'Legacy name is an ALIAS on a still-current group. Remove ONLY the alias: AdminDirectory.Groups.Aliases.remove("' + primary + '", "' + target + '"). Do NOT delete the group.')
+  };
+
+  Logger.info('Resolved legacy address', result);
+  return result;
 }
 
 /**

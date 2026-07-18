@@ -1,11 +1,13 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.3.8
+ * Version: 1.3.9
  * Filename: UpdateGroups.gs
- * Saved: 2026-07-09
- * Changes: AdminDirectory.Users.list standardized to customer:"my_customer".
- *   See PCR_CHANGELOG.md.
+ * Saved: 2026-07-17
+ * Changes: Managed wing-scope display name returns CONFIG.WING_ABBREVIATION
+ *   instead of literal 'CAWG' (inside the existing WING==='CA' display branch —
+ *   no behavior change for CA). See PCR_CHANGELOG.md.
+ *   1.3.8: AdminDirectory.Users.list standardized to customer:"my_customer".
  *
  * Manages Google Groups memberships based on CAPWATCH data and configuration:
  * - Reads group configuration from automation spreadsheet
@@ -482,7 +484,7 @@ function abbreviateManagedGroupOrgDisplayName_(org) {
   const unit = String(org.unit || '').trim().replace(/^0+/, '');
 
   if (scope === 'WING') {
-    return 'CAWG';
+    return CONFIG.WING_ABBREVIATION;
   }
 
   if (scope === 'GROUP') {

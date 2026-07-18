@@ -1,10 +1,13 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.3.0
+ * Version: 1.3.1
  * Filename: SquadronGroups.gs
- * Saved: 2026-07-11
- * Changes: SQUADRON_DISTRIBUTION_TOGGLES is now profile-driven (v1.3.0) — the
+ * Saved: 2026-07-17
+ * Changes: v1.3.1 — managed wing-scope display name returns
+ *   CONFIG.WING_ABBREVIATION instead of literal 'CAWG' (inside the existing
+ *   WING==='CA' display branch — no behavior change for CA).
+ *   SQUADRON_DISTRIBUTION_TOGGLES is now profile-driven (v1.3.0) — the
  *   effective toggles come from PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES
  *   (config.gs, selected by TENANT_PROFILE) via getSquadronDistributionToggles_(),
  *   so the cadet tenant no longer creates senior-only lists. The module-level
@@ -153,7 +156,7 @@ function abbreviateManagedSquadronGroupOrgDisplayName_(org) {
   const unit = String(org.unit || '').trim().replace(/^0+/, '');
 
   if (scope === 'WING') {
-    return 'CAWG';
+    return CONFIG.WING_ABBREVIATION;
   }
 
   if (scope === 'GROUP') {

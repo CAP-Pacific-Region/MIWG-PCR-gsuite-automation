@@ -10,6 +10,33 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-17] — Legacy 'DL-CAWG-*' migration groups: read-only inventory tooling
+
+Groundwork for clearing verbose `DL-CAWG-…` distribution lists left over from the
+M365 → Google migration (superseded by the modern `ca###.all` convention). Users
+still see them in Gmail autocomplete.
+
+### Added
+
+- **`groupAdministration.gs`** — two **read-only** helpers:
+  - `groupAdministration_stageLegacyDlGroups(prefix='dl-cawg', sheetName='Legacy DL Cleanup')`
+    inventories live Groups whose **primary address** or an **alias** starts with the
+    prefix, to a review tab. Rows are tagged **PRIMARY** (safe to delete the group, via
+    `bulkDeleteGroupsFromSheet`, once confirmed an unused duplicate) vs **ALIAS** (remove
+    only the alias with `AdminDirectory.Groups.Aliases.remove`, never the group) so the
+    two are not conflated.
+  - `groupAdministration_resolveLegacyAddress(email)` resolves one address definitively
+    via `Groups.get` — group primary / group alias / not-a-group.
+
+### Notes
+
+- **Scope boundary:** these clear neither directory objects (that's a reviewed second
+  step) nor per-user Gmail autocomplete. Autocomplete entries live in each user's
+  **"Other contacts"** (auto-saved recent recipients) and are **not centrally
+  removable** by Apps Script or GAM; deleting a live group/alias only stops it
+  re-seeding autocomplete and de-clutters the GAL. Per-user removal is the ✕ on the
+  Gmail suggestion (or contacts.google.com → Other contacts).
+
 ## [2026-07-17] — Genericize wing labels so the code can deploy to another wing (e.g. Hawaii)
 
 Removes the last hard-coded `CAWG` / `California Wing` literals so a second wing can

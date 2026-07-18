@@ -30,6 +30,7 @@
       font-size: 28px;
       margin: 0 0 10px 0;
       letter-spacing: 1px;
+      text-transform: uppercase;
     }
     .header .subtitle {
       font-family: "Rajdhani", sans-serif;
@@ -99,7 +100,7 @@
 <body>
   <div class="email-container">
     <div class="header">
-      <h1>CIVIL AIR PATROL<br>CALIFORNIA WING</h1>
+      <h1>CIVIL AIR PATROL<br>{{wingName}}</h1>
       <p class="subtitle">Your email has moved</p>
     </div>
     <div class="content">
@@ -140,7 +141,7 @@
       </div>
     </div>
     <div class="footer">
-      This is an automated message from California Wing IT.<br>
+      This is an automated message from {{wingName}} IT.<br>
       Questions? Reply to this email and it will reach a human.
     </div>
   </div>
