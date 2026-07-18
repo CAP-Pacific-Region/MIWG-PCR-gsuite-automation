@@ -119,6 +119,18 @@ runs the same split senior/cadet tenant structure.
 - **All three tenants synced to this commit** (config **v1.6.0**); the seniors tenant was
   brought current at the same time.
 
+## [2026-07-17] — Cite the signature duty-order requirement
+
+### Documentation
+
+- **`UpdateMembers.gs` (v1.13.2)** — comment-only. The signature already ordered duty
+  assignments highest-to-lowest organizational level; this cites the exact CAP brand
+  style-guide requirement ("organize assignments from highest to lowest organizational
+  level", civilairpatrol.frontify.com/document/449893 → Email Signature) on
+  `DUTY_LEVEL_ORDER`, and records that the one-duty-per-echelon selection in
+  `getDutyBlock()` is a refinement layered on that ordering — the output stays strictly
+  highest-first — not a departure from it. No behavior change.
+
 ## [2026-07-17] — Renamed the 'pacific' profile to the generic 'region'
 
 ### Changed

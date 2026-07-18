@@ -1,10 +1,14 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.13.1
+ * Version: 1.13.2
  * Date: 2026-07-17
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.13.1)
- * Changes: 1.13.1 — removed the duplicate toTitleCase() (the stronger copy now lives
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.13.2)
+ * Changes: 1.13.2 — comment-only: cited the CAP brand style guide's exact "organize
+ *   assignments from highest to lowest organizational level" requirement (with source)
+ *   on DUTY_LEVEL_ORDER, and documented that the one-duty-per-echelon selection in
+ *   getDutyBlock() is a refinement layered on that ordering, not a departure.
+ *   1.13.1 — removed the duplicate toTitleCase() (the stronger copy now lives
  *   solely in utils.gs); it and this file's copy differed, and Apps Script's shared
  *   namespace made the winner load-order-dependent.
  *   1.13.0 — getPublicRank() now maps CADET grades; it had none, so a cadet signature
@@ -2535,11 +2539,15 @@ const CAP_SIGNATURE_LOGO_URL =
   'https://cap-brand-tools.netlify.app/signature-generator/LogoNoAux.png';
 
 /**
- * Organizational level, highest first. The CAP style guide wants duty assignments
- * "listed highest to lowest organizational level". CAPWATCH levels are documented
- * as UNIT/GROUP/WING (docs/API_REFERENCE.md); REGION and NAT are included for the
- * region tenant. Anything unrecognized sorts last rather than being guessed at —
- * Array.sort is stable, so those keep CAPWATCH's own order among themselves.
+ * Organizational level, highest first. The CAP brand style guide requires that one
+ * "organize assignments from highest to lowest organizational level"
+ * (civilairpatrol.frontify.com/document/449893 → Templates → Email Signature), so
+ * getDutyBlock() sorts on this and emits the highest echelon first.
+ *
+ * CAPWATCH levels are documented as UNIT/GROUP/WING (docs/API_REFERENCE.md); REGION
+ * and NAT are included for the region tenant. Anything unrecognized sorts last
+ * rather than being guessed at — Array.sort is stable, so those keep CAPWATCH's own
+ * order among themselves.
  */
 const DUTY_LEVEL_ORDER = { NAT: 0, NHQ: 0, REGION: 1, WING: 2, GROUP: 3, UNIT: 4 };
 
@@ -2578,7 +2586,12 @@ function dutyTitleRank_(title) {
  * check ran BEFORE the assistant filter, a member holding only assistant duties fell
  * through to an empty heading anyway.
  *
- * Capped at two, per the style guide.
+ * Ordered highest-to-lowest organizational level per the CAP style guide (see
+ * DUTY_LEVEL_ORDER) and capped at two. Taking at most one duty per echelon before
+ * filling the second slot is a refinement ON TOP of that ordering, not a departure:
+ * the output is still strictly highest-first; it just prevents two same-level roles
+ * from crowding out a lower command (e.g. two wing staff jobs hiding a squadron
+ * command). See the one-per-level logic below.
  *
  * @param {Object} member - CAPWATCH member object
  * @returns {string} HTML, or '' if the member has no non-assistant duty position
