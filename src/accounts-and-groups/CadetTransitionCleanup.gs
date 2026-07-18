@@ -1,10 +1,16 @@
 /**
  * Cadet → senior transition: closing the old account.
  *
- * Version: 1.1.0
+ * Version: 1.2.0
  * Date: 2026-07-17
- * Changes: 1.1.0 — added remindPendingTransitionCloses(): a daily email to IT
- *   when accounts pass grace and are due for the manual close (or stuck past it).
+ * Changes: 1.2.0 — the forwarding group now sets allowExternalMembers=true
+ *   (the destination is on the peer/senior tenant, external to this domain, so
+ *   without it the group can't deliver the forward) and applies settings BEFORE
+ *   adding the member. Added testForwardingGroup() to prove the mechanism —
+ *   incl. the domain's external-member policy — with a throwaway group before a
+ *   real close, which deletes first and forwards second, depends on it.
+ *   1.1.0 — added remindPendingTransitionCloses(): a daily email to IT when
+ *   accounts pass grace and are due for the manual close (or stuck past it).
  *   1.0.0 — initial release. Catches up late mail, deletes the cadet account,
  *   then forwards its address to the senior mailbox. The only step that destroys
  *   data — kept manual, never triggered.
@@ -377,9 +383,23 @@ function catchUpOneTransition_(row) {
  * A group costs no license seat, which is the entire reason this is a group and
  * not a retained account — retention would keep consuming one of the 2000.
  *
- * ANYONE_CAN_POST is required and deliberate: the whole point is that outsiders
- * who still have the old address can reach the member. A default group rejects
- * external senders, which would forward nothing and bounce everyone.
+ * TWO settings both matter, and they govern opposite directions:
+ *  - allowExternalMembers — lets the group DELIVER to the senior address. The
+ *    forward target is on the SENIOR tenant, i.e. external to this cadets
+ *    domain, so without this the member is either rejected on insert or gets no
+ *    mail. This is the setting that actually makes the forward work.
+ *  - whoCanPostMessage ANYONE_CAN_POST — lets outsiders who still have the old
+ *    address SEND to the group. A default group rejects external senders.
+ *
+ * Order matters: settings are applied BEFORE the member is added, because on a
+ * domain that restricts external members the Members.insert fails until
+ * allowExternalMembers is set — and by this point the cadet account is already
+ * deleted, so a throw here leaves a half-built forward.
+ *
+ * DEPENDS ON DOMAIN POLICY: the cadets domain must permit external group
+ * members (Admin console → Groups → Sharing settings). allowExternalMembers on
+ * the group cannot override a domain that forbids them outright. Verify with a
+ * throwaway group before relying on this — see testForwardingGroup().
  *
  * @param {string} oldAddress - the freed cadet address
  * @param {string} forwardTo - the senior address
@@ -395,36 +415,107 @@ function createForwardingGroup_(oldAddress, forwardTo, name) {
     })
   );
 
+  // Settings first — allowExternalMembers must be on before the cross-tenant
+  // member can be added.
+  applyForwardingGroupSettings_(oldAddress);
+
   executeWithRetry(() =>
     AdminDirectory.Members.insert({ email: forwardTo, role: 'MEMBER' }, oldAddress)
   );
 
-  // Without this the group rejects external mail and forwards nothing.
-  try {
-    executeWithRetry(() =>
-      AdminGroupsSettings.Groups.patch({
-        whoCanPostMessage: 'ANYONE_CAN_POST',
-        whoCanJoin: 'INVITED_CAN_JOIN',
-        whoCanViewMembership: 'ALL_MANAGERS_CAN_VIEW',
-        messageModerationLevel: 'MODERATE_NONE',
-        spamModerationLevel: 'ALLOW',
-        includeInGlobalAddressList: false,
-        archiveOnly: false
-      }, oldAddress)
-    );
-  } catch (e) {
-    // The group exists and forwards to a member either way; settings are what
-    // let strangers reach it. Loud, but not worth unwinding a deletion over.
-    Logger.error('Forwarding group created but settings failed — external mail ' +
-      'will be REJECTED until whoCanPostMessage is fixed by hand', {
-      group: oldAddress,
-      errorMessage: e && e.message ? e.message : String(e)
-    });
-  }
-
   Logger.info('Forwarding group created', {
     address: oldAddress, forwardsTo: forwardTo, groupId: group.id
   });
+}
+
+/**
+ * Applies the settings a forwarding group needs: external members allowed
+ * (deliver to the senior tenant) and anyone-can-post (outsiders can reach it).
+ *
+ * @param {string} groupEmail
+ */
+function applyForwardingGroupSettings_(groupEmail) {
+  executeWithRetry(() =>
+    AdminGroupsSettings.Groups.patch({
+      allowExternalMembers: 'true',        // deliver to the cross-tenant senior address
+      whoCanPostMessage: 'ANYONE_CAN_POST', // outsiders with the old address can send
+      whoCanJoin: 'INVITED_CAN_JOIN',
+      whoCanViewMembership: 'ALL_MANAGERS_CAN_VIEW',
+      messageModerationLevel: 'MODERATE_NONE',
+      spamModerationLevel: 'ALLOW',
+      includeInGlobalAddressList: false,
+      archiveOnly: false
+    }, groupEmail)
+  );
+}
+
+/**
+ * Proves the forwarding-group mechanism end to end with a THROWAWAY group,
+ * before a real close depends on it.
+ *
+ * The real close deletes the account first and only then builds the group, so a
+ * domain that forbids external members would fail the forward AFTER an
+ * irreversible delete. This exercises the exact three steps createForwardingGroup_
+ * does — create group, allow-external + anyone-can-post settings, add a
+ * cross-tenant member — against a scratch address, and reports which step fails
+ * if any. It does NOT delete anyone.
+ *
+ * After it runs clean, send a real email to `testAddress` and confirm it lands
+ * at `externalMember` — that is the only way to prove actual delivery. Then run
+ * `deleteTestForwardingGroup(testAddress)` to clean up.
+ *
+ * @param {string} testAddress - a throwaway address on THIS (cadets) domain,
+ *   e.g. zz-forward-test@cawgcadets.org (must not already exist)
+ * @param {string} externalMember - a real senior address on the peer tenant,
+ *   e.g. your own @cawgcap.org, to receive the forward
+ */
+function testForwardingGroup(testAddress, externalMember) {
+  if (!testAddress || !externalMember) {
+    console.log('Usage: testForwardingGroup("zz-forward-test@cawgcadets.org", "you@cawgcap.org")');
+    return;
+  }
+  console.log('Testing forwarding-group creation (no accounts touched)...');
+
+  try {
+    const g = AdminDirectory.Groups.insert({
+      email: testAddress, name: 'Forwarding test',
+      description: 'Throwaway — delete after testing.'
+    });
+    console.log('1. group created: ' + g.id);
+  } catch (e) {
+    console.log('1. FAILED to create group: ' + (e && e.message)); return;
+  }
+
+  try {
+    applyForwardingGroupSettings_(testAddress);
+    console.log('2. settings applied (allowExternalMembers=true, ANYONE_CAN_POST)');
+  } catch (e) {
+    console.log('2. FAILED to apply settings: ' + (e && e.message));
+    console.log('   → the domain may block these group settings. Fix before relying on the forward.');
+    return;
+  }
+
+  try {
+    AdminDirectory.Members.insert({ email: externalMember, role: 'MEMBER' }, testAddress);
+    console.log('3. external member added: ' + externalMember);
+  } catch (e) {
+    console.log('3. FAILED to add external member: ' + (e && e.message));
+    console.log('   → the cadets domain likely forbids external group members');
+    console.log('     (Admin console → Groups → Sharing settings). This MUST be allowed,');
+    console.log('     or the real close will delete an account and then fail to forward it.');
+    return;
+  }
+
+  console.log('');
+  console.log('All three steps passed. Now send a test email to ' + testAddress);
+  console.log('and confirm it arrives at ' + externalMember + ' — that proves delivery.');
+  console.log('Then clean up: deleteTestForwardingGroup("' + testAddress + '")');
+}
+
+/** Removes a throwaway forwarding-test group. */
+function deleteTestForwardingGroup(testAddress) {
+  AdminDirectory.Groups.remove(testAddress);
+  console.log('Deleted test group ' + testAddress);
 }
 
 // ============================================================================
