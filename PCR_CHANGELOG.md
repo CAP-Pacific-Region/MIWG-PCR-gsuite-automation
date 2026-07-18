@@ -57,6 +57,11 @@ runs the same split senior/cadet tenant structure.
   `setupHiwgSeniorsScriptProperties()` / `setupHiwgCadetsScriptProperties()`, with
   `TENANT_WING=HI` and profile pre-set and the tenant-specific IDs/domains marked
   `FILL_IN`. Wing labels ("HIWG", "Hawaii Wing") are derived automatically.
+- **`docs/NEW_TENANT_SETUP.md`** — bare-metal, end-to-end provisioning runbook for
+  standing up a new tenant/wing from nothing (Workspace → GCP/APIs/scopes → service
+  account + DWD → clasp push → Script Properties → CAPWATCH → spreadsheet → dry-run →
+  triggers → cross-tenant), cross-linking the existing docs with a Hawaii worked example.
+  Fills the gap where no from-scratch guide existed separate from the Admin Guide.
 
 ### Changed
 
