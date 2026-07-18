@@ -1,10 +1,21 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.14.0
- * Date: 2026-07-17
+ * Version: 1.14.1
+ * Date: 2026-07-18
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.14.0)
- * Changes: 1.14.0 — recovery phone is now tracked separately from the directory
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.14.1)
+ * Changes: 1.14.1 — addOrUpdateUser() no longer blanks an existing recoveryEmail /
+ *   recoveryPhone when CAPWATCH has none this run. The payload used
+ *   `recoveryEmail: member.secondaryEmail || member.parentEmail || ''`, so a member
+ *   whose only CAPWATCH email is a PRIMARY contact (no secondaryEmail) had their good
+ *   recovery address OVERWRITTEN with '' on every full re-write — defeating password
+ *   reset. These fields are now included only when non-empty; omitting them makes
+ *   Users.update preserve the existing value. A real new value still overwrites.
+ *   Directory fields (phones/emails/otherEmail) still full-replace by design, so cadet
+ *   phone removal is unaffected. logWorkspaceUserUpdateDiff_ only diffs recovery fields
+ *   when actually present, avoiding a false existing->'' change line. (Latent since the
+ *   recovery-contact feature; surfaced by the 1.14.0 full re-write of every member.)
+ *   1.14.0 — recovery phone is now tracked separately from the directory
  *   phone. addContactInfo() populates member.recoveryPhone by IGNORING the CAPWATCH
  *   DoNotContact flag (recovery / password-reset use, never published), while the
  *   directory phone (member.phone) still excludes DoNotContact rows AND is now never
@@ -911,8 +922,15 @@ function logWorkspaceUserUpdateDiff_(primaryEmail, member, updates) {
     : '';
 
   const changes = [];
-  addChangeForLog_(changes, 'recoveryEmail', existing.recoveryEmail, updates.recoveryEmail);
-  addChangeForLog_(changes, 'recoveryPhone', existing.recoveryPhone, updates.recoveryPhone);
+  // Only diff recovery fields when the update actually carries them — when omitted
+  // (no CAPWATCH value this run) the existing value is preserved, not changed, so
+  // reporting existing -> '' would be a false positive.
+  if ('recoveryEmail' in updates) {
+    addChangeForLog_(changes, 'recoveryEmail', existing.recoveryEmail, updates.recoveryEmail);
+  }
+  if ('recoveryPhone' in updates) {
+    addChangeForLog_(changes, 'recoveryPhone', existing.recoveryPhone, updates.recoveryPhone);
+  }
   addChangeForLog_(changes, 'mobilePhone', getPhoneForLog_(existing, 'mobile'), member.phone);
   addChangeForLog_(changes, 'otherEmail', getEmailForLog_(existing, 'other'), member.otherEmail);
   addChangeForLog_(changes, 'managerEmail', getRelationForLog_(existing, 'manager'), desiredManager);
@@ -989,8 +1007,6 @@ function addOrUpdateUser(member) {
       primary: true
     }],
     orgUnitPath: member.orgPath,
-    recoveryEmail: member.secondaryEmail || member.parentEmail || '',
-    recoveryPhone: member.recoveryPhone || '',
     // Empty array clears any directory phone Google already has — this is how a
     // cadet's previously-published number gets removed.
     phones: member.phone ? [{ type: 'mobile', value: member.phone }] : [],
@@ -1018,6 +1034,17 @@ function addOrUpdateUser(member) {
       }
     }
   };
+
+  // Recovery email/phone are REQUIRED for password reset, so never clobber an
+  // existing one with an empty value. When CAPWATCH has no secondary/parent email
+  // or no cell/parent phone this run, OMIT the field entirely — Users.update then
+  // preserves whatever Google already has, instead of blanking it. (A member whose
+  // only CAPWATCH email is a PRIMARY contact has no member.secondaryEmail, so the
+  // old `|| ''` fallback was silently wiping good recovery addresses on every full
+  // re-write.) A real new value still overwrites; only empty is withheld.
+  const recoveryEmail = member.secondaryEmail || member.parentEmail || '';
+  if (recoveryEmail) updates.recoveryEmail = recoveryEmail;
+  if (member.recoveryPhone) updates.recoveryPhone = member.recoveryPhone;
 
   // Try updating existing user
   try {
