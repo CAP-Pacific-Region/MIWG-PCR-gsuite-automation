@@ -221,6 +221,7 @@ automation account** ([Accounts & Groups module](src/accounts-and-groups/README.
 ## Documentation
 
 - **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the operational runbook (start here for anything live).
+- **[New Tenant / New Wing Setup](docs/NEW_TENANT_SETUP.md)** — bare-metal, end-to-end runbook for provisioning a brand-new tenant from nothing (Hawaii-Wing worked example).
 - **[Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md)** — seniors ⇄ cadets shared-contact sync.
 - **[Pacific Diff](docs/REGION_DIFF.md)** / **[GCP Project Migration](docs/GCP_PROJECT_MIGRATION.md)** — Pacific-specific setup and the standard-GCP-project migration.
 - **[Spreadsheet Setup](docs/SPREADSHEET_SETUP.md)** — the automation config spreadsheet tabs.
