@@ -1,10 +1,18 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.13.2
+ * Version: 1.14.0
  * Date: 2026-07-17
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.13.2)
- * Changes: 1.13.2 — comment-only: cited the CAP brand style guide's exact "organize
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.14.0)
+ * Changes: 1.14.0 — recovery phone is now tracked separately from the directory
+ *   phone. addContactInfo() populates member.recoveryPhone by IGNORING the CAPWATCH
+ *   DoNotContact flag (recovery / password-reset use, never published), while the
+ *   directory phone (member.phone) still excludes DoNotContact rows AND is now never
+ *   set for cadets — a cadet's number must not appear in the global directory, and
+ *   passing phones:[] on update clears any that was previously published. recoveryEmail
+ *   already ignored DoNotContact via secondaryEmail; recoveryPhone now matches. Added
+ *   recoveryPhone to memberUpdated() so recovery-only changes trigger a sync.
+ *   1.13.2 — comment-only: cited the CAP brand style guide's exact "organize
  *   assignments from highest to lowest organizational level" requirement (with source)
  *   on DUTY_LEVEL_ORDER, and documented that the one-duty-per-echelon selection in
  *   getDutyBlock() is a refinement layered on that ordering, not a departure.
@@ -103,6 +111,9 @@
  *   EMAIL PRIMARY.
  * - Allowed recovery email sources to use DoNotContact rows while keeping
  *   Workspace other email restricted to contactable EMAIL SECONDARY rows.
+ * - Allowed recovery phone to use DoNotContact rows (recoveryPhone tracked apart
+ *   from the directory phone), while keeping the directory phone restricted to
+ *   contactable rows and excluding cadets from directory phone entirely.
  * - Updated temporary password generation to use WING + script generation date
  *   + CAPID so non-CAPWATCH accounts do not produce invalid date passwords.
  * - Updated manager email assignment to resolve commanders by CAPID using the
@@ -556,12 +567,31 @@ function addContactInfo(members, contactData) {
 
     const digits = contact.replace(/\D/g, '');
     if (digits.length < 10) continue;
-    if (doNotContact) continue;
 
     const normalizedPhone = `+1${digits.slice(-10)}`;
     const isMemberCellPhone = !type.includes('PARENT') &&
       (type === 'CELL PHONE' || type === 'MOBILE PHONE' || type.includes('CELL'));
     const isCadetParentPhone = members[capid].type === 'CADET' && type === 'CADET PARENT PHONE';
+
+    // Recovery phone deliberately IGNORES DoNotContact: it is used for account
+    // recovery / password reset, never published to the directory. Precedence is
+    // member cell phone, then cadet parent phone (a PRIMARY member cell wins).
+    if (isMemberCellPhone && (
+      members[capid].recoveryPhoneSource !== 'MEMBER_CELL' ||
+      priority === 'PRIMARY'
+    )) {
+      members[capid].recoveryPhone = normalizedPhone;
+      members[capid].recoveryPhoneSource = 'MEMBER_CELL';
+    } else if (isCadetParentPhone && !members[capid].recoveryPhone) {
+      members[capid].recoveryPhone = normalizedPhone;
+      members[capid].recoveryPhoneSource = 'CADET_PARENT';
+    }
+
+    // Directory phone (member.phone) is what appears in the global directory and
+    // the email signature. It excludes DoNotContact rows, and is never populated
+    // for cadets — cadet phone numbers must not appear in the directory.
+    if (doNotContact) continue;
+    if (members[capid].type === 'CADET') continue;
 
     if (isMemberCellPhone && (
       members[capid].phoneSource !== 'MEMBER_CELL' ||
@@ -569,9 +599,6 @@ function addContactInfo(members, contactData) {
     )) {
       members[capid].phone = normalizedPhone;
       members[capid].phoneSource = 'MEMBER_CELL';
-    } else if (isCadetParentPhone && !members[capid].phone) {
-      members[capid].phone = normalizedPhone;
-      members[capid].phoneSource = 'CADET_PARENT';
     }
   }
 
@@ -812,6 +839,7 @@ function memberUpdated(newMember, previousMember) {
           newMember.otherEmail !== previousMember.otherEmail ||
           newMember.parentEmail !== previousMember.parentEmail ||
           newMember.phone !== previousMember.phone ||
+          newMember.recoveryPhone !== previousMember.recoveryPhone ||
           newMember.managerEmail !== previousMember.managerEmail);
 }
 
@@ -962,7 +990,9 @@ function addOrUpdateUser(member) {
     }],
     orgUnitPath: member.orgPath,
     recoveryEmail: member.secondaryEmail || member.parentEmail || '',
-    recoveryPhone: member.phone || '',
+    recoveryPhone: member.recoveryPhone || '',
+    // Empty array clears any directory phone Google already has — this is how a
+    // cadet's previously-published number gets removed.
     phones: member.phone ? [{ type: 'mobile', value: member.phone }] : [],
     emails: member.otherEmail ? [{ type: 'other', address: member.otherEmail }] : [],
     suspended: CONFIG.EXCLUDED_ORG_IDS.includes(String(member.orgid)),
@@ -1082,7 +1112,7 @@ function addOrUpdateUser(member) {
       password: generatedPassword,
       orgUnitPath: member.orgPath,
       recoveryEmail: member.secondaryEmail || member.parentEmail || '',
-      recoveryPhone: member.phone || '',
+      recoveryPhone: member.recoveryPhone || '',
       phones: member.phone ? [{ type: 'mobile', value: member.phone }] : [],
       emails: member.otherEmail ? [{ type: 'other', address: member.otherEmail }] : [],
       relations: [{

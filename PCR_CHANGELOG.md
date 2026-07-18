@@ -10,6 +10,31 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-17] — Recovery phone ignores DoNotContact; cadet phones kept out of the directory
+
+Members whose CAPWATCH cell-phone row is flagged **DoNotContact** were getting no
+recovery phone at all, so they couldn't self-serve a password reset. The DoNotContact
+flag now applies only to what is *published* — recovery contact info is exempt.
+
+### Changed (`UpdateMembers.gs` 1.14.0)
+
+- **Recovery phone now ignores DoNotContact.** `addContactInfo()` tracks a new
+  `member.recoveryPhone` (member cell phone, then cadet parent phone) that is populated
+  regardless of the DoNotContact flag, mirroring how `recoveryEmail` already used the
+  secondary email. `addOrUpdateUser()` writes it to `recoveryPhone` on create and update.
+- **Directory phone (`member.phone`) is unchanged for seniors** — still excludes
+  DoNotContact rows — but is **never populated for cadets**. A cadet's number must not
+  appear in the global directory; passing `phones: []` on update also **removes any cadet
+  number Google had already published**.
+- `memberUpdated()` now compares `recoveryPhone`, so a recovery-phone-only change (e.g.
+  backfilling a previously-DoNotContact number) triggers a sync.
+
+### Notes
+
+- **No change to email behavior:** `recoveryEmail` already ignored DoNotContact via the
+  secondary email, and the directory "other" email already excluded DoNotContact rows.
+- Recovery email and recovery phone are correct on **all** tenants (senior and cadet).
+
 ## [2026-07-17] — Legacy 'DL-CAWG-*' migration groups: read-only inventory tooling
 
 Groundwork for clearing verbose `DL-CAWG-…` distribution lists left over from the

@@ -49,7 +49,12 @@ Together, these scripts ensure that your Google Workspace environment stays sync
 5. Suspends members who haven't renewed after 7-day grace period
 6. Reactivates members who renewed (including archived members)
 7. Updates custom schema fields (rank, organization, duty positions)
-8. Sets recovery email to member's primary contact from eServices
+8. Sets recovery email (secondary email, then cadet parent email) and recovery
+   phone (member cell, then cadet parent). Recovery contact info **ignores** the
+   eServices DoNotContact flag — it is needed for password reset and is never
+   published. The directory-visible "other" email and phone still honor
+   DoNotContact, and cadet phone numbers are never added to the directory (and are
+   removed if previously present).
 
 **Account Creation**:
 ```
