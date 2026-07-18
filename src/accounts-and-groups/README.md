@@ -49,12 +49,21 @@ Together, these scripts ensure that your Google Workspace environment stays sync
 5. Suspends members who haven't renewed after 7-day grace period
 6. Reactivates members who renewed (including archived members)
 7. Updates custom schema fields (rank, organization, duty positions)
-8. Sets recovery email (secondary email, then cadet parent email) and recovery
-   phone (member cell, then cadet parent). Recovery contact info **ignores** the
+8. Sets recovery email and recovery phone. Recovery contact info **ignores** the
    eServices DoNotContact flag — it is needed for password reset and is never
-   published. The directory-visible "other" email and phone still honor
-   DoNotContact, and cadet phone numbers are never added to the directory (and are
-   removed if previously present).
+   published.
+   - **Recovery email** comes from a *personal* CAPWATCH address — either the
+     PRIMARY or SECONDARY email, whichever is not on the tenant's own domains
+     (`TENANT_DOMAIN` / `TENANT_SECONDARY_EMAIL_DOMAIN`); a member's org address
+     can't recover its own locked account. Preference: personal SECONDARY, then
+     personal PRIMARY, then cadet parent email. (This covers members who list a
+     personal email as PRIMARY despite the wing recommending SECONDARY.)
+   - **Recovery phone** comes from the member cell phone, then cadet parent phone.
+   - An existing recovery email/phone is **never overwritten with a blank** when
+     CAPWATCH has no usable value that run — the field is left untouched.
+   - The directory-visible "other" email and phone still honor DoNotContact, and
+     cadet phone numbers are never added to the directory (removed if previously
+     present).
 
 **Account Creation**:
 ```
