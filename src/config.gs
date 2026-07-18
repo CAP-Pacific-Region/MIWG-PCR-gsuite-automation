@@ -3,10 +3,15 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.7.0)
- * Version: 1.7.0
- * Date: 2026-07-17
- * Changes: Genericized the last hard-coded 'CAWG'/'California Wing' literals into
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
+ * Version: 1.8.0
+ * Date: 2026-07-18
+ * Changes: Added PROFILE_.CROSS_TENANT.SELF_NO_ACCOUNT_TYPES (consumed by
+ *   cross-tenant-contacts/CrossTenantContacts.gs) — this tenant's own member
+ *   types that get no Workspace account and so are absent from its native
+ *   directory, to be self-published into its GAL as shared contacts. ['CADET']
+ *   on cadets (cadet-lite), [] on seniors/region.
+ *   1.7.0: Genericized the last hard-coded 'CAWG'/'California Wing' literals into
  *   programmable wing labels so the code can deploy to another wing (e.g. Hawaii
  *   Wing) by Script Property alone. Added derived WING_ABBREVIATION_ (CA -> CAWG,
  *   HI -> HIWG), WING_NAME_ (proper name, via WING_NAMES_ map + TENANT_WING_NAME
@@ -195,7 +200,13 @@ const TENANT_PROFILES_ = {
       RUN_PARENTS: true,                 // publish cadet-squadron *.parents groups into the senior GAL
       PEER_TYPES: ['CADET'],             // peer members to publish
       PEER_LABEL: 'CADET',               // notes tag on managed contacts
-      EMIT_PLACEHOLDERS: true            // include no-email peers as do.not.contact sentinels
+      EMIT_PLACEHOLDERS: true,           // include no-email peers as do.not.contact sentinels
+      // This tenant's OWN member types that get no Workspace account and so never
+      // appear in its native directory — published as shared contacts (personal
+      // email) alongside the peer set. Empty here: every senior member who is
+      // eligible gets an account, so there is no accountless self population to
+      // carry. See the cadets profile for the cadet-lite case.
+      SELF_NO_ACCOUNT_TYPES: []
     }
   },
   cadets: {
@@ -248,7 +259,14 @@ const TENANT_PROFILES_ = {
       RUN_PARENTS: false,
       PEER_TYPES: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'],
       PEER_LABEL: 'SENIOR',
-      EMIT_PLACEHOLDERS: true
+      EMIT_PLACEHOLDERS: true,
+      // Cadet-lite members (grades below C/SSgt — CONFIG.CADET_LITE_EXCLUDED_GRADES)
+      // get no cawgcadets.org account, so they are absent from this tenant's own
+      // GAL even though they are cadets in this wing. Publish them as shared
+      // contacts off their CAPWATCH personal email — the same way the seniors
+      // tenant already carries them cross-tenant. syncCrossTenantContacts folds
+      // these into the member sync under the same marker, so no extra trigger.
+      SELF_NO_ACCOUNT_TYPES: ['CADET']
     }
   },
   // Region — a single-unit region HQ profile (the deploying instance is Pacific
@@ -293,7 +311,8 @@ const TENANT_PROFILES_ = {
       RUN_PARENTS: false,
       PEER_TYPES: [],
       PEER_LABEL: '',
-      EMIT_PLACEHOLDERS: false
+      EMIT_PLACEHOLDERS: false,
+      SELF_NO_ACCOUNT_TYPES: []
     }
   }
 };

@@ -10,6 +10,43 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-18] — Cross-tenant contacts: sort by last name, and carry cadet-lite into the cadet GAL
+
+Two directory issues, both visible in the shared GAL that publishes each tenant's members
+into the other.
+
+### Fixed (`CrossTenantContacts.gs` 0.2.0)
+
+- **Shared contacts sorted by first name.** Cadets displayed "Last, First M Grade" but sorted
+  by first name, while native directory users sorted by last name — same list, two orders.
+  Domain Shared Contacts sort in the GAL by the structured `gd:givenName` (not by `fullName`,
+  and not by `familyName` the way directory *users* do). Google exposes no per-contact sort
+  override, so `xtBuildContactXml_` now writes the whole **"Last Suffix, First M Grade"**
+  display string into `givenName` (and omits a separate `familyName`, so the contact card's
+  First/Last split isn't a doubled name). Display is unchanged; the sort key now leads with the
+  last name. The display also gains the middle initial + suffix, matching native accounts
+  (`xtDisplayName_`).
+
+### Added (`CrossTenantContacts.gs` 0.2.0, `config.gs` 1.8.0, `UpdateMembers.gs` 1.16.0)
+
+- **Self no-account publish.** The cadets tenant now publishes its own **cadet-lite** members
+  (grades below C/SSgt, which get no account and so were absent from the cadet GAL) as shared
+  contacts off their CAPWATCH personal email — the same way the seniors tenant already carries
+  them cross-tenant. Driven by the new `PROFILE_.CROSS_TENANT.SELF_NO_ACCOUNT_TYPES`
+  (`['CADET']` on cadets, `[]` elsewhere). Folded into `syncCrossTenantContacts` under the
+  existing marker, so **no new trigger**. Adds `xtSelfWorkspaceEmailByCapid_()` (self-directory
+  read to skip accountholders) and a `getMembers(types, incDuty, /*includeCadetLite=*/true)`
+  bypass of the cadet-lite grade filter. No new OAuth scopes.
+
+### Notes
+
+- Both name changes alter every managed contact's content hash, so the first run after deploy
+  updates every existing contact (~2,630 seniors, ~1,714 cadets) plus the new cadet self-lite
+  creates. That is within the m8 ~3,000-writes/tenant/day cap but tight on seniors; the sync
+  resumes across runs, so expect 1–2 days to converge.
+
+---
+
 ## [2026-07-18] — Recovery email: never blank it, and source it from any personal address
 
 Follow-up to the recovery-phone work below, after a `forceUpdateAllMembers()` run
