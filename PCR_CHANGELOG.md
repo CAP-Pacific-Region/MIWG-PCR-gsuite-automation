@@ -10,6 +10,38 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-18] — Recovery email: never blank it, and source it from any personal address
+
+Follow-up to the recovery-phone work below, after a `forceUpdateAllMembers()` run
+**removed a live recovery email** (CAPID 123541: `pappasmurf2016@aol.com` → `""`).
+
+### Fixed (`UpdateMembers.gs` 1.14.1)
+
+- **Never blank an existing recoveryEmail/recoveryPhone.** The payload built
+  `recoveryEmail: member.secondaryEmail || member.parentEmail || ''`, so a member with
+  no usable personal email had their good recovery address **overwritten with `''`** on
+  every full re-write — defeating password reset. Latent since the recovery-contact
+  feature, but masked by `memberUpdated()` change-gating; the 1.14.0 full re-write
+  surfaced it at scale. Recovery fields are now sent **only when non-empty**; omitting a
+  field makes `Users.update` preserve the existing value.
+
+### Changed (`UpdateMembers.gs` 1.15.0)
+
+- **Recovery / second-contact email now sources from PRIMARY or SECONDARY**, preferring
+  a personal address. `firstPersonalEmail_()` skips any CAPWATCH address on the tenant's
+  own domains (`TENANT_DOMAIN` / `TENANT_SECONDARY_EMAIL_DOMAIN`) and takes the next
+  candidate — SECONDARY, then PRIMARY, then cadet parent (recovery only). This covers the
+  many members who list a personal email as PRIMARY despite the wing recommending
+  SECONDARY, who previously got no recovery email at all. `recoveryEmail` is now a
+  derived `member.recoveryEmail` field and participates in change detection.
+
+### Notes
+
+- Directory fields (`phones` / `emails`) keep full-replace semantics, so intentional
+  cadet directory-phone removal is unaffected.
+- Recovery emails already blanked by the force run are being restored separately from the
+  "Workspace user update diff" Cloud Logging records, which captured each prior value.
+
 ## [2026-07-17] — Recovery phone ignores DoNotContact; cadet phones kept out of the directory
 
 Members whose CAPWATCH cell-phone row is flagged **DoNotContact** were getting no

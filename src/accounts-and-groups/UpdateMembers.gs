@@ -1,10 +1,29 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.14.0
- * Date: 2026-07-17
+ * Version: 1.15.0
+ * Date: 2026-07-18
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.14.0)
- * Changes: 1.14.0 — recovery phone is now tracked separately from the directory
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.15.0)
+ * Changes: 1.15.0 — recovery email and the directory "other" email now draw from
+ *   EITHER the CAPWATCH PRIMARY or SECONDARY address, preferring a personal one:
+ *   firstPersonalEmail_() skips any address on the tenant's own domains (CONFIG.DOMAIN
+ *   / SECONDARY_EMAIL_DOMAIN) — those can't recover their own locked account — and
+ *   takes the next candidate (SECONDARY, then PRIMARY, then cadet parent for recovery).
+ *   This covers the many members who list a personal email as PRIMARY despite the wing
+ *   recommending SECONDARY, who previously got no recovery email at all. recoveryEmail
+ *   is now a derived member field (member.recoveryEmail), added to memberUpdated().
+ *   1.14.1 — addOrUpdateUser() no longer blanks an existing recoveryEmail /
+ *   recoveryPhone when CAPWATCH has none this run. The payload used
+ *   `recoveryEmail: member.secondaryEmail || member.parentEmail || ''`, so a member
+ *   with no usable personal email had their good recovery address OVERWRITTEN with ''
+ *   on every full re-write — defeating password reset. These fields are now included
+ *   only when non-empty; omitting them makes Users.update preserve the existing value.
+ *   A real new value still overwrites. Directory fields (phones/emails) still
+ *   full-replace by design, so cadet phone removal is unaffected. The update diff
+ *   logger only diffs recovery fields when actually present, avoiding a false
+ *   existing->'' change line. (Latent since the recovery-contact feature; surfaced by
+ *   the 1.14.0 full re-write of every member.)
+ *   1.14.0 — recovery phone is now tracked separately from the directory
  *   phone. addContactInfo() populates member.recoveryPhone by IGNORING the CAPWATCH
  *   DoNotContact flag (recovery / password-reset use, never published), while the
  *   directory phone (member.phone) still excludes DoNotContact rows AND is now never
@@ -553,9 +572,14 @@ function addContactInfo(members, contactData) {
 
       if (priority === 'PRIMARY') {
         if (!doNotContact) members[capid].email = sanitized;
+        // Retain the PRIMARY email (and its DoNotContact flag) regardless — it is a
+        // recovery/second-contact candidate. Many members list their personal email
+        // as PRIMARY despite the wing recommending it as SECONDARY.
+        members[capid].primaryEmailValue = sanitized;
+        members[capid].primaryEmailDNC = doNotContact;
       } else if (priority === 'SECONDARY') {
         members[capid].secondaryEmail = sanitized;
-        if (!doNotContact) members[capid].otherEmail = sanitized;
+        members[capid].secondaryEmailDNC = doNotContact;
       }
     } else if (members[capid].type === 'CADET' && type === 'CADET PARENT EMAIL') {
       const sanitized = sanitizeEmail(contact);
@@ -602,9 +626,58 @@ function addContactInfo(members, contactData) {
     }
   }
 
+  // Derive the recovery email and the directory "other" (second-contact) email from
+  // the collected CAPWATCH addresses. A member's own tenant address (TENANT_DOMAIN /
+  // TENANT_SECONDARY_EMAIL_DOMAIN) is useless for recovery — you can't reset a locked
+  // account from the account it locks — so those are skipped and the next candidate
+  // is tried. Either PRIMARY or SECONDARY may supply a personal address; SECONDARY is
+  // preferred (the wing-intended slot), then PRIMARY, then the cadet parent email.
+  Object.keys(members).forEach(capid => {
+    const m = members[capid];
+
+    // recoveryEmail IGNORES DoNotContact (recovery use, never published).
+    m.recoveryEmail =
+      firstPersonalEmail_([m.secondaryEmail, m.primaryEmailValue]) ||
+      m.parentEmail ||
+      '';
+
+    // Directory "other" email: personal AND contactable (not DoNotContact).
+    m.otherEmail = firstPersonalEmail_([
+      m.secondaryEmailDNC ? null : m.secondaryEmail,
+      m.primaryEmailDNC ? null : m.primaryEmailValue
+    ]) || undefined;
+  });
+
   Logger.info('Contact info added (email + phone)', {
     totalMembers: Object.keys(members).length
   });
+}
+
+/**
+ * Returns the first address in `candidates` that is a usable personal email — a
+ * non-empty address whose domain is not one of the tenant's own domains
+ * (CONFIG.DOMAIN / CONFIG.SECONDARY_EMAIL_DOMAIN). Tenant addresses are excluded
+ * because they cannot recover their own locked account and should not be published
+ * as a member's external contact. Domains are compared case-insensitively with any
+ * leading '@' stripped, so both '@cawg.cap.gov' and 'cawg.cap.gov' forms match.
+ *
+ * @param {Array<string|null>} candidates - Addresses in preference order
+ * @returns {string} First personal address, or '' if none qualify
+ */
+function firstPersonalEmail_(candidates) {
+  const excluded = [CONFIG.DOMAIN, CONFIG.SECONDARY_EMAIL_DOMAIN]
+    .map(d => String(d || '').trim().toLowerCase().replace(/^@/, ''))
+    .filter(Boolean);
+
+  for (let i = 0; i < candidates.length; i++) {
+    const email = candidates[i];
+    if (!email) continue;
+    const at = email.lastIndexOf('@');
+    if (at < 0) continue;
+    const domain = email.slice(at + 1).toLowerCase();
+    if (excluded.indexOf(domain) === -1) return email;
+  }
+  return '';
 }
 
 /**
@@ -836,6 +909,7 @@ function memberUpdated(newMember, previousMember) {
           newMember.status !== previousMember.status ||
           newMember.email !== previousMember.email ||
           newMember.secondaryEmail !== previousMember.secondaryEmail ||
+          newMember.recoveryEmail !== previousMember.recoveryEmail ||
           newMember.otherEmail !== previousMember.otherEmail ||
           newMember.parentEmail !== previousMember.parentEmail ||
           newMember.phone !== previousMember.phone ||
@@ -911,8 +985,15 @@ function logWorkspaceUserUpdateDiff_(primaryEmail, member, updates) {
     : '';
 
   const changes = [];
-  addChangeForLog_(changes, 'recoveryEmail', existing.recoveryEmail, updates.recoveryEmail);
-  addChangeForLog_(changes, 'recoveryPhone', existing.recoveryPhone, updates.recoveryPhone);
+  // Only diff recovery fields when the update actually carries them — when omitted
+  // (no CAPWATCH value this run) the existing value is preserved, not changed, so
+  // reporting existing -> '' would be a false positive.
+  if ('recoveryEmail' in updates) {
+    addChangeForLog_(changes, 'recoveryEmail', existing.recoveryEmail, updates.recoveryEmail);
+  }
+  if ('recoveryPhone' in updates) {
+    addChangeForLog_(changes, 'recoveryPhone', existing.recoveryPhone, updates.recoveryPhone);
+  }
   addChangeForLog_(changes, 'mobilePhone', getPhoneForLog_(existing, 'mobile'), member.phone);
   addChangeForLog_(changes, 'otherEmail', getEmailForLog_(existing, 'other'), member.otherEmail);
   addChangeForLog_(changes, 'managerEmail', getRelationForLog_(existing, 'manager'), desiredManager);
@@ -989,8 +1070,6 @@ function addOrUpdateUser(member) {
       primary: true
     }],
     orgUnitPath: member.orgPath,
-    recoveryEmail: member.secondaryEmail || member.parentEmail || '',
-    recoveryPhone: member.recoveryPhone || '',
     // Empty array clears any directory phone Google already has — this is how a
     // cadet's previously-published number gets removed.
     phones: member.phone ? [{ type: 'mobile', value: member.phone }] : [],
@@ -1018,6 +1097,16 @@ function addOrUpdateUser(member) {
       }
     }
   };
+
+  // Recovery email/phone are REQUIRED for password reset, so never clobber an
+  // existing one with an empty value. When CAPWATCH has no secondary/parent email
+  // or no cell/parent phone this run, OMIT the field entirely — Users.update then
+  // preserves whatever Google already has, instead of blanking it. (A member whose
+  // only CAPWATCH email is a PRIMARY contact has no member.secondaryEmail, so the
+  // old `|| ''` fallback was silently wiping good recovery addresses on every full
+  // re-write.) A real new value still overwrites; only empty is withheld.
+  if (member.recoveryEmail) updates.recoveryEmail = member.recoveryEmail;
+  if (member.recoveryPhone) updates.recoveryPhone = member.recoveryPhone;
 
   // Try updating existing user
   try {
@@ -1111,7 +1200,7 @@ function addOrUpdateUser(member) {
       changePasswordAtNextLogin: true,
       password: generatedPassword,
       orgUnitPath: member.orgPath,
-      recoveryEmail: member.secondaryEmail || member.parentEmail || '',
+      recoveryEmail: member.recoveryEmail || '',
       recoveryPhone: member.recoveryPhone || '',
       phones: member.phone ? [{ type: 'mobile', value: member.phone }] : [],
       emails: member.otherEmail ? [{ type: 'other', address: member.otherEmail }] : [],
