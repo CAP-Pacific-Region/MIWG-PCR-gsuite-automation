@@ -10,6 +10,64 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-17] — Genericize wing labels so the code can deploy to another wing (e.g. Hawaii)
+
+Removes the last hard-coded `CAWG` / `California Wing` literals so a second wing can
+adopt the automation by Script Property alone. Prompted by Hawaii Wing (HIWG), which
+runs the same split senior/cadet tenant structure.
+
+### Added
+
+- **`config.gs` (v1.7.0)** — programmable wing labels derived from `TENANT_WING`:
+  `WING_ABBREVIATION_` (`CA` → `CAWG`, `HI` → `HIWG`), `WING_NAME_` (proper name via a
+  `WING_NAMES_` map, e.g. `California Wing` / `Hawaii Wing`), and `ORG_LABEL_` (region
+  abbreviation for a region tenant, wing abbreviation otherwise). Exposed as
+  `CONFIG.WING_ABBREVIATION` / `WING_NAME` / `ORG_LABEL`. New **optional** Script
+  Properties, all blank-derive: `TENANT_WING_ABBREVIATION`, `TENANT_WING_NAME`,
+  `TENANT_CADETS_TENANT_DOMAIN`. `setupTenantConfig()` lists them.
+- **`config-tenants/setup-hiwg.gs` + `hiwg-seniors.json` / `hiwg-cadets.json`** — a
+  Hawaii Wing setup template mirroring `setup-region.gs`: paste-in
+  `setupHiwgSeniorsScriptProperties()` / `setupHiwgCadetsScriptProperties()`, with
+  `TENANT_WING=HI` and profile pre-set and the tenant-specific IDs/domains marked
+  `FILL_IN`. Wing labels ("HIWG", "Hawaii Wing") are derived automatically.
+
+### Changed
+
+- **`SyncOrgPaths.gs` (v1.1.0)** — OrgPath-sync email subject/footer and body now use
+  `CONFIG.ORG_LABEL` / `CONFIG.WING` instead of literal `CAWG` / `CA`.
+- **`SendRetentionEmail.gs`** — retention report footer uses `CONFIG.ORG_LABEL`.
+- **`TransitionCompleteEmail.html` + `CadetTransitionMigrate.gs`** — the member-facing
+  masthead and footer now render `{{wingName}}` (`CONFIG.WING_NAME`) instead of a
+  literal "CALIFORNIA WING" / "California Wing IT".
+- **`config.gs` · `UpdateGroups.gs` · `SquadronGroups.gs`** — the access-group
+  description ("… accounts only") and the managed wing-scope display name use
+  `WING_ABBREVIATION` instead of literal `CAWG`. (The `UpdateGroups`/`SquadronGroups`
+  spots are inside California-specific display branches gated on `WING === 'CA'`; other
+  wings fall through to full sentence-cased names, unchanged.)
+
+### Notes
+
+- No behavior change for the existing California or Pacific Region tenants: every new
+  label derives to the same value it was before. Hawaii-specific data (domains, ORGIDs,
+  Drive/Sheet IDs, service accounts) must still be supplied per tenant.
+
+## [2026-07-17] — Cadet transition: forwarding-group external delivery fix
+
+### Fixed
+
+- **`CadetTransitionCleanup.gs` (v1.2.0)** — the post-deletion forwarding group (the freed
+  cadet address that forwards to the new senior mailbox) now sets
+  **`allowExternalMembers=true`**. The forward target is on the *peer* (senior) tenant —
+  external to the cadets domain — so without this the group could not deliver to it; the
+  previous version set only `whoCanPostMessage` (inbound) and would have silently forwarded
+  nothing. Settings are now applied **before** the member is added, since a domain that
+  restricts external members rejects the insert otherwise — and by that point the cadet
+  account is already deleted (a group can't take an address a live user holds), so a failure
+  there would strand a half-built forward. Added **`testForwardingGroup(addr, member)`** to
+  prove the whole mechanism — including the domain's external-member policy — against a
+  throwaway group before a real close depends on it. Never run in production yet (first close
+  is ~2026-07-29).
+
 ## [2026-07-17] — Cadet transition: close reminder; license reaper armed on seniors
 
 ### Added
