@@ -21,6 +21,30 @@ so clasp never uploads them. They exist for version control and disaster recover
 - `setup-region.gs` — paste-once helper (`setupRegionScriptProperties()`) that writes
   Pacific's `TENANT_*` values from `region.json` to the project's Script Properties. Repo-only,
   never shipped by clasp. See `docs/REGION_DIFF.md`.
+- `hiwg-seniors.json` / `hiwg-cadets.json` — **template** identity for a second wing (Hawaii
+  Wing), same split senior/cadet structure as California. Tenant-specific values are marked
+  `FILL_IN`; wing labels are pre-set to derive.
+- `setup-hiwg.gs` — paste-once helper with `setupHiwgSeniorsScriptProperties()` and
+  `setupHiwgCadetsScriptProperties()`, mirroring `setup-region.gs`. Fill in the `FILL_IN` values,
+  select the matching function, Run once.
+
+## Wing labels are derived (no per-wing code edits)
+
+`config.gs` derives the display forms of the wing from `TENANT_WING`, so adopting a new wing needs
+**no source changes** — only Script Properties:
+
+| Derived (`CONFIG.*`) | From `TENANT_WING=CA` | From `TENANT_WING=HI` | Override property |
+| --- | --- | --- | --- |
+| `WING_ABBREVIATION` | `CAWG` | `HIWG` | `TENANT_WING_ABBREVIATION` |
+| `WING_NAME` | `California Wing` | `Hawaii Wing` | `TENANT_WING_NAME` |
+| `ORG_LABEL` (region abbr, else wing abbr) | `CAWG` | `HIWG` | — (uses `TENANT_REGION`/wing) |
+
+`WING_NAME` is looked up in a small `WING_NAMES_` map in `config.gs` (Pacific-Region wings + PCR);
+for any wing not in the map, set `TENANT_WING_NAME`. `WING_ABBREVIATION` / `ORG_LABEL` back the
+access-group descriptions, the OrgPath-sync and retention emails, and (via `WING_NAME`) the
+member-facing transition-complete email. One more optional, blank-deriving property:
+`TENANT_CADETS_TENANT_DOMAIN` (the peer cadet domain used by `updateCAWGCadetGroups()`; blank
+derives `<wing>wgcadets.org`).
 
 **Secrets are NOT stored here** — `SA_PRIVATE_KEY`, `SA_IMPERSONATION_EMAIL`, `SA_PRIVATE_KEY_ID`,
 `MISSION_WEBHOOK_SECRET`, `MISSION_PARENT_FOLDER_ID`, the CAPWATCH `CAPWATCH_AUTHORIZATION`

@@ -1,9 +1,12 @@
 /**
  * Cadet → senior mail migration.
  *
- * Version: 1.0.0
- * Date: 2026-07-16
- * Changes: 1.0.0 — initial release. Parallel Gmail import into the senior
+ * Version: 1.0.1
+ * Date: 2026-07-17
+ * Changes: 1.0.1 — transition-complete email now renders {{wingName}}
+ *   (CONFIG.WING_NAME) so the masthead/footer read for any wing, not literal
+ *   California Wing.
+ *   1.0.0 — initial release. Parallel Gmail import into the senior
  *   mailbox, resumable across the 6-minute limit and serialized by a script lock.
  *
  * Runs on the CADETS tenant (TRANSITION_CONFIG.ROLE === 'source'), reading the
@@ -660,7 +663,8 @@ function sendTransitionCompleteEmail_(row, messageCount, deleteAfter) {
     .replace(/{{seniorEmail}}/g, row.SeniorEmail)
     .replace(/{{cadetEmail}}/g, row.CadetEmail)
     .replace(/{{messageCount}}/g, String(messageCount))
-    .replace(/{{deleteDate}}/g, formatTransitionDate_(deleteAfter));
+    .replace(/{{deleteDate}}/g, formatTransitionDate_(deleteAfter))
+    .replace(/{{wingName}}/g, CONFIG.WING_NAME);
 
   executeWithRetry(() =>
     GmailApp.sendEmail(

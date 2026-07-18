@@ -1,10 +1,12 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.0.0
- * Date: 2026-07-09
- * Changes: Reconciled with live tenant code (INDEFINITE senior type; profile-driven
- *   config references). See PCR_CHANGELOG.md.
+ * Version: 1.0.1
+ * Date: 2026-07-17
+ * Changes: Retention-report footer uses the programmable CONFIG.ORG_LABEL instead
+ *   of literal 'CAWG', so it reads correctly for any wing. See PCR_CHANGELOG.md.
+ *   1.0.0: Reconciled with live tenant code (INDEFINITE senior type; profile-driven
+ *   config references).
  *
  * Automates sending retention-focused emails to CAP members based on lifecycle events:
  * - Cadets turning 18 (transition to senior member opportunities)
@@ -938,7 +940,7 @@ function sendRetentionSummaryEmail(summary) {
     htmlBody += `
           <hr>
           <p style="font-size: 12px; color: #666;">
-            This is an automated report from the CAWG CAPWATCH Retention Email system.
+            This is an automated report from the ${CONFIG.ORG_LABEL} CAPWATCH Retention Email system.
             For questions or issues, please contact ${ITSUPPORT_EMAIL}.
           </p>
         </body>

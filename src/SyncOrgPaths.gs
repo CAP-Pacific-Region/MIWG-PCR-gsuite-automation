@@ -1,14 +1,17 @@
 /***********************************************
  * File: SyncOrgPaths.gs
- * Description: Detects activated and deactivated CA Wing orgs after each
+ * Description: Detects activated and deactivated wing orgs after each
  *   CAPWATCH download by comparing Organization.txt against OrgPaths.txt.
  *   Auto-adds new entries where the parent path is already mapped, and emails
  *   this tenant's IT mailbox with a full summary of changes and items needing
  *   attention. Called automatically at the end of getCapwatch().
- * Version: 1.0.0
- * Date: 2026-07-09
- * Changes: Sync recipient is now tenant-aware via getOrgPathSyncEmail_()
- *   (was hardcoded it@cawgcap.org). See PCR_CHANGELOG.md.
+ * Version: 1.1.0
+ * Date: 2026-07-17
+ * Changes: Sync email subject/footer and body now use the programmable
+ *   CONFIG.ORG_LABEL / CONFIG.WING instead of literal 'CAWG'/'CA', so the report
+ *   reads correctly for any wing (e.g. HIWG). See PCR_CHANGELOG.md.
+ *   1.0.0: Sync recipient is now tenant-aware via getOrgPathSyncEmail_()
+ *   (was hardcoded it@cawgcap.org).
  ***********************************************/
 
 /**
@@ -183,7 +186,7 @@ function createOrgUnit_(fullPath, ouName) {
  */
 function sendOrgPathSyncEmail_(added, needsManual, deactivated) {
   const date    = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM d, yyyy');
-  const subject = `[CAWG Automation] OrgPath Sync Report — ${date}`;
+  const subject = `[${CONFIG.ORG_LABEL} Automation] OrgPath Sync Report — ${date}`;
 
   let html = `<p>The daily CAPWATCH sync detected OrgPath changes on <strong>${date}</strong>.</p>`;
 
@@ -202,7 +205,7 @@ function sendOrgPathSyncEmail_(added, needsManual, deactivated) {
   if (needsManual.length > 0) {
     html += `
       <h3 style="color:#b85c00">&#x26A0;&#xFE0F; Needs Manual Mapping (${needsManual.length})</h3>
-      <p>These active CA orgs are not in OrgPaths.txt and their parent ORGID is not mapped either.
+      <p>These active ${CONFIG.WING} orgs are not in OrgPaths.txt and their parent ORGID is not mapped either.
          Add them manually once the parent group OU is created.</p>
       <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:monospace;font-size:13px">
         <tr style="background:#f0f0f0"><th>ORGID</th><th>Unit</th><th>Name</th><th>Scope</th><th>Parent ORGID</th></tr>
@@ -215,7 +218,7 @@ function sendOrgPathSyncEmail_(added, needsManual, deactivated) {
   if (deactivated.length > 0) {
     html += `
       <h3 style="color:#c0392b">&#x1F534; Possible Deactivations (${deactivated.length})</h3>
-      <p>These OrgPath entries have no matching active CA org in CAPWATCH. If the unit has been
+      <p>These OrgPath entries have no matching active ${CONFIG.WING} org in CAPWATCH. If the unit has been
          deactivated or rechartered, remove the entry from OrgPaths.txt and clean up any associated
          calendar resources and Google Groups.</p>
       <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:monospace;font-size:13px">
@@ -226,7 +229,7 @@ function sendOrgPathSyncEmail_(added, needsManual, deactivated) {
       </table>`;
   }
 
-  html += `<p style="color:#888;font-size:11px;margin-top:24px">Sent by CAWG Automation — OrgPath Sync</p>`;
+  html += `<p style="color:#888;font-size:11px;margin-top:24px">Sent by ${CONFIG.ORG_LABEL} Automation — OrgPath Sync</p>`;
 
   const syncEmail = getOrgPathSyncEmail_();
   MailApp.sendEmail({ to: syncEmail, subject: subject, htmlBody: html });

@@ -3,10 +3,21 @@
  * Description: Centralized configuration and constants for CAPWATCH automation scripts.
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0, 1.5.0, 1.6.0)
- * Version: 1.6.0
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.7.0)
+ * Version: 1.7.0
  * Date: 2026-07-17
- * Changes: Renamed the 'pacific' behavioral profile to the generic 'region' (so the
+ * Changes: Genericized the last hard-coded 'CAWG'/'California Wing' literals into
+ *   programmable wing labels so the code can deploy to another wing (e.g. Hawaii
+ *   Wing) by Script Property alone. Added derived WING_ABBREVIATION_ (CA -> CAWG,
+ *   HI -> HIWG), WING_NAME_ (proper name, via WING_NAMES_ map + TENANT_WING_NAME
+ *   override), and ORG_LABEL_ (region abbr for region tenants, wing abbr
+ *   otherwise), exposed as CONFIG.WING_ABBREVIATION / WING_NAME / ORG_LABEL. New
+ *   optional Script Properties: TENANT_WING_ABBREVIATION, TENANT_WING_NAME,
+ *   TENANT_CADETS_TENANT_DOMAIN (all blank-derive). The access-group description,
+ *   OrgPath-sync email, retention report, and transition-complete email now use
+ *   these instead of literals. See config-tenants/setup-hiwg.gs for the Hawaii
+ *   setup template.
+ *   1.6.0: Renamed the 'pacific' behavioral profile to the generic 'region' (so the
  *   code reads sensibly outside the Pacific Region). PROFILE_ALIASES_ maps a legacy
  *   TENANT_PROFILE=pacific to 'region', so the live tenant needs no coordinated
  *   property flip — it keeps working whether or not the property is updated.
@@ -79,7 +90,17 @@ function getTenantConfig_() {
     SECONDARY_EMAIL_DOMAIN: get('TENANT_SECONDARY_EMAIL_DOMAIN'),
     CAPWATCH_ORGID: get('TENANT_CAPWATCH_ORGID'),
     WING: get('TENANT_WING'),
+    // Display forms of the wing, both optional. When blank they are derived from
+    // WING (see WING_ABBREVIATION_ / WING_NAME_ below): 'CA' -> 'CAWG' /
+    // 'California Wing'. Set these only when the derivation is wrong for a tenant.
+    WING_ABBREVIATION: get('TENANT_WING_ABBREVIATION'),
+    WING_NAME: get('TENANT_WING_NAME'),
     REGION: get('TENANT_REGION'),
+    // Peer cadet tenant's Workspace domain, consumed by updateCAWGCadetGroups()
+    // when nesting cadet-tenant groups into wing groups. Blank derives it from
+    // WING as '<wing>wgcadets.org' (cawgcadets.org for CA); set it when a wing's
+    // cadet domain does not follow that pattern.
+    CADETS_TENANT_DOMAIN: get('TENANT_CADETS_TENANT_DOMAIN'),
     CAPWATCH_DATA_FOLDER_ID: get('TENANT_CAPWATCH_DATA_FOLDER_ID'),
     REGION_CAPWATCH_DATA_FOLDER_ID: get('TENANT_REGION_CAPWATCH_DATA_FOLDER_ID'),
     AUTOMATION_FOLDER_ID: get('TENANT_AUTOMATION_FOLDER_ID'),
@@ -279,6 +300,56 @@ const TENANT_PROFILES_ = {
 
 const PROFILE_ = TENANT_PROFILES_[TENANT_PROFILE] || TENANT_PROFILES_.seniors;
 
+// ============================================================================
+// DERIVED WING LABELS (programmable; used wherever CAWG/California was literal)
+// ============================================================================
+/**
+ * The wing's short acronym (CAWG, HIWG, ORWG, …), used in automation email
+ * subjects, footers, access-group descriptions, and managed group display
+ * names. Prefer the explicit Script Property TENANT_WING_ABBREVIATION; otherwise
+ * derive it from the two-letter WING code by appending 'WG' (CA -> CAWG,
+ * HI -> HIWG). Region codes (PCR) and values already ending in 'WG' are used
+ * as-is.
+ */
+const WING_ABBREVIATION_ = (function () {
+  const explicit = String(TENANT.WING_ABBREVIATION || '').trim();
+  if (explicit) return explicit.toUpperCase();
+  const w = String(TENANT.WING || '').trim().toUpperCase();
+  if (!w) return '';
+  return (/WG$/.test(w) || w.length !== 2) ? w : w + 'WG';
+})();
+
+/**
+ * Best-effort map of CAP wing/region codes to their proper names, used for the
+ * member-facing wing name (e.g. the transition-complete email masthead). Covers
+ * the Pacific Region tenants this repo actually deploys to; any code not listed
+ * falls back to the abbreviation, and TENANT_WING_NAME overrides everything.
+ */
+const WING_NAMES_ = {
+  CA: 'California Wing',
+  HI: 'Hawaii Wing',
+  NV: 'Nevada Wing',
+  OR: 'Oregon Wing',
+  WA: 'Washington Wing',
+  AK: 'Alaska Wing',
+  PCR: 'Pacific Region'
+};
+
+/** Proper wing name for member-facing copy ('California Wing', 'Hawaii Wing'). */
+const WING_NAME_ = (function () {
+  const explicit = String(TENANT.WING_NAME || '').trim();
+  if (explicit) return explicit;
+  const w = String(TENANT.WING || '').trim().toUpperCase();
+  return WING_NAMES_[w] || WING_ABBREVIATION_;
+})();
+
+/**
+ * Single label for "this deploying org" in generic automation copy: the region
+ * abbreviation for a region tenant (PCR), otherwise the wing abbreviation
+ * (CAWG / HIWG). Lets one string serve wing and region tenants alike.
+ */
+const ORG_LABEL_ = String(TENANT.REGION || '').trim() || WING_ABBREVIATION_;
+
 /**
  * ONE-TIME per project: fill in THIS tenant's values below, run once, done.
  * These are written to Script Properties, which survive every `clasp push`.
@@ -291,7 +362,10 @@ function setupTenantConfig() {
     TENANT_EMAIL_DOMAIN: '',               // e.g. @cawgcap.org
     TENANT_SECONDARY_EMAIL_DOMAIN: '',     // e.g. @cawg.cap.gov (bare 'cawg.cap.gov' also accepted); '' unless the tenant has a verified secondary domain
     TENANT_CAPWATCH_ORGID: '',             // e.g. 188
-    TENANT_WING: '',                       // e.g. CA
+    TENANT_WING: '',                       // e.g. CA  (HI for Hawaii Wing)
+    TENANT_WING_ABBREVIATION: '',          // e.g. CAWG/HIWG; '' derives <WING>+WG
+    TENANT_WING_NAME: '',                  // e.g. California Wing; '' derives from WING (see WING_NAMES_)
+    TENANT_CADETS_TENANT_DOMAIN: '',       // peer cadet domain, e.g. cawgcadets.org; '' derives <wing>wgcadets.org
     TENANT_REGION: '',                     // '' unless this project is a Region-level pull
     TENANT_CAPWATCH_DATA_FOLDER_ID: '',
     TENANT_REGION_CAPWATCH_DATA_FOLDER_ID: '', // Region-level all-members CAPWATCH folder (region tenants only)
@@ -368,6 +442,21 @@ REGION: TENANT.REGION,
 
 /** Wing abbreviation, used for building squadron identifiers. */
 WING: TENANT.WING,
+
+/** Wing acronym for display (CAWG, HIWG, …); see WING_ABBREVIATION_. */
+WING_ABBREVIATION: WING_ABBREVIATION_,
+
+/** Proper wing name for member-facing copy ('California Wing'); see WING_NAME_. */
+WING_NAME: WING_NAME_,
+
+/**
+ * Label for this deploying org in generic automation copy — region abbreviation
+ * for a region tenant, wing abbreviation otherwise. See ORG_LABEL_.
+ */
+ORG_LABEL: ORG_LABEL_,
+
+/** Peer cadet tenant Workspace domain (blank derives '<wing>wgcadets.org'). */
+CADETS_TENANT_DOMAIN: TENANT.CADETS_TENANT_DOMAIN,
 
 /** Email domain for CAP accounts (members get username + this). */
 EMAIL_DOMAIN: TENANT.EMAIL_DOMAIN,
@@ -841,7 +930,7 @@ const SQUADRON_GROUP_CONFIG = {
     /**
      * Description template for access groups
      */
-    DESCRIPTION_TEMPLATE: 'Internal access group for {squadron}. CAWG accounts only. Used for shared drive permissions and internal resource access.',
+    DESCRIPTION_TEMPLATE: 'Internal access group for {squadron}. ' + WING_ABBREVIATION_ + ' accounts only. Used for shared drive permissions and internal resource access.',
     
     /**
      * Whether to auto-create access groups for all squadrons (per TENANT_PROFILE:
