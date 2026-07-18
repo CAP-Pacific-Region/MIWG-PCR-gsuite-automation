@@ -32,7 +32,20 @@
  * Requires (beyond the shared manifest): the legacy Domain Shared Contacts
  * scope  https://www.google.com/m8/feeds  (added to appsscript.json).
  *
- * Version: 0.1.3 (draft)
+ * Version: 0.2.0 (draft)
+ * 0.2.0: two directory fixes.
+ *   - SORT: shared contacts sorted by first name (the GAL sorts Domain Shared
+ *     Contacts by gd:givenName, unlike directory users which sort by family
+ *     name). Put the whole "Last Suffix, First M Grade" display into givenName so
+ *     the sort key leads with the last name; drop the separate familyName.
+ *     Display now also carries the middle initial + suffix, matching native
+ *     accounts (xtDisplayName_).
+ *   - SELF NO-ACCOUNT PUBLISH: a tenant can now publish its OWN accountless
+ *     members (cadet-lite) into its GAL alongside the peer set, via
+ *     PROFILE_.CROSS_TENANT.SELF_NO_ACCOUNT_TYPES (['CADET'] on cadets). Folded
+ *     into the member sync under the same marker — no new trigger. Adds
+ *     xtSelfWorkspaceEmailByCapid_ (self-directory read to skip accountholders)
+ *     and a getMembers(..., includeCadetLite=true) bypass.
  * 0.1.3: combine (not drop) cadets sharing one email into a single card naming
  *   every cadet, so both stay searchable on a shared parent address.
  * 0.1.2: dedupe desired set by email — Domain Shared Contacts key on address, so
@@ -66,7 +79,8 @@ function syncCrossTenantContacts() {
 
   Logger.info('Cross-tenant contact sync starting', {
     wing: cfg.wing, selfDomain: cfg.selfDomain, peerDomain: cfg.peerDomain,
-    peerTypes: cfg.peerTypes, emitPlaceholders: cfg.emitPlaceholders
+    peerTypes: cfg.peerTypes, emitPlaceholders: cfg.emitPlaceholders,
+    selfNoAccountTypes: cfg.selfNoAccountTypes
   });
 
   const desired = xtBuildDesiredContacts_(cfg);
@@ -196,6 +210,9 @@ function getCrossTenantConfig_() {
     peerTypes: Array.isArray(xt.PEER_TYPES) ? xt.PEER_TYPES : [],
     peerLabel: xt.PEER_LABEL || '',              // notes tag, e.g. 'CADET' / 'SENIOR'
     emitPlaceholders: xt.EMIT_PLACEHOLDERS !== false,
+    // This tenant's own no-account member types (e.g. cadet-lite) to self-publish
+    // into its GAL alongside the peer set. Empty = peer-only (the default).
+    selfNoAccountTypes: Array.isArray(xt.SELF_NO_ACCOUNT_TYPES) ? xt.SELF_NO_ACCOUNT_TYPES : [],
 
     // identity/secrets (per-project Script Properties; never in shared source)
     wing: CONFIG.WING,
@@ -253,7 +270,7 @@ function xtBuildDesiredContacts_(cfg) {
   const peerWsByCapid = xtPeerWorkspaceEmailByCapid_(cfg);
 
   const byCapid = {};
-  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0, combinedEmail: 0 };
+  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0, combinedEmail: 0, selfHasAccount: 0 };
 
   Object.keys(roster).forEach(capid => {
     const m = roster[capid];
@@ -263,23 +280,38 @@ function xtBuildDesiredContacts_(cfg) {
     if (!resolved.email) { stats.dropped++; return; }         // no email & placeholders off
     stats[resolved.source]++;
 
-    const contact = {
-      capid: String(m.capsn),
-      givenName: String(m.firstName || '').trim(),
-      familyName: String(m.lastName || '').trim(),
-      grade: String(m.rank || '').trim(),
-      email: resolved.email,
-      emailSource: resolved.source,
-      dutyTitle: xtDutyTitle_(m),
-      department: toTitleCase(m.orgName || m.charter || ''),
-      notes: xtNotes_(m, cfg)
-    };
-    contact.displayName = xtDisplayName_(contact);
-    contact.syncHash = xtHash_(contact);
-
     // CAPID is the stable identity; last write wins on the rare duplicate.
-    byCapid[contact.capid] = contact;
+    byCapid[m.capsn] = xtMakeContact_(m, resolved, cfg);
   });
+
+  // 3) Self no-account members (e.g. cadet-lite). These are THIS tenant's own
+  //    members who get no Workspace account (CONFIG.CADET_LITE_EXCLUDED_GRADES),
+  //    so they never appear in its native directory — even though the peer tenant
+  //    already carries them cross-tenant. Publish them here off their CAPWATCH
+  //    personal email, folded into the SAME managed set (marker cfg.wing) so the
+  //    existing reconcile + trigger handle them with no extra plumbing.
+  if (cfg.selfNoAccountTypes.length) {
+    const selfTypeSet = {};
+    cfg.selfNoAccountTypes.forEach(t => { selfTypeSet[String(t).trim().toUpperCase()] = true; });
+
+    // includeCadetLite=true: the lite grades are exactly who we want, but
+    // getMembers() would drop them on this tenant (CONFIG.CADET_LITE=true).
+    const selfRoster = getMembers(cfg.selfNoAccountTypes, true, true);
+    const selfWsByCapid = xtSelfWorkspaceEmailByCapid_();   // who already has an account
+
+    Object.keys(selfRoster).forEach(capid => {
+      const m = selfRoster[capid];
+      if (!selfTypeSet[String(m.type || '').trim().toUpperCase()]) { stats.filteredType++; return; }
+      if (selfWsByCapid[String(m.capsn || '').trim()]) { stats.selfHasAccount++; return; } // native user
+
+      // No workspace step for self: an accountholder was already skipped above,
+      // so an empty map forces the CAPWATCH-personal / placeholder legs.
+      const resolved = xtResolvePeerEmail_(m, cfg, {});
+      if (!resolved.email) { stats.dropped++; return; }
+      stats[resolved.source]++;
+      byCapid[m.capsn] = xtMakeContact_(m, resolved, cfg);   // distinct CAPID space from peers
+    });
+  }
 
   // Domain Shared Contacts key on the email address, so multiple cadets sharing
   // a parent's CAPWATCH email must be ONE contact (a duplicate address otherwise
@@ -315,6 +347,30 @@ function xtBuildDesiredContacts_(cfg) {
   Logger.info('Cross-tenant desired set built', { total: list.length, sources: stats });
   if (combined.length) Logger.info('Cross-tenant shared-email cards combined', { sample: combined });
   return { byCapid, list, stats };
+}
+
+/**
+ * Builds one managed-contact object from a CAPWATCH member and a resolved email.
+ * Shared by the peer sync and the self no-account sync so both produce identical
+ * cards (name/grade/duty/dept/notes + display name + content hash). Pure.
+ */
+function xtMakeContact_(m, resolved, cfg) {
+  const contact = {
+    capid: String(m.capsn),
+    givenName: String(m.firstName || '').trim(),
+    familyName: String(m.lastName || '').trim(),
+    middleName: String(m.middleName || '').trim(),
+    suffix: String(m.suffix || '').trim(),
+    grade: String(m.rank || '').trim(),
+    email: resolved.email,
+    emailSource: resolved.source,
+    dutyTitle: xtDutyTitle_(m),
+    department: toTitleCase(m.orgName || m.charter || ''),
+    notes: xtNotes_(m, cfg)
+  };
+  contact.displayName = xtDisplayName_(contact);
+  contact.syncHash = xtHash_(contact);
+  return contact;
 }
 
 /**
@@ -417,6 +473,51 @@ function xtPeerWorkspaceEmailByCapid_(cfg) {
   } while (pageToken);
 
   Logger.info('Peer Workspace email map built', { count: Object.keys(map).length, peerDomain: cfg.peerDomain });
+  return map;
+}
+
+/**
+ * CAPID -> primaryEmail for THIS tenant's own Workspace accounts, read with the
+ * script's own token (admin.directory.user.readonly). Used by the self
+ * no-account publish to skip members who already have an account (they are
+ * native directory users and must not be duplicated as shared contacts).
+ *
+ * Unlike the peer map, suspended accounts are KEPT: a suspended user still
+ * exists in the directory, so we must not re-publish them as a contact. Only a
+ * member with no account at all should become a self-published shared contact.
+ */
+function xtSelfWorkspaceEmailByCapid_() {
+  const token = ScriptApp.getOAuthToken();
+  const map = {};
+  let pageToken = '';
+
+  do {
+    const url = 'https://admin.googleapis.com/admin/directory/v1/users' +
+      '?customer=my_customer&maxResults=500&projection=full' +
+      '&fields=nextPageToken,users(primaryEmail,externalIds)' +
+      (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
+
+    const resp = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { Authorization: 'Bearer ' + token },
+      muteHttpExceptions: true
+    });
+    const code = resp.getResponseCode();
+    if (code < 200 || code >= 300) {
+      throw new Error(`Self directory list failed (${code}): ${resp.getContentText()}`);
+    }
+
+    const body = JSON.parse(resp.getContentText() || '{}');
+    (body.users || []).forEach(u => {
+      const idField = (u.externalIds || []).find(id => id && id.type === 'organization');
+      const capid = String((idField && idField.value) || '').trim();
+      if (capid) map[capid] = String(u.primaryEmail || '').trim().toLowerCase();
+    });
+
+    pageToken = body.nextPageToken || '';
+  } while (pageToken);
+
+  Logger.info('Self Workspace email map built', { count: Object.keys(map).length });
   return map;
 }
 
@@ -698,7 +799,18 @@ function xtDeleteContact_(current, token) {
 
 /** Builds an Atom entry. orgName (c.orgMarker, default cfg.wing) marks the
  *  contact as managed; the content hash rides along in a userDefinedField for
- *  stateless diffing. */
+ *  stateless diffing.
+ *
+ *  SORT ORDER: Domain Shared Contacts are sorted in the GAL by the structured
+ *  gd:givenName — NOT by fullName, and NOT by familyName the way directory USERS
+ *  are (users are a separate subsystem that honors the "last name" sort). With
+ *  the natural split (givenName=First, familyName=Last) the shared contacts sort
+ *  by first name while native users sort by last name — the exact mismatch we
+ *  saw. Google exposes no per-contact sort override, so we put the whole
+ *  "Last Suffix, First M Grade" display string into givenName: the sort key then
+ *  leads with the last name (matching users) and the visible name is unchanged.
+ *  familyName is intentionally omitted so the contact-card "First/Last" split
+ *  isn't a doubled name. */
 function xtBuildContactXml_(c, cfg) {
   const full = xtEsc_(c.displayName);
   const marker = c.orgMarker || cfg.wing;
@@ -714,9 +826,8 @@ function xtBuildContactXml_(c, cfg) {
                 term="http://schemas.google.com/contact/2008#contact"/>
       <title>${full}</title>
       <gd:name>
+        <gd:givenName>${full}</gd:givenName>
         <gd:fullName>${full}</gd:fullName>
-        <gd:givenName>${xtEsc_(c.givenName)}</gd:givenName>
-        <gd:familyName>${xtEsc_(c.familyName)}</gd:familyName>
       </gd:name>
       <gd:email rel="http://schemas.google.com/g/2005#work" primary="true"
                 address="${xtEsc_(c.email)}"/>
@@ -736,9 +847,19 @@ function xtBuildContactXml_(c, cfg) {
  * SMALL HELPERS (xt-prefixed to avoid the shared global namespace)
  *************************************************************/
 
-/** "Last, First Grade" — matches the display convention used elsewhere. */
+/**
+ * "Last Suffix, First M Grade" — matches the Send-As/display convention used for
+ * native accounts (see sendAsDisplayName in UpdateMembers.gs), so a cross-tenant
+ * contact reads identically to a directory user.
+ */
 function xtDisplayName_(c) {
-  return [c.familyName, ', ', c.givenName, c.grade ? ' ' + c.grade : ''].join('').trim();
+  return [
+    c.familyName, c.suffix ? ' ' + c.suffix : '',
+    ', ',
+    c.givenName,
+    c.middleName ? ' ' + String(c.middleName).charAt(0) : '',
+    c.grade ? ' ' + c.grade : ''
+  ].join('').trim();
 }
 
 /** Duty title identical to what provisioning writes to organizations.title. */

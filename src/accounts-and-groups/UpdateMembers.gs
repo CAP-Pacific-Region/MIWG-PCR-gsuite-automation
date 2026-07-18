@@ -1,10 +1,16 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.15.0
+ * Version: 1.16.0
  * Date: 2026-07-18
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.15.0)
- * Changes: 1.15.0 — recovery email and the directory "other" email now draw from
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.16.0)
+ * Changes: 1.16.0 — getMembers()/shouldProcessMember() take an optional
+ *   includeCadetLite flag (default false = unchanged). When true, the cadet-lite
+ *   grade exclusion is skipped, so callers can fetch the accountless cadet-lite
+ *   members the filter normally removes. Consumed by the cross-tenant self-publish
+ *   (CrossTenantContacts.gs) to carry cadet-lite into the cadet GAL. No behavior
+ *   change for existing callers.
+ *   1.15.0 — recovery email and the directory "other" email now draw from
  *   EITHER the CAPWATCH PRIMARY or SECONDARY address, preferring a personal one:
  *   firstPersonalEmail_() skips any address on the tenant's own domains (CONFIG.DOMAIN
  *   / SECONDARY_EMAIL_DOMAIN) — those can't recover their own locked account — and
@@ -417,19 +423,19 @@ function loadManualMembers(squadrons) {
   return members;
 }
 
-function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = true) {
+function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = true, includeCadetLite = false) {
   const start = new Date();
   const members = {};
   const squadrons = getSquadrons();
 
-  Logger.info('Starting member data retrieval', { types: types });
+  Logger.info('Starting member data retrieval', { types: types, includeCadetLite: includeCadetLite });
 
   // Build member objects from Member.txt
   const memberData = parseFile('Member');
   let processedCount = 0;
 
   for (let i = 0; i < memberData.length; i++) {
-    if (shouldProcessMember(memberData[i], types)) {
+    if (shouldProcessMember(memberData[i], types, includeCadetLite)) {
       const member = createMemberObject(memberData[i], squadrons);
 
       // Validate before adding
@@ -492,12 +498,15 @@ function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = t
  *
  * @param {Array} memberRow - Raw member data row from CSV
  * @param {string[]} types - Valid member types to include
+ * @param {boolean} [includeCadetLite=false] - When true, do NOT apply the
+ *   cadet-lite grade exclusion. Used by the cross-tenant self-publish, which
+ *   WANTS the accountless cadet-lite members this filter normally removes.
  * @returns {boolean} True if member should be processed
  */
-function shouldProcessMember(memberRow, types) {
+function shouldProcessMember(memberRow, types, includeCadetLite = false) {
 
 // ----- CADET-LITE FILTER (NEW + LOGGING) -----
-if (CONFIG.CADET_LITE === true) {
+if (CONFIG.CADET_LITE === true && !includeCadetLite) {
   const rank = (memberRow[14] || '').trim();
   if (CONFIG.CADET_LITE_EXCLUDED_GRADES.indexOf(rank) > -1) {
 

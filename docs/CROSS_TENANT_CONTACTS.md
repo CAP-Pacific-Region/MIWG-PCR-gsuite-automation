@@ -1,7 +1,7 @@
 # Cross-Tenant Shared Contacts
 
-**Module:** `src/cross-tenant-contacts/CrossTenantContacts.gs` (v0.1.0, draft)
-**Status:** Drafted, **not yet deployed.** Replaces the two legacy wing projects
+**Module:** `src/cross-tenant-contacts/CrossTenantContacts.gs` (v0.2.0, draft)
+**Status:** Deployed on seniors + cadets. Replaces the two legacy wing projects
 (cadets `1fJRqo…`, seniors `1b2JSIB…`) that did the same job via export spreadsheets.
 
 ## What it does
@@ -13,7 +13,8 @@ cadet's name in Gmail. This module fixes that by publishing the **peer** tenant'
 into **this** tenant's Domain Shared Contacts:
 
 - On the **seniors** project it publishes **cadets** into the senior GAL.
-- On the **cadets** project it publishes **seniors** into the cadet GAL.
+- On the **cadets** project it publishes **seniors** into the cadet GAL, **plus its
+  own accountless cadet-lite members** (see *Self no-account members* below).
 - On **pacific** it is off (no peer tenant).
 
 It is one file, byte-identical on every project (`clasp push` stays a verbatim fan-out).
@@ -67,6 +68,43 @@ There is no sync-state sheet. Managed contacts are self-describing:
 Writes to *this* tenant's shared contacts use the script's own token; the peer service
 account is **read-only** and only ever reads the peer directory.
 
+## Self no-account members (cadet-lite)
+
+The cadets tenant publishes **seniors** (its peer), but its own **cadet-lite** members —
+cadets below C/SSgt, who get no `@cawgcadets.org` account (`CONFIG.CADET_LITE_EXCLUDED_GRADES`) —
+never appear in its native directory and are not a peer, so nothing put them in the cadet
+GAL. (They *do* appear on the senior side, because seniors' peer *is* cadets.) The
+`SELF_NO_ACCOUNT_TYPES` profile key fixes that: for each listed type, `syncCrossTenantContacts`
+also fetches **this** tenant's roster, keeps only members with **no Workspace account**, and
+publishes them off their CAPWATCH personal email (or the `do.not.contact+CAPID` sentinel),
+folded into the **same** `CONFIG.WING` marker as the peer set — so the existing reconcile and
+the existing daily trigger carry them with no extra plumbing.
+
+Two mechanics make this work:
+
+- **Roster.** `getMembers(types, true, /*includeCadetLite=*/true)` bypasses the cadet-lite grade
+  filter (which normally removes exactly the members we want on this tenant).
+- **Account check.** `xtSelfWorkspaceEmailByCapid_()` reads *this* tenant's own directory (the
+  script's own `admin.directory.user.readonly` token) so members who already have an account are
+  skipped — they are native directory users and must not be duplicated as a shared contact. A
+  suspended account still counts as existing.
+
+Seniors leave `SELF_NO_ACCOUNT_TYPES` empty (every eligible senior gets an account); the key is
+generic, so senior-side symmetry would be a one-line flip if it were ever wanted.
+
+## Sort order in the GAL
+
+Domain Shared Contacts sort in the GAL by the structured **`gd:givenName`** — *not* by the
+display/`fullName`, and *not* by `familyName` the way directory **users** do (users are a
+separate subsystem that honors the "last name" sort). With the natural split
+(`givenName`=First, `familyName`=Last) the shared contacts sorted by **first name** while native
+users sorted by last name — the same list, two different orders. Google exposes no per-contact
+sort override, so `xtBuildContactXml_` writes the whole **"Last Suffix, First M Grade"** display
+string into `givenName` (and omits a separate `familyName`, so the contact card's First/Last
+split isn't a doubled name). The visible name is unchanged; the sort key now leads with the last
+name, matching the directory users. The display also carries the middle initial + suffix so a
+cross-tenant contact reads identically to a native account.
+
 ## Parent-group sync
 
 `syncCrossTenantParentContacts` (gated by `RUN_PARENTS`, on for seniors) publishes the
@@ -88,6 +126,7 @@ removing the sheet entirely).
 | `PEER_TYPES` | `['CADET']` | `['SENIOR','FIFTY YEAR','INDEFINITE','CADET SPONSOR']` | `[]` |
 | `PEER_LABEL` | `'CADET'` | `'SENIOR'` | `''` |
 | `EMIT_PLACEHOLDERS` | `true` | `true` | `false` |
+| `SELF_NO_ACCOUNT_TYPES` | `[]` | `['CADET']` | `[]` |
 
 ### Identity/secrets — Script Properties (per project)
 
