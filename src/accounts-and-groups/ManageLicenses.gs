@@ -2407,10 +2407,13 @@ function auditWorkspaceUsersForRemoval() {
  * Manually-reviewed exceptions for deleteIneligibleWorkspaceUsers(). Emails
  * here are skipped even if auditWorkspaceUsersForRemoval() flags them.
  *
- * (Currently empty - jared.law@cawgcap.org / jared.law.2@cawgcap.org for
- * CAPID 663829 were initially going to keep the higher-storage account, but
- * neither appears in the wing registry at all, so both are eligible for
- * deletion via the normal audit candidate list.)
+ * (Currently empty. The case that prompted this list was a duplicate pair — a
+ * canonical address and its `.2` collision-suffixed twin for one CAPID — where
+ * the intent was to keep the higher-storage account; it turned out neither
+ * appeared in the wing registry at all, so both were eligible for deletion via
+ * the normal audit candidate list and no exception was needed. Identify any
+ * future exception by CAPID looked up at runtime, not by a member's address
+ * written into this file.)
  */
 const DELETE_AUDIT_EXCEPTIONS = [];
 

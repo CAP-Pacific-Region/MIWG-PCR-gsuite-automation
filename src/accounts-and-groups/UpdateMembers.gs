@@ -1,10 +1,24 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.16.0
- * Date: 2026-07-18
+ * Version: 1.17.0
+ * Date: 2026-07-19
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.16.0)
- * Changes: 1.16.0 — getMembers()/shouldProcessMember() take an optional
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.17.0)
+ * Changes: 1.17.0 — addOrUpdateUser() now guards against creating DUPLICATE
+ *   accounts. The create branch is reached whenever Users.update at the derived
+ *   first.last email 404s, but the CAPID→email map (getActiveUsers) omits suspended
+ *   accounts and reads only the organization externalId — so a member whose real
+ *   account is suspended, tagged under a different externalId type, or created
+ *   out-of-band in last.first order was invisible to the map and got a SECOND
+ *   account instead of an update, orphaning the first. Before inserting, the code
+ *   now does a live directory lookup by CAPID (findExistingAccountsByCapid_, which
+ *   sees suspended accounts and every externalId type); if a real account exists it
+ *   updates that account in place and never inserts. New helpers + the read-only
+ *   scanner and the gated suspendOrphanDuplicates() cleanup live in
+ *   DuplicateAccountGuard.gs / DuplicateAccountScan.gs. getActiveUsers() is
+ *   deliberately left unchanged (suspendExpiredMembers/ManageLicenses depend on its
+ *   active-only contract). No behavior change for members already mapped correctly.
+ *   1.16.0 — getMembers()/shouldProcessMember() take an optional
  *   includeCadetLite flag (default false = unchanged). When true, the cadet-lite
  *   grade exclusion is skipped, so callers can fetch the accountless cadet-lite
  *   members the filter normally removes. Consumed by the cross-tenant self-publish
@@ -1172,6 +1186,46 @@ function addOrUpdateUser(member) {
 
   // Create new user if update failed
   if (!user) {
+    // DUPLICATE-CREATE GUARD. Reaching here means Users.update at primaryEmail
+    // 404'd, so provisioning is about to INSERT a fresh first.last account. But
+    // "no account at the derived email" is NOT the same as "this member has no
+    // account": workspaceEmailByCapid (built by getActiveUsers) omits SUSPENDED
+    // accounts and only reads the organization externalId, so a member whose real
+    // account is suspended, carries its CAPID under a different externalId type, or
+    // was created out-of-band in last.first order (the case that surfaced this) is invisible
+    // to the map — and inserting here ORPHANS that account as a duplicate. Do a
+    // live directory lookup by CAPID (which sees suspended accounts and every
+    // externalId type) before inserting. If a real account exists, update it in
+    // place at its own address and DO NOT insert. See DuplicateAccountGuard.gs.
+    const existingByCapid = findExistingAccountsByCapid_(member.capsn);
+    if (existingByCapid.length > 0) {
+      const authoritative = chooseAuthoritativeAccount_(existingByCapid, baseEmail);
+      Logger.warn('Duplicate-create prevented — existing account found by CAPID', {
+        capsn: member.capsn,
+        name: member.firstName + ' ' + member.lastName,
+        derivedEmail: primaryEmail,
+        existingEmails: existingByCapid.map(a => a.email),
+        updatingInPlace: authoritative.email
+      });
+      try {
+        executeWithRetry(() =>
+          AdminDirectory.Users.update(updates, authoritative.email)
+        );
+        Logger.info('User updated in place — insert avoided', {
+          email: authoritative.email,
+          capsn: member.capsn
+        });
+      } catch (e) {
+        Logger.error('Update-in-place failed after duplicate-create guard', {
+          email: authoritative.email,
+          capsn: member.capsn,
+          errorMessage: e.message,
+          errorCode: e.details?.code
+        });
+      }
+      return; // never fall through to insert once an account for this CAPID exists
+    }
+
     // Generate a random temp password. Must not be derivable from public
     // member data (WING, CAPID, provisioning date) — see generateTempPassword_.
     const generatedPassword = generateTempPassword_();

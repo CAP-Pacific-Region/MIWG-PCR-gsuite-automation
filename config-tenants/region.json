@@ -15,10 +15,11 @@
   "TENANT_AUTOMATION_FOLDER_ID": "1JRIPKScCjnKBy7GKWLwj2l23ux0_opGb",
   "TENANT_AUTOMATION_SPREADSHEET_ID": "1cSCw1aOwnT8j5-A7giKXFUQwAosMlnnuJLn2_Mbj-Ew",
   "TENANT_RETENTION_LOG_SPREADSHEET_ID": "",
-  "TENANT_RETENTION_EMAIL": "noel.luneau@pcr.cap.gov",
-  "TENANT_DIRECTOR_RECRUITING_EMAIL": "noel.luneau@pcr.cap.gov",
+  "_personal_address_note": "The retention, director-of-recruiting, test and sender-name values on this tenant are an individual role-holder's mailbox and personal display name, so they are deliberately BLANK here rather than version-controlled — set them directly in Script Properties on the project. Blank fields are skipped by setupRegionScriptProperties(), so re-running this never clears an existing value. NOTE TENANT_SENDER_NAME is a display string that appears on outbound member-facing mail; if the role-holder changes, update the Script Property or the mail will still carry the previous person's name.",
+  "TENANT_RETENTION_EMAIL": "",
+  "TENANT_DIRECTOR_RECRUITING_EMAIL": "",
   "TENANT_AUTOMATION_SENDER_EMAIL": "automation@pcr.cap.gov",
-  "TENANT_SENDER_NAME": "Noel Luneau, Lt Col, Director of Recruiting & Retention",
-  "TENANT_TEST_EMAIL": "noel.luneau@pcr.cap.gov",
+  "TENANT_SENDER_NAME": "",
+  "TENANT_TEST_EMAIL": "",
   "TENANT_ITSUPPORT_EMAIL": "it@pcr.cap.gov"
 }

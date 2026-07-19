@@ -30,11 +30,17 @@ function setupRegionScriptProperties() {
     TENANT_UNIT_VISIT_CALENDAR_ID: "c_3078a71e04860c7f7bbb12860b9733cb7d6e16bb724dec40836770dbd57cb2a2@group.calendar.google.com",
     TENANT_AUTOMATION_FOLDER_ID: "1JRIPKScCjnKBy7GKWLwj2l23ux0_opGb",
     TENANT_AUTOMATION_SPREADSHEET_ID: "1cSCw1aOwnT8j5-A7giKXFUQwAosMlnnuJLn2_Mbj-Ew",
-    TENANT_RETENTION_EMAIL: "noel.luneau@pcr.cap.gov",
-    TENANT_DIRECTOR_RECRUITING_EMAIL: "noel.luneau@pcr.cap.gov",
+    // Left BLANK on purpose: these are an individual role-holder's mailbox and
+    // personal display name, which do not belong in version control. Set them
+    // directly in Script Properties on the project. Blank values are skipped
+    // below, so running this never clears an existing value.
+    // TENANT_SENDER_NAME is a display string on member-facing mail — if the
+    // role-holder changes, update the property or mail keeps the old name.
+    TENANT_RETENTION_EMAIL: "",
+    TENANT_DIRECTOR_RECRUITING_EMAIL: "",
     TENANT_AUTOMATION_SENDER_EMAIL: "automation@pcr.cap.gov",
-    TENANT_SENDER_NAME: "Noel Luneau, Lt Col, Director of Recruiting & Retention",
-    TENANT_TEST_EMAIL: "noel.luneau@pcr.cap.gov",
+    TENANT_SENDER_NAME: "",
+    TENANT_TEST_EMAIL: "",
     TENANT_ITSUPPORT_EMAIL: "it@pcr.cap.gov",
   };
 

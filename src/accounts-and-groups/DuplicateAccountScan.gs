@@ -1,0 +1,255 @@
+/**
+ * Duplicate Workspace Account Scanner  (READ-ONLY diagnostic)
+ *
+ * Version: 1.0.0
+ * Date: 2026-07-19
+ *
+ * PURPOSE
+ *   Find CAP members who hold MORE THAN ONE Workspace account. The provisioning
+ *   path in UpdateMembers.gs decides "update vs. create" by whether an account
+ *   already exists at a CAPID's *mapped* email (getActiveUsers -> workspaceEmailByCapid).
+ *   When that map misses an existing account — because the account is SUSPENDED
+ *   (getActiveUsers filters isSuspended=false) or carries its CAPID somewhere the
+ *   map doesn't read — provisioning derives a fresh `first.last` email and CREATES
+ *   a second account instead of reusing the first. This scanner enumerates the
+ *   damage.
+ *
+ * SAFETY
+ *   Read-only. Calls only AdminDirectory.Users.list with projection:'full'.
+ *   Uses the admin.directory.user.readonly scope already present in
+ *   src/appsscript.json. Writes NOTHING. Safe to run on any tenant.
+ *
+ * HOW TO RUN
+ *   Paste into the Apps Script editor (or run from the deployed project), select
+ *   scanDuplicateAccountsByCapid, Run, and read the Execution log. A single
+ *   consolidated report is logged at the end; the full structured result is also
+ *   returned for programmatic use.
+ *
+ * WHAT IT READS PER ACCOUNT
+ *   CAPID is collected from EVERY carrier so no legacy account is missed:
+ *     - externalIds[] of ANY type whose value looks like a CAPID (the code writes
+ *       type:'organization'; the Admin console "Employee ID" field is backed by
+ *       this same externalIds array)
+ *     - a top-level employeeId, if the account happens to carry one
+ *     - organizations[].* CAPID-shaped values, defensively
+ *   An account can legitimately match on more than one carrier; it is counted once.
+ */
+
+/** A CAPID on these tenants is a 5-7 digit number. */
+var DUP_SCAN_CAPID_RE = /^\d{5,7}$/;
+
+/**
+ * Pulls every CAPID-shaped identifier off a Directory User resource, from all
+ * the places a CAPID has historically been stored. Returns a de-duplicated array
+ * (usually length 1; length 0 means "no CAPID we can see").
+ *
+ * @param {Object} user Directory User (projection:'full')
+ * @returns {string[]} unique CAPID strings found on this account
+ */
+function extractCapidsFromUser_(user) {
+  const found = {};
+
+  (user.externalIds || []).forEach(function (id) {
+    const v = String(id && id.value != null ? id.value : '').trim();
+    if (DUP_SCAN_CAPID_RE.test(v)) found[v] = true;
+  });
+
+  // Some directories surface an employee id at the top level; harmless if absent.
+  const emp = String(user.employeeId != null ? user.employeeId : '').trim();
+  if (DUP_SCAN_CAPID_RE.test(emp)) found[emp] = true;
+
+  (user.organizations || []).forEach(function (org) {
+    ['costCenter', 'description'].forEach(function (k) {
+      const v = String(org && org[k] != null ? org[k] : '').trim();
+      if (DUP_SCAN_CAPID_RE.test(v)) found[v] = true;
+    });
+  });
+
+  return Object.keys(found);
+}
+
+/**
+ * Splits an email localpart into lowercased name tokens on '.', dropping a
+ * trailing numeric collision suffix (e.g. "sam.roe.2" -> ["sam","roe"]).
+ * @returns {{tokens: string[], suffix: (string|null)}}
+ */
+function localpartTokens_(email) {
+  const local = String(email || '').split('@')[0].toLowerCase();
+  const parts = local.split('.');
+  let suffix = null;
+  if (parts.length > 1 && /^\d+$/.test(parts[parts.length - 1])) {
+    suffix = parts.pop();
+  }
+  return { tokens: parts, suffix: suffix };
+}
+
+/**
+ * Classifies the relationship between two account localparts in the same CAPID
+ * group: 'reversed' (last.first vs first.last), 'collision' (differ only by a
+ * trailing .N), or 'other'.
+ */
+function classifyLocalpartPair_(emailA, emailB) {
+  const a = localpartTokens_(emailA);
+  const b = localpartTokens_(emailB);
+
+  const aKey = a.tokens.join('.');
+  const bKey = b.tokens.join('.');
+  const aRev = a.tokens.slice().reverse().join('.');
+
+  if (aKey === bKey && (a.suffix || b.suffix)) return 'collision';
+  if (a.tokens.length === b.tokens.length && a.tokens.length >= 2 && aRev === bKey) return 'reversed';
+  return 'other';
+}
+
+/**
+ * Google returns lastLoginTime as the Unix epoch (1970-01-01T00:00:00.000Z) for
+ * accounts that have NEVER signed in, rather than omitting it. Treat epoch (and
+ * missing) as "never".
+ * @returns {boolean}
+ */
+function neverLoggedIn_(lastLoginTime) {
+  if (!lastLoginTime) return true;
+  return new Date(lastLoginTime).getTime() <= 0;
+}
+
+/**
+ * MAIN — scan the whole directory and report every CAPID with more than one
+ * account. Read-only.
+ *
+ * @returns {Object} { scannedUsers, usersWithCapid, usersWithoutCapid,
+ *                     duplicateCapidCount, duplicateAccountCount, groups: [...] }
+ */
+function scanDuplicateAccountsByCapid() {
+  const start = new Date();
+  Logger.info('Duplicate-account scan starting (read-only)');
+
+  const byCapid = {};        // capid -> [accountInfo, ...]
+  let scannedUsers = 0;
+  let usersWithoutCapid = 0;
+  let pageToken = null;
+
+  do {
+    const page = AdminDirectory.Users.list({
+      customer: 'my_customer',
+      maxResults: 500,
+      projection: 'full',   // NOTE: do not use a `fields` mask naming employeeId — it 400s
+      pageToken: pageToken
+    });
+
+    (page.users || []).forEach(function (u) {
+      scannedUsers++;
+      const capids = extractCapidsFromUser_(u);
+      if (capids.length === 0) {
+        usersWithoutCapid++;
+        return;
+      }
+      const info = {
+        email: u.primaryEmail,
+        created: u.creationTime || null,
+        lastLogin: u.lastLoginTime || null,
+        neverSignedIn: neverLoggedIn_(u.lastLoginTime),
+        suspended: !!u.suspended,
+        archived: !!u.archived,
+        orgUnitPath: u.orgUnitPath || '',
+        aliases: (u.aliases || []).length
+      };
+      // A single account can expose the same CAPID via >1 carrier; group once.
+      capids.forEach(function (capid) {
+        (byCapid[capid] = byCapid[capid] || []).push(info);
+      });
+    });
+
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  // Build the duplicate groups.
+  const groups = [];
+  let duplicateAccountCount = 0;
+
+  Object.keys(byCapid).forEach(function (capid) {
+    // A single account matched on two carriers would appear twice; de-dupe by email.
+    const seen = {};
+    const accounts = byCapid[capid].filter(function (a) {
+      if (seen[a.email]) return false;
+      seen[a.email] = true;
+      return true;
+    });
+    if (accounts.length < 2) return;
+
+    accounts.sort(function (x, y) {
+      return new Date(x.created || 0) - new Date(y.created || 0);
+    });
+
+    // Pairwise localpart relationship vs the newest account (usual authoritative one).
+    const newest = accounts[accounts.length - 1];
+    accounts.forEach(function (a) {
+      a.localpartVsNewest = a.email === newest.email
+        ? 'newest'
+        : classifyLocalpartPair_(a.email, newest.email);
+    });
+
+    const anyReversed = accounts.some(function (a) { return a.localpartVsNewest === 'reversed'; });
+    const anyCollision = accounts.some(function (a) { return a.localpartVsNewest === 'collision'; });
+    const allNeverSignedIn = accounts.every(function (a) { return a.neverSignedIn; });
+
+    duplicateAccountCount += accounts.length;
+    groups.push({
+      capid: capid,
+      accountCount: accounts.length,
+      shape: anyReversed ? 'reversed' : (anyCollision ? 'collision' : 'other'),
+      allNeverSignedIn: allNeverSignedIn,
+      accounts: accounts
+    });
+  });
+
+  // Most-accounts first, then reversed/collision shapes surface at the top.
+  groups.sort(function (a, b) {
+    return (b.accountCount - a.accountCount) ||
+           (a.shape > b.shape ? 1 : a.shape < b.shape ? -1 : 0);
+  });
+
+  const usersWithCapid = scannedUsers - usersWithoutCapid;
+
+  // ---- Human-readable report ----
+  const lines = [];
+  lines.push('===== DUPLICATE WORKSPACE ACCOUNT SCAN =====');
+  lines.push('Scanned users .............. ' + scannedUsers);
+  lines.push('  with a readable CAPID .... ' + usersWithCapid);
+  lines.push('  with NO readable CAPID ... ' + usersWithoutCapid);
+  lines.push('CAPIDs with >1 account ..... ' + groups.length);
+  lines.push('Accounts in those groups ... ' + duplicateAccountCount);
+  lines.push('');
+  groups.forEach(function (g) {
+    lines.push('CAPID ' + g.capid + '  (' + g.accountCount + ' accounts, shape=' + g.shape +
+               (g.allNeverSignedIn ? ', none ever signed in' : '') + ')');
+    g.accounts.forEach(function (a) {
+      lines.push('    ' + a.email +
+        '\n        created=' + (a.created || '?') +
+        '  ' + (a.suspended ? 'SUSPENDED' : 'active') +
+        (a.archived ? '/ARCHIVED' : '') +
+        '  ' + (a.neverSignedIn ? 'never-signed-in' : 'last-login=' + a.lastLogin) +
+        '  ou=' + a.orgUnitPath +
+        '  localpart=' + a.localpartVsNewest);
+    });
+    lines.push('');
+  });
+  Logger.info(lines.join('\n'));
+
+  const result = {
+    scannedUsers: scannedUsers,
+    usersWithCapid: usersWithCapid,
+    usersWithoutCapid: usersWithoutCapid,
+    duplicateCapidCount: groups.length,
+    duplicateAccountCount: duplicateAccountCount,
+    groups: groups,
+    durationMs: new Date() - start
+  };
+
+  Logger.info('Duplicate-account scan complete', {
+    duplicateCapidCount: result.duplicateCapidCount,
+    duplicateAccountCount: result.duplicateAccountCount,
+    durationMs: result.durationMs
+  });
+
+  return result;
+}
