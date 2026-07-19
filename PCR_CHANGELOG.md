@@ -10,6 +10,46 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-19] — Stop provisioning from creating duplicate Workspace accounts
+
+A member (and, it turned out, a wider population) held two active accounts, neither
+ever signed in — one in `last.first` order (a format the code never generates) and
+one in `first.last` order (the derived format). Root cause: `addOrUpdateUser`
+decides update-vs-create purely on whether `Users.update` succeeds at the derived
+`first.last` email, and the CAPID→email map it consults (`getActiveUsers` →
+`workspaceEmailByCapid`) omits **suspended** accounts and reads the CAPID **only**
+from `externalIds[type='organization']`. Any member whose real account was suspended,
+tagged under a different externalId type, or created out-of-band (e.g. by hand in
+last.first order) was invisible to the map, so provisioning **inserted a second
+account** instead of updating the first. There was no rename path and no directory
+lookup by CAPID before inserting.
+
+### Added (`UpdateMembers.gs` 1.17.0, `DuplicateAccountGuard.gs` 1.0.0, `DuplicateAccountScan.gs` 1.0.0)
+
+- **Duplicate-create guard.** Before the create branch inserts, `addOrUpdateUser`
+  now calls `findExistingAccountsByCapid_()` — a live directory lookup by CAPID that
+  **does** see suspended accounts and every externalId type. If a real account for
+  the member exists, it is updated in place at its own address and no second account
+  is created. `chooseAuthoritativeAccount_()` picks the right twin when more than one
+  already exists (canonical `first.last` > active > unsuffixed > newest). Both are
+  pure and unit-tested (`test/DuplicateAccountGuard.test.js`).
+- **Read-only scanner** `scanDuplicateAccountsByCapid()` groups the directory by
+  CAPID (reading the org externalId AND a top-level employeeId) and reports every
+  CAPID with >1 account: emails, created dates, suspended/never-signed-in status, and
+  whether localparts are reversed (`first.last` vs `last.first`) or `.N`
+  collision-suffixed. Uses only `admin.directory.user.readonly` (already scoped).
+- **Gated cleanup** `suspendOrphanDuplicates(dryRun=true)` retires the extra accounts
+  that already exist: it retypes the orphan's `organization` externalId to a
+  `duplicate_retired_capid` marker **and** suspends it. The retype is what makes the
+  suspension stick — `reactivateRenewedMembers()` un-suspends any suspended user whose
+  CAPID is active (reading the org externalId), so a plain suspend would be reversed on
+  the next reactivation run. **Nothing is deleted** (permanent on this edition — no
+  Archived-User licenses); orphans that have login history are skipped for a human.
+  Defaults to a **dry run**; reversible by changing the externalId type back.
+- `getActiveUsers()` is left unchanged on purpose — `suspendExpiredMembers()` and
+  `ManageLicenses.gs` depend on its active-only contract; the guard, not a map change,
+  is the fix.
+
 ## [2026-07-18] — Cross-tenant contacts: sort by last name, and carry cadet-lite into the cadet GAL
 
 Two directory issues, both visible in the shared GAL that publishes each tenant's members
