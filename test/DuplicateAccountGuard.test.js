@@ -46,41 +46,60 @@ section('2. isRetiredCapidExternalId_');
 }
 
 // ---------------------------------------------------------------------------
-section('3. chooseAuthoritativeAccount_ — preference order');
+section('3. chooseAuthoritativeAccount_ — LOGIN HISTORY outranks the canonical name');
 {
-  // Trigger case: two never-signed-in active accounts. Canonical = sam.roe.
-  const triggerCase = [
-    { email: 'roe.sam@example.org', suspended: false, created: '2025-11-24T00:00:00Z' },
-    { email: 'sam.roe@example.org', suspended: false, created: '2026-01-23T00:00:00Z' }
+  // The shape actually found on the cadets tenant: the older, oddly-named account
+  // (a .N collision suffix, or a hyphen the derived address drops) is the one the
+  // member logs into; the newer canonically-named twin has never been signed into.
+  // Preferring the canonical name here would retire the account in active use.
+  const realWorld = [
+    { email: 'sam.roe.2@example.org', suspended: false, created: '2025-11-24T00:00:00Z', neverSignedIn: false },
+    { email: 'sam.roe@example.org', suspended: false, created: '2026-01-23T00:00:00Z', neverSignedIn: true }
   ];
-  check('canonical first.last wins even though it is newer AND regardless of order',
-    m.chooseAuthoritativeAccount_(triggerCase, 'sam.roe').email,
-    'sam.roe@example.org');
-  check('canonical wins even when it is the OLDER account',
+  check('the signed-into account wins over the canonical-but-dead twin',
+    m.chooseAuthoritativeAccount_(realWorld, 'sam.roe').email,
+    'sam.roe.2@example.org');
+
+  check('hyphen-drift variant: in-use hyphenated account beats the dead canonical one',
     m.chooseAuthoritativeAccount_([
-      { email: 'sam.roe@x.org', suspended: false, created: '2025-01-01T00:00:00Z' },
-      { email: 'roe.sam@x.org', suspended: false, created: '2026-01-01T00:00:00Z' }
+      { email: 'lu-ann.fernandez@example.org', suspended: false, created: '2025-11-24T00:00:00Z', neverSignedIn: false },
+      { email: 'luann.fernandez@example.org', suspended: false, created: '2026-01-23T00:00:00Z', neverSignedIn: true }
+    ], 'luann.fernandez').email,
+    'lu-ann.fernandez@example.org');
+
+  check('login history beats even active-vs-suspended',
+    m.chooseAuthoritativeAccount_([
+      { email: 'used.but.suspended@x.org', suspended: true, created: '2025-01-01T00:00:00Z', neverSignedIn: false },
+      { email: 'fresh.active@x.org', suspended: false, created: '2026-01-01T00:00:00Z', neverSignedIn: true }
+    ], '').email,
+    'used.but.suspended@x.org');
+
+  // With login history equal, the older tie-breakers still apply.
+  check('both never signed in: canonical first.last wins',
+    m.chooseAuthoritativeAccount_([
+      { email: 'roe.sam@x.org', suspended: false, created: '2025-11-24T00:00:00Z', neverSignedIn: true },
+      { email: 'sam.roe@x.org', suspended: false, created: '2026-01-23T00:00:00Z', neverSignedIn: true }
     ], 'sam.roe').email,
     'sam.roe@x.org');
 
-  check('with no canonical hint, active beats suspended',
+  check('both never signed in: active beats suspended',
     m.chooseAuthoritativeAccount_([
-      { email: 'a.b@x.org', suspended: true, created: '2026-05-01T00:00:00Z' },
-      { email: 'b.a@x.org', suspended: false, created: '2024-01-01T00:00:00Z' }
+      { email: 'a.b@x.org', suspended: true, created: '2026-05-01T00:00:00Z', neverSignedIn: true },
+      { email: 'b.a@x.org', suspended: false, created: '2024-01-01T00:00:00Z', neverSignedIn: true }
     ], '').email,
     'b.a@x.org');
 
-  check('among active, unsuffixed beats a .N collision',
+  check('both never signed in, no canonical hint: unsuffixed beats a .N collision',
     m.chooseAuthoritativeAccount_([
-      { email: 'jane.doe.2@x.org', suspended: false, created: '2026-05-01T00:00:00Z' },
-      { email: 'jane.doe@x.org', suspended: false, created: '2024-01-01T00:00:00Z' }
+      { email: 'jane.doe.2@x.org', suspended: false, created: '2026-05-01T00:00:00Z', neverSignedIn: true },
+      { email: 'jane.doe@x.org', suspended: false, created: '2024-01-01T00:00:00Z', neverSignedIn: true }
     ], '').email,
     'jane.doe@x.org');
 
   check('all else equal, newest wins',
     m.chooseAuthoritativeAccount_([
-      { email: 'x.y@x.org', suspended: false, created: '2024-01-01T00:00:00Z' },
-      { email: 'z.w@x.org', suspended: false, created: '2026-01-01T00:00:00Z' }
+      { email: 'x.y@x.org', suspended: false, created: '2024-01-01T00:00:00Z', neverSignedIn: true },
+      { email: 'z.w@x.org', suspended: false, created: '2026-01-01T00:00:00Z', neverSignedIn: true }
     ], '').email,
     'z.w@x.org');
 

@@ -14,7 +14,8 @@ const MODULE = path.join(__dirname, '..', 'src', 'accounts-and-groups', 'Duplica
 const { section, check, done } = makeChecker();
 
 const m = loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: {} }, [
-  'extractCapidsFromUser_', 'localpartTokens_', 'classifyLocalpartPair_', 'neverLoggedIn_'
+  'extractCapidsFromUser_', 'localpartTokens_', 'classifyLocalpartPair_', 'neverLoggedIn_',
+  'capidCarriersForUser_'
 ]);
 
 // ---------------------------------------------------------------------------
@@ -66,6 +67,26 @@ section('4. classifyLocalpartPair_ — the trigger case and its cousins');
   check('unrelated localparts are other',
     m.classifyLocalpartPair_('jane.doe@x.org', 'sam.roe@x.org'),
     'other');
+}
+
+// ---------------------------------------------------------------------------
+section('5. capidCarriersForUser_ — which field holds the CAPID decides guard visibility');
+{
+  check('organization externalId (what the guard query can find)',
+    m.capidCarriersForUser_({ externalIds: [{ type: 'organization', value: '123456' }] }, '123456'),
+    ['externalId:organization']);
+  check('employeeId ONLY — invisible to an externalId= query',
+    m.capidCarriersForUser_({ employeeId: '123456' }, '123456'),
+    ['employeeId']);
+  check('both carriers reported',
+    m.capidCarriersForUser_({ employeeId: '123456', externalIds: [{ type: 'organization', value: '123456' }] }, '123456'),
+    ['externalId:organization', 'employeeId']);
+  check('retired marker is reported with its customType',
+    m.capidCarriersForUser_({ externalIds: [{ type: 'custom', customType: 'duplicate_retired_capid', value: '123456' }] }, '123456'),
+    ['externalId:custom/duplicate_retired_capid']);
+  check('a different CAPID on the account is not reported',
+    m.capidCarriersForUser_({ externalIds: [{ type: 'organization', value: '999999' }] }, '123456'),
+    []);
 }
 
 done();

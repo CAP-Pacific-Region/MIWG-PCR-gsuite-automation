@@ -110,7 +110,23 @@ last.first order) was invisible to the map, so provisioning **inserted a second
 account** instead of updating the first. There was no rename path and no directory
 lookup by CAPID before inserting.
 
-### Added (`UpdateMembers.gs` 1.17.0, `DuplicateAccountGuard.gs` 1.0.0, `DuplicateAccountScan.gs` 1.0.0)
+A scan of the cadets tenant found **28 CAPIDs holding 56 accounts** out of 1,189 users
+(plus 12 accounts carrying no readable CAPID). Two bulk creation events: an import on
+2025-11-24 and a provisioning run on 2026-01-23 that mass-created canonical twins for
+members it could not match by CAPID. The scan corrected two assumptions:
+
+- **The canonically-named account is usually the DEAD one.** In nearly every group the
+  older, oddly-named account carries the login history and the newer `first.last` twin
+  has never been signed into. Authoritative selection therefore ranks **login history
+  first**, not name shape — the reverse would retire accounts in active use.
+- **The dominant trigger is punctuation/collision drift, not name swaps.** Roughly a
+  third are `.N` collision suffixes on the in-use account (our code suffixes only
+  aliases, never primary emails, so those came from the import); another third are
+  hyphen drift between the localpart and the derived address (`baseEmail` strips
+  whitespace but **not** hyphens); the rest are typo/preferred-name corrections. A
+  true `last.first` → `first.last` reversal was a single group.
+
+### Added (`UpdateMembers.gs` 1.17.0–1.18.0, `DuplicateAccountGuard.gs` 1.1.0, `DuplicateAccountScan.gs` 1.1.0)
 
 - **Duplicate-create guard.** Before the create branch inserts, `addOrUpdateUser`
   now calls `findExistingAccountsByCapid_()` — a live directory lookup by CAPID that
@@ -132,9 +148,24 @@ lookup by CAPID before inserting.
   the next reactivation run. **Nothing is deleted** (permanent on this edition — no
   Archived-User licenses); orphans that have login history are skipped for a human.
   Defaults to a **dry run**; reversible by changing the externalId type back.
+- **Provisioning CAPID map** `buildProvisioningEmailByCapid_()` now backs
+  `workspaceEmailByCapid` in `updateAllMembers()`/`forceUpdateAllMembers()`. It sees
+  suspended accounts and every CAPID carrier, and resolves a CAPID with several
+  accounts to the one the member signs into. This is what makes a retirement stick:
+  suspending a dead twin alone does nothing, because provisioning still derives that
+  twin's address, `Users.update` **succeeds** against it, and the 404-triggered guard
+  never fires — so it would be unsuspended and re-maintained every run.
 - `getActiveUsers()` is left unchanged on purpose — `suspendExpiredMembers()` and
-  `ManageLicenses.gs` depend on its active-only contract; the guard, not a map change,
-  is the fix.
+  `ManageLicenses.gs` depend on its active-only contract, so provisioning got its own
+  map builder rather than a widened one.
+
+### Known gap
+
+The guard finds accounts with an `externalId=<capid>` query, so an account carrying
+its CAPID **only** in a top-level `employeeId` is invisible to it. The scanner now
+reports per-account CAPID carriers and a count of such accounts; that number must be
+**0** for the duplicate groups before any cleanup is run, otherwise the guard cannot
+keep those pairs stable and the lookup needs widening first.
 
 ## [2026-07-18] — Cross-tenant contacts: sort by last name, and carry cadet-lite into the cadet GAL
 
