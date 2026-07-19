@@ -1,10 +1,21 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.17.0
+ * Version: 1.18.0
  * Date: 2026-07-19
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.17.0)
- * Changes: 1.17.0 — addOrUpdateUser() now guards against creating DUPLICATE
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.18.0)
+ * Changes: 1.18.0 — updateAllMembers()/forceUpdateAllMembers() now build
+ *   workspaceEmailByCapid via buildProvisioningEmailByCapid_ (DuplicateAccountGuard.gs)
+ *   instead of getActiveUsers(). The old map omitted SUSPENDED accounts and read the
+ *   CAPID only from externalIds[type='organization'], so provisioning could conclude a
+ *   member had no account and insert a duplicate. The new map sees suspended accounts
+ *   and every CAPID carrier, and when a CAPID already has several accounts it resolves
+ *   to the one the member actually signs into — without which a retired duplicate is
+ *   simply re-maintained (and unsuspended) on the next run, because the derived address
+ *   still resolves and the 404-triggered guard never fires. getActiveUsers() itself is
+ *   UNCHANGED: suspendExpiredMembers() and ManageLicenses.gs depend on its active-only
+ *   contract.
+ *   1.17.0 — addOrUpdateUser() now guards against creating DUPLICATE
  *   accounts. The create branch is reached whenever Users.update at the derived
  *   first.last email 404s, but the CAPID→email map (getActiveUsers) omits suspended
  *   accounts and reads only the organization externalId — so a member whose real
@@ -1483,11 +1494,11 @@ function updateAllMembers() {
   let members = getMembers();
   let currentMembers = getCurrentMemberData();
 
-  const activeUsers = getActiveUsers();
-  workspaceEmailByCapid = {};
-  activeUsers.forEach(u => {
-    workspaceEmailByCapid[String(u.capid)] = u.email;
-  });
+  // Sees suspended accounts and every CAPID carrier, and resolves a CAPID that has
+  // several accounts to the one the member actually uses. getActiveUsers() cannot be
+  // widened for this — suspendExpiredMembers()/ManageLicenses.gs rely on its
+  // active-only contract. See buildProvisioningEmailByCapid_ in DuplicateAccountGuard.gs.
+  workspaceEmailByCapid = buildProvisioningEmailByCapid_();
   assignManagerEmails(members);
 
   const totalMembers = Object.keys(members).length;
@@ -3923,11 +3934,8 @@ function forceUpdateAllMembers() {
 
   let members = getMembers();
 
-  const activeUsers = getActiveUsers();
-  workspaceEmailByCapid = {};
-  activeUsers.forEach(u => {
-    workspaceEmailByCapid[String(u.capid)] = u.email;
-  });
+  // Same CAPID map as updateAllMembers() — see buildProvisioningEmailByCapid_.
+  workspaceEmailByCapid = buildProvisioningEmailByCapid_();
   assignManagerEmails(members);
 
   const totalMembers = Object.keys(members).length;

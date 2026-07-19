@@ -1,9 +1,31 @@
 /**
  * Duplicate Account Guard & Cleanup
  *
- * Version: 1.0.0
+ * Version: 1.2.0
  * Date: 2026-07-19
  * Author: Maj Isaac Wilson IV, California Wing
+ *
+ * Changes: 1.2.0 — two fixes found by reviewing the first live scan.
+ *   (a) chooseAuthoritativeAccount_ ranks on the lastLogin TIMESTAMP, not a
+ *   has-ever-signed-in boolean. One cadets pair has BOTH accounts signed into — one
+ *   used days ago, one months ago — and the boolean tied them, so "newest created"
+ *   picked the stale account and marked the ACTIVELY USED one for retirement.
+ *   (b) suspendOrphanDuplicates no longer re-decides KEEP/retire. It had re-ranked
+ *   using a canonical first.last from CAPWATCH that the scan's preview does not use,
+ *   so the account an admin reviewed as KEEP could differ from the one cleanup kept.
+ *   It now consumes the scan's own decision — preview and action are the same call.
+ *   1.1.0 — corrected by real scan data from the cadets tenant.
+ *   (a) chooseAuthoritativeAccount_ now ranks LOGIN HISTORY above the canonical
+ *   first.last name. In the 28 duplicate groups found there, the account members
+ *   actually sign into is overwhelmingly the OLDER, oddly-named one, and the newer
+ *   canonically-named twin has never been signed into — so the 1.0.0 ordering would
+ *   have retired accounts in active use.
+ *   (b) Added buildProvisioningEmailByCapid_, the CAPID map provisioning now uses.
+ *   Suspending a dead twin is not enough on its own: provisioning still derives that
+ *   twin's address, Users.update SUCCEEDS against it, and the guard (which only fires
+ *   on a 404) never runs — so the twin would be unsuspended and re-maintained every
+ *   run. The map has to resolve the CAPID to the in-use account for a retirement to
+ *   stick.
  *
  * TWO JOBS
  *   1. PREVENTION (called from UpdateMembers.gs addOrUpdateUser, v1.17.0):
@@ -104,6 +126,7 @@ function findExistingAccountsByCapid_(capid) {
           suspended: !!u.suspended,
           archived: !!u.archived,
           created: u.creationTime || null,
+          lastLogin: u.lastLoginTime || null,   // chooseAuthoritativeAccount_ ranks on recency
           neverSignedIn: dupGuardNeverLoggedIn_(u.lastLoginTime),
           orgUnitPath: u.orgUnitPath || ''
         });
@@ -141,11 +164,32 @@ function dupGuardCanonicalLocalpart_(email) {
 }
 
 /**
- * Picks the authoritative account among several that share a CAPID. Preference,
- * in order: (1) localpart exactly equals the canonical first.last, (2) active over
- * suspended, (3) no numeric collision suffix, (4) newest created. Pure.
+ * Picks the authoritative account among several that share a CAPID.
  *
- * @param {Array<{email,suspended,created}>} accounts
+ * PREFERENCE ORDER — LOGIN HISTORY FIRST. The real directory told us plainly that
+ * the canonical first.last address is NOT a reliable signal of which account a
+ * member actually uses: in the duplicate population found on the cadets tenant, the
+ * account people log into is overwhelmingly the OLDER, oddly-named one (a .N
+ * collision suffix, or a hyphen the derived address drops), while the newer
+ * canonically-named twin has never been signed into once. An earlier version of
+ * this function preferred the canonical name and would therefore have retired the
+ * account the member actually uses. Login history now outranks everything:
+ *
+ *   1. MOST RECENT login              (the member is demonstrably using it)
+ *   2. active over suspended
+ *   3. localpart equals canonical first.last
+ *   4. no numeric collision suffix
+ *   5. newest created
+ *
+ * Rule 1 compares the actual lastLogin TIMESTAMP, not a has-ever-signed-in boolean.
+ * A boolean is not enough: the cadets tenant has a pair where BOTH accounts have
+ * login history — one used days ago, the other months ago — and a boolean tied them,
+ * letting "newest created" pick the stale account and mark the actively-used one for
+ * retirement. Never-signed-in sorts as 0, so it still loses to any real login.
+ *
+ * Pure.
+ *
+ * @param {Array<{email,suspended,created,lastLogin,neverSignedIn}>} accounts
  * @param {string} canonicalLocal firstname.lastname (no domain), or '' if unknown
  * @returns {Object|null} the chosen account
  */
@@ -155,19 +199,96 @@ function chooseAuthoritativeAccount_(accounts, canonicalLocal) {
 
   function score(a) {
     const local = String(a.email || '').split('@')[0].toLowerCase();
-    const exact = (canon && local === canon) ? 1 : 0;
-    const active = a.suspended ? 0 : 1;
-    const noSuffix = /\.\d+$/.test(local) ? 0 : 1;
-    return { exact: exact, active: active, noSuffix: noSuffix, created: new Date(a.created || 0).getTime() };
+    // Google returns the Unix epoch for never-signed-in accounts, which lands on 0
+    // here anyway; the explicit flag guards a missing/!odd value.
+    const loginAt = a.neverSignedIn
+      ? 0
+      : Math.max(0, new Date(a.lastLogin || 0).getTime());
+    return {
+      loginAt: loginAt,
+      active: a.suspended ? 0 : 1,
+      exact: (canon && local === canon) ? 1 : 0,
+      noSuffix: /\.\d+$/.test(local) ? 0 : 1,
+      created: new Date(a.created || 0).getTime()
+    };
   }
 
   return accounts.slice().sort(function (x, y) {
     const sx = score(x), sy = score(y);
-    return (sy.exact - sx.exact) ||
+    return (sy.loginAt - sx.loginAt) ||   // most recently used first
            (sy.active - sx.active) ||
+           (sy.exact - sx.exact) ||
            (sy.noSuffix - sx.noSuffix) ||
-           (sy.created - sx.created);   // newest first
+           (sy.created - sx.created);     // newest first
   })[0];
+}
+
+/**
+ * Builds the CAPID -> primaryEmail map that provisioning uses to decide whether a
+ * member already has an account (workspaceEmailByCapid in UpdateMembers.gs).
+ *
+ * WHY THIS EXISTS RATHER THAN CHANGING getActiveUsers()
+ *   getActiveUsers() lists only NON-suspended users and reads the CAPID only from
+ *   externalIds[type='organization']. Both blind spots let provisioning conclude
+ *   "this member has no account" and insert a duplicate. It cannot simply be
+ *   widened: suspendExpiredMembers() and ManageLicenses.gs depend on its
+ *   active-only contract. So provisioning gets its own map builder, and
+ *   getActiveUsers() is left exactly as it was.
+ *
+ * This map sees SUSPENDED accounts and every CAPID carrier, and when a CAPID has
+ * more than one account it resolves to the one the member actually uses
+ * (chooseAuthoritativeAccount_ — login history first). That last part is what makes
+ * an existing duplicate stable: provisioning maintains the in-use account and never
+ * touches the dead twin, so a retired twin stays retired instead of being
+ * resurrected by the next run.
+ *
+ * @returns {Object} capid (string) -> primaryEmail
+ */
+function buildProvisioningEmailByCapid_() {
+  const byCapid = {};
+  let pageToken = null;
+  let scanned = 0;
+
+  do {
+    const page = AdminDirectory.Users.list({
+      customer: 'my_customer',
+      maxResults: 500,
+      projection: 'full',   // needed for externalIds + creationTime + lastLoginTime
+      pageToken: pageToken
+    });
+    (page.users || []).forEach(function (u) {
+      scanned++;
+      const info = {
+        email: u.primaryEmail,
+        suspended: !!u.suspended,
+        created: u.creationTime || null,
+        lastLogin: u.lastLoginTime || null,   // chooseAuthoritativeAccount_ ranks on recency
+        neverSignedIn: dupGuardNeverLoggedIn_(u.lastLoginTime)
+      };
+      provisioningCapidsFromUser_(u).forEach(function (capid) {
+        (byCapid[capid] = byCapid[capid] || []).push(info);
+      });
+    });
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  const map = {};
+  let multi = 0;
+  Object.keys(byCapid).forEach(function (capid) {
+    const accounts = byCapid[capid];
+    if (accounts.length > 1) multi++;
+    // No member name is available at map-build time, so there is no canonical hint;
+    // login history / active / newest is what decides.
+    const chosen = chooseAuthoritativeAccount_(accounts, '');
+    if (chosen) map[capid] = chosen.email;
+  });
+
+  Logger.info('Provisioning CAPID map built', {
+    scannedUsers: scanned,
+    mappedCapids: Object.keys(map).length,
+    capidsWithMultipleAccounts: multi
+  });
+  return map;
 }
 
 /**
@@ -224,18 +345,12 @@ function suspendOrphanDuplicates(dryRun) {
   const isDry = dryRun !== false;   // default to dry run
   Logger.info(isDry ? 'Orphan-duplicate cleanup PREVIEW (dry run)' : 'Orphan-duplicate cleanup — LIVE');
 
+  // The scan is the single source of truth for KEEP vs retire. This function
+  // deliberately does NOT re-decide with extra inputs (an earlier version re-ranked
+  // using a canonical first.last pulled from CAPWATCH, which the scan's preview does
+  // not use — so the account an admin reviewed as KEEP could differ from the one
+  // cleanup actually kept). Preview and action must be the same decision.
   const scan = scanDuplicateAccountsByCapid();
-
-  // Canonical first.last per CAPID from CAPWATCH, to pick the authoritative twin.
-  // Best-effort: if member data is unavailable, fall back to active-then-newest.
-  let membersByCapid = {};
-  try {
-    membersByCapid = getMembers();
-  } catch (e) {
-    Logger.warn('Could not load CAPWATCH members; authoritative pick falls back to active/newest', {
-      errorMessage: e.message
-    });
-  }
 
   const summary = {
     dryRun: isDry,
@@ -247,23 +362,16 @@ function suspendOrphanDuplicates(dryRun) {
   };
 
   scan.groups.forEach(function (g) {
-    const member = membersByCapid[String(g.capid)];
-    const canonicalLocal = member
-      ? (String(member.firstName || '') + '.' + String(member.lastName || ''))
-          .toLowerCase().replace(/\s+/g, '')
-      : '';
-
-    const authoritative = chooseAuthoritativeAccount_(g.accounts, canonicalLocal);
-    if (!authoritative) return;
-    summary.kept.push({ capid: g.capid, email: authoritative.email });
+    if (!g.authoritativeEmail) return;
+    summary.kept.push({ capid: g.capid, email: g.authoritativeEmail });
 
     g.accounts.forEach(function (a) {
-      if (a.email === authoritative.email) return;   // keep the authoritative one
+      if (a.email === g.authoritativeEmail) return;   // keep the authoritative one
 
       if (!a.neverSignedIn) {
         summary.skippedSignedIn.push({ capid: g.capid, email: a.email, lastLogin: a.lastLogin });
         Logger.warn('Orphan has login history — left for manual review', {
-          capsn: g.capid, email: a.email, authoritative: authoritative.email
+          capsn: g.capid, email: a.email, authoritative: g.authoritativeEmail
         });
         return;
       }
@@ -271,11 +379,11 @@ function suspendOrphanDuplicates(dryRun) {
       try {
         const res = retireOrphanAccount_(a.email, isDry);
         summary.retired.push({
-          capid: g.capid, email: a.email, authoritative: authoritative.email,
+          capid: g.capid, email: a.email, authoritative: g.authoritativeEmail,
           externalIdsBefore: res.before, externalIdsAfter: res.after, applied: res.applied
         });
         Logger.info(isDry ? 'WOULD retire orphan' : 'Retired orphan', {
-          capsn: g.capid, orphan: a.email, authoritative: authoritative.email
+          capsn: g.capid, orphan: a.email, authoritative: g.authoritativeEmail
         });
       } catch (e) {
         summary.errors.push({ capid: g.capid, email: a.email, errorMessage: e.message });
