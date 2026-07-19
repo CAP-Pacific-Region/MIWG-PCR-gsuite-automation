@@ -45,6 +45,23 @@ into the other.
   creates. That is within the m8 ~3,000-writes/tenant/day cap but tight on seniors; the sync
   resumes across runs, so expect 1–2 days to converge.
 
+### Fixed follow-ups (`CrossTenantContacts.gs` 0.2.1) — after first live run
+
+- **Sort fix only reached ~2/3 of contacts.** `xtHash_` keyed only on the display fields, so the
+  0.2.0 change to the card *shape* (sort value into `givenName`) left the hash unchanged for any
+  contact whose display *text* didn't also change (no middle initial / suffix) — the stateless
+  reconcile saw "unchanged" and skipped the rewrite, so those kept `givenName=First` and still
+  sorted by first name. Verified live on seniors: 1,830 rewritten, 822 left old-format. Added
+  `XT_CARD_FORMAT` to the hash so a shape change forces a one-time rewrite of the whole set.
+- **Self-publish shadowed real accounts.** The self no-account publish created a duplicate contact
+  over an account-holder's own account (observed: a C/2dLt cadet commander appearing twice in the
+  cadet directory). Two causes: the account-existence skip keyed only on the org `externalId`, so
+  an account carrying its CAPID only in `employeeId` slipped through; and a tenant-domain CAPWATCH
+  email was published as if personal. Now the self account map indexes CAPID from `externalId`
+  **and** `employeeId`, and a domain guard drops any self-contact whose email is on one of this
+  tenant's own domains (`cfg.ownDomains`). Existing shadow contacts self-heal — no longer desired,
+  so the reconcile deletes them on the next run.
+
 ---
 
 ## [2026-07-18] — Recovery email: never blank it, and source it from any personal address

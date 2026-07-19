@@ -26,7 +26,7 @@ const m = loadModule(MODULE, {
   Logger: makeLogger().logger,
   Utilities: U,
   toTitleCase: s => String(s || '')
-}, ['xtDisplayName_', 'xtBuildContactXml_', 'xtMakeContact_']);
+}, ['xtDisplayName_', 'xtBuildContactXml_', 'xtMakeContact_', 'xtEmailDomain_']);
 
 // ---------------------------------------------------------------------------
 section('1. xtDisplayName_ — "Last Suffix, First M Grade", matching native accounts');
@@ -83,6 +83,15 @@ section('3. xtMakeContact_ — builds the display from CAPWATCH fields end to en
   const xml = m.xtBuildContactXml_(contact, { wing: 'CA' });
   check('sort key leads with last name',
     /<gd:givenName>OConnor, Mary A C\/CMSgt<\/gd:givenName>/.test(xml), true);
+}
+
+// ---------------------------------------------------------------------------
+section('4. xtEmailDomain_ — bare host, drives the self-publish own-domain guard');
+{
+  check('extracts the host', m.xtEmailDomain_('Plowman.Carter@CAWGcadets.org'), 'cawgcadets.org');
+  check('personal address host', m.xtEmailDomain_('carter@gmail.com'), 'gmail.com');
+  check('no @ -> empty', m.xtEmailDomain_('not-an-email'), '');
+  check('null-safe', m.xtEmailDomain_(null), '');
 }
 
 done();

@@ -32,7 +32,21 @@
  * Requires (beyond the shared manifest): the legacy Domain Shared Contacts
  * scope  https://www.google.com/m8/feeds  (added to appsscript.json).
  *
- * Version: 0.2.0 (draft)
+ * Version: 0.2.1 (draft)
+ * 0.2.1: follow-ups to 0.2.0 after first live run.
+ *   - HASH: xtHash_ keyed only on display fields, so the 0.2.0 card-SHAPE change
+ *     (sort value into givenName) left the hash unchanged for any contact whose
+ *     display text didn't also change — the reconcile skipped the rewrite and
+ *     they kept sorting by first name. Added XT_CARD_FORMAT to the hash to force a
+ *     one-time rewrite of the whole managed set when the card shape changes.
+ *   - SELF-PUBLISH DUPLICATES: self no-account publish shadowed real accounts —
+ *     an account-holder whose CAPID lived only in employeeId (not the org
+ *     externalId) slipped the skip, and a tenant-domain CAPWATCH email published a
+ *     contact over their own account. Now the self account map indexes CAPID from
+ *     externalId AND employeeId, and a domain guard drops any self-contact whose
+ *     email is on one of this tenant's own domains (cfg.ownDomains). Stale
+ *     duplicates self-heal: the member is no longer desired, so reconcile deletes
+ *     the shadow contact on the next run.
  * 0.2.0: two directory fixes.
  *   - SORT: shared contacts sorted by first name (the GAL sorts Domain Shared
  *     Contacts by gd:givenName, unlike directory users which sort by family
@@ -61,6 +75,12 @@ const XT_SOFT_TIME_LIMIT_MS = 25 * 60 * 1000;     // pause before the 30-min tri
 const XT_WRITE_THROTTLE_EVERY = 50;               // sleep every N writes
 const XT_WRITE_THROTTLE_MS = 200;
 const XT_MANAGED_HASH_FIELD = 'xtSyncHash';       // gContact:userDefinedField key (stateless diff)
+// Bumped whenever the WRITTEN card shape changes (not just its text). The content
+// hash otherwise keys only on the display fields, so a pure structure change (e.g.
+// moving the sort value into gd:givenName) would leave the hash unchanged and the
+// reconcile would skip the rewrite for every contact whose display text didn't
+// also change. Bumping this forces a one-time rewrite of the whole managed set.
+const XT_CARD_FORMAT = 'v2-sortkey-in-givenname';
 
 /*************************************************************
  * PUBLIC ENTRY POINTS
@@ -217,6 +237,13 @@ function getCrossTenantConfig_() {
     // identity/secrets (per-project Script Properties; never in shared source)
     wing: CONFIG.WING,
     selfDomain: CONFIG.DOMAIN,
+    // Every domain this tenant hands out addresses on. A self-published contact
+    // whose "personal" email lands on one of these actually has an account (or an
+    // alias of one), so it must never be published — see the self-lite domain
+    // guard. Normalized to bare lowercase hostnames.
+    ownDomains: [CONFIG.DOMAIN, CONFIG.EMAIL_DOMAIN, CONFIG.SECONDARY_EMAIL_DOMAIN]
+      .map(d => String(d || '').trim().replace(/^@/, '').toLowerCase())
+      .filter(Boolean),
     peerDomain: prop('XT_PEER_DOMAIN'),
     peerSa: {
       email: prop('XT_PEER_SA_EMAIL'),
@@ -270,7 +297,7 @@ function xtBuildDesiredContacts_(cfg) {
   const peerWsByCapid = xtPeerWorkspaceEmailByCapid_(cfg);
 
   const byCapid = {};
-  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0, combinedEmail: 0, selfHasAccount: 0 };
+  const stats = { workspace: 0, capwatch: 0, placeholder: 0, dropped: 0, filteredType: 0, combinedEmail: 0, selfHasAccount: 0, selfOwnDomain: 0 };
 
   Object.keys(roster).forEach(capid => {
     const m = roster[capid];
@@ -308,6 +335,17 @@ function xtBuildDesiredContacts_(cfg) {
       // so an empty map forces the CAPWATCH-personal / placeholder legs.
       const resolved = xtResolvePeerEmail_(m, cfg, {});
       if (!resolved.email) { stats.dropped++; return; }
+
+      // Guard: a self-published contact must be reachable by a PERSONAL address.
+      // A CAPWATCH email on one of this tenant's own domains means the member has
+      // an account (or an alias of one) that the CAPID skip above missed —
+      // publishing it would shadow the real directory user with a duplicate. Skip.
+      if (resolved.source === 'capwatch' &&
+          cfg.ownDomains.indexOf(xtEmailDomain_(resolved.email)) > -1) {
+        stats.selfOwnDomain++;
+        return;
+      }
+
       stats[resolved.source]++;
       byCapid[m.capsn] = xtMakeContact_(m, resolved, cfg);   // distinct CAPID space from peers
     });
@@ -485,6 +523,12 @@ function xtPeerWorkspaceEmailByCapid_(cfg) {
  * Unlike the peer map, suspended accounts are KEPT: a suspended user still
  * exists in the directory, so we must not re-publish them as a contact. Only a
  * member with no account at all should become a self-published shared contact.
+ *
+ * The CAPID is indexed from BOTH the organization externalId AND employeeId —
+ * provisioning writes it to both (UpdateMembers.gs), but accounts created by an
+ * older path may carry it in only one. Keying on externalId alone let such
+ * account-holders slip the skip and get self-published, shadowing their own
+ * account with a duplicate contact.
  */
 function xtSelfWorkspaceEmailByCapid_() {
   const token = ScriptApp.getOAuthToken();
@@ -494,7 +538,7 @@ function xtSelfWorkspaceEmailByCapid_() {
   do {
     const url = 'https://admin.googleapis.com/admin/directory/v1/users' +
       '?customer=my_customer&maxResults=500&projection=full' +
-      '&fields=nextPageToken,users(primaryEmail,externalIds)' +
+      '&fields=nextPageToken,users(primaryEmail,externalIds,employeeId)' +
       (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
 
     const resp = UrlFetchApp.fetch(url, {
@@ -509,9 +553,13 @@ function xtSelfWorkspaceEmailByCapid_() {
 
     const body = JSON.parse(resp.getContentText() || '{}');
     (body.users || []).forEach(u => {
-      const idField = (u.externalIds || []).find(id => id && id.type === 'organization');
-      const capid = String((idField && idField.value) || '').trim();
-      if (capid) map[capid] = String(u.primaryEmail || '').trim().toLowerCase();
+      const email = String(u.primaryEmail || '').trim().toLowerCase();
+      if (!email) return;
+      const org = (u.externalIds || []).find(id => id && id.type === 'organization');
+      [org && org.value, u.employeeId].forEach(v => {
+        const capid = String(v == null ? '' : v).trim();
+        if (capid) map[capid] = email;                 // any CAPID -> this account exists
+      });
     });
 
     pageToken = body.nextPageToken || '';
@@ -869,6 +917,12 @@ function xtDutyTitle_(m) {
   return duties.map(d => d.assistant ? d.id + ' (A)' : d.id).join(', ');
 }
 
+/** Bare lowercase host of an email address, or '' — for the own-domain guard. */
+function xtEmailDomain_(email) {
+  const at = String(email == null ? '' : email).lastIndexOf('@');
+  return at > -1 ? String(email).slice(at + 1).trim().toLowerCase() : '';
+}
+
 /** Notes: "<PEER_LABEL>, <charter>" e.g. "CADET, PCR-CA-057". */
 function xtNotes_(m, cfg) {
   return [cfg.peerLabel || m.type || '', m.charter || ''].filter(Boolean).join(', ');
@@ -877,6 +931,7 @@ function xtNotes_(m, cfg) {
 /** Stable content hash -> stored in the contact, compared next run. */
 function xtHash_(c) {
   const raw = JSON.stringify([
+    XT_CARD_FORMAT,                                // rev the whole set when the card SHAPE changes
     String(c.email || '').toLowerCase(),
     c.displayName, c.givenName, c.familyName, c.grade,
     c.dutyTitle, c.department, c.notes, c.capid
