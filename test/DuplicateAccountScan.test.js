@@ -93,22 +93,48 @@ section('5. capidCarriersForUser_ — which field holds the CAPID decides guard 
 section('6. looksLikeRoleAccount_ — classifies, and always reports WHY');
 {
   check('a role localpart', m.looksLikeRoleAccount_({ primaryEmail: 'it@example.org' }),
-    { isRole: true, reasons: ['role-localpart'] });
+    { isRole: true, exemptOu: false, reasons: ['role-localpart'] });
   check('automation', m.looksLikeRoleAccount_({ primaryEmail: 'automation@example.org' }),
-    { isRole: true, reasons: ['role-localpart'] });
+    { isRole: true, exemptOu: false, reasons: ['role-localpart'] });
   check('super admin flagged even on a person-shaped localpart',
     m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org', isAdmin: true }),
-    { isRole: true, reasons: ['super-admin'] });
+    { isRole: true, exemptOu: false, reasons: ['super-admin'] });
   check('both reasons reported',
     m.looksLikeRoleAccount_({ primaryEmail: 'admin@example.org', isDelegatedAdmin: true }),
-    { isRole: true, reasons: ['role-localpart', 'delegated-admin'] });
+    { isRole: true, exemptOu: false, reasons: ['role-localpart', 'delegated-admin'] });
   check('an ordinary member account is not role-like',
     m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org' }),
-    { isRole: false, reasons: [] });
+    { isRole: false, exemptOu: false, reasons: [] });
   // "it" must match only as a whole localpart, never as a substring of a name.
   check('a name merely containing a role word is NOT role-like',
     m.looksLikeRoleAccount_({ primaryEmail: 'italo.smith@example.org' }),
-    { isRole: false, reasons: [] });
+    { isRole: false, exemptOu: false, reasons: [] });
+}
+
+// ---------------------------------------------------------------------------
+section('6b. exempt OUs — admin / NHQ containers, spelled differently per tenant');
+{
+  check('/ZZ-Administrative (seniors casing)',
+    m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org', orgUnitPath: '/ZZ-Administrative' }),
+    { isRole: true, exemptOu: true, reasons: ['exempt-ou'] });
+  check('/zz-Administrative (cadets casing)',
+    m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org', orgUnitPath: '/zz-Administrative' }),
+    { isRole: true, exemptOu: true, reasons: ['exempt-ou'] });
+  check('/NHQ Employees',
+    m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org', orgUnitPath: '/NHQ Employees' }),
+    { isRole: true, exemptOu: true, reasons: ['exempt-ou'] });
+  check('a nested child of an exempt OU is exempt too',
+    m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org', orgUnitPath: '/ZZ-Administrative/Workstations' }),
+    { isRole: true, exemptOu: true, reasons: ['exempt-ou'] });
+  check('an ordinary member OU is NOT exempt',
+    m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org', orgUnitPath: '/CA-001/CA-070/CA-410' }),
+    { isRole: false, exemptOu: false, reasons: [] });
+  check('root OU is NOT exempt',
+    m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org', orgUnitPath: '/' }),
+    { isRole: false, exemptOu: false, reasons: [] });
+  check('exempt OU combines with other reasons',
+    m.looksLikeRoleAccount_({ primaryEmail: 'it@example.org', orgUnitPath: '/ZZ-Administrative', isAdmin: true }),
+    { isRole: true, exemptOu: true, reasons: ['exempt-ou', 'role-localpart', 'super-admin'] });
 }
 
 // ---------------------------------------------------------------------------
