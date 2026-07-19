@@ -96,11 +96,19 @@ Open any project in the browser from the repo with e.g. `npm run open:seniors`.
 
 > **Pacific is deployed and verified (2026-07-09).** It runs the shared `src/` with
 > `TENANT_PROFILE=region`. Two things to know for future pushes:
-> - The project lives in a **`pcr.cap.gov` Shared Drive**. An external-org account (e.g.
->   `automation@cawgcap.org`) can `clasp pull` but gets a 403 *"User has not enabled the Apps
->   Script API"* on **push** — that message is misleading; it's a **cross-org write block**, not
->   an API-toggle problem (reads work, `canEdit` is true). **Push from an account internal to
->   `pcr.cap.gov` — `automation@pcr.cap.gov` (the operator/owner).**
+> - The project lives in a **`pcr.cap.gov` Shared Drive**. Push works from either of two
+>   accounts:
+>   - **`it@cawgcap.org`** — granted **editor on the region Apps Script project specifically
+>     so region can be pushed from the seniors-side ops account**, without needing a separate
+>     `pcr.cap.gov` login. This is the normal path; `npm run push:region` from a machine
+>     logged in as `it@cawgcap.org` just works (verified 2026-07-19, all 36 files).
+>   - **`automation@pcr.cap.gov`** — the internal operator/owner.
+>
+>   An account with **no** grant on the project can `clasp pull` but gets a 403 *"User has not
+>   enabled the Apps Script API"* on **push**. That message is misleading: it is a **write
+>   permission block**, not an API-toggle problem (reads work, `canEdit` is true). If you hit
+>   it, the fix is to grant that account editor on the project — not to go turning on the Apps
+>   Script API.
 > - `CAPWATCH_AUTHORIZATION` is a per-user **User Property** (not shown in the Script Properties
 >   UI) belonging to `automation@pcr.cap.gov`, so that account must also **own the triggers**.
 >
