@@ -466,8 +466,16 @@ the code never generates). `addOrUpdateUser()` now does a live CAPID lookup befo
 inserting and updates the existing account in place instead (see `UpdateMembers.gs`
 1.17.0). To find and retire orphans that already exist:
 - `scanDuplicateAccountsByCapid()` — **read-only.** Lists every CAPID with >1 account
-  (emails, created dates, suspended/never-signed-in, reversed vs `.N` localparts) and
-  how widespread it is. Run this first; results go to the Execution log.
+  (emails, created dates, suspended/never-signed-in, reversed vs `.N` localparts), marks
+  each account **KEEP/retire**, and reports which field carries each CAPID plus a count
+  of accounts invisible to the guard's `externalId=` lookup. Run this first; results go
+  to the Execution log.
+  > **Which twin is authoritative: the one with login history, NOT the canonically
+  > named one.** On the cadets tenant the in-use account is usually the older, oddly
+  > named one (`.N` suffix or a hyphen the derived address drops) and the tidy
+  > `first.last` twin has never been signed into. Before running cleanup, confirm the
+  > "invisible to externalId query" count is **0** — if it isn't, those pairs can't be
+  > kept stable yet.
 - `suspendOrphanDuplicates(dryRun)` — retires the non-authoritative, never-signed-in
   twins by retyping their `organization` externalId to a `duplicate_retired_capid`
   marker and suspending them (the retype is what stops `reactivateRenewedMembers()`
