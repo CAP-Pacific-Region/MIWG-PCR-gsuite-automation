@@ -10,6 +10,92 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-19] — Monthly recovery-email compliance digest to unit command staff
+
+A member resets their Workspace password through a personal, non-CAP address — you cannot
+recover an account from the account it locks. Nothing told command staff which of their
+people were set up in a way that makes that impossible.
+
+### Added (`RecoveryEmailNotify.gs` 1.0.0, `config.gs` 1.9.0)
+
+- **New `src/notifications/RecoveryEmailNotify.gs`.** Monthly digest to each unit's
+  **commander** (To), copying its **personnel officers** (primary *and* assistant) and
+  **deputy commanders**, listing members under their **direct command** (their own ORGID)
+  who trip either of two independent conditions:
+  - **No CAP address in the PRIMARY slot** — covers a personal address sitting in PRIMARY
+    *and* no PRIMARY at all.
+  - **No personal (non-CAP) address anywhere** — no way to receive a reset.
+
+  The digest names which condition each member tripped, asks the recipient to contact the
+  member, and reminds them that as command staff they may correct it themselves at
+  `https://www.capnhq.gov/CAP.PersonnelInfo.Web/`.
+
+- **A member reported once is not reported again for three months**, even if uncorrected —
+  a monthly job that re-mails the same commander about the same member every month gets
+  filtered to trash. State is per member (`RecoveryComplianceState.txt`), and the window
+  runs from the date they were actually told, so a failed digest's retry does not reset it.
+  A member who **becomes compliant is dropped from state**, so a later relapse is reported
+  on the next run rather than sitting silently inside a stale window.
+
+- **Runs on seniors *and* cadets** (`RUN_RECOVERY_EMAIL_NOTIFICATIONS`; off for region,
+  a single-unit HQ). Two cadet-specific behaviours are deliberate:
+  - **Cadet-lite members are excluded automatically** — they get no account, so they have
+    no password to reset. This falls out of reusing `getMembers()` rather than being a
+    second copy of the grade rule.
+  - **A parent/guardian email counts as a recovery address.** The check reuses
+    `member.recoveryEmail` from `UpdateMembers.gs`, which is the same value that populates
+    the account's real Workspace recovery address — so the module reports on exactly what
+    recovery will use, rather than a second, subtly different opinion of it. Flagging
+    cadets covered by a parent address would bury the real gaps under most of the cadet wing.
+
+- **`CONFIG.COMMAND_EMAIL_DOMAIN`** (optional Script Property `TENANT_COMMAND_EMAIL_DOMAIN`,
+  blank defaults to `EMAIL_DOMAIN`). Command staff are **senior** members, so on the cadets
+  tenant their account is on the senior domain; deriving `first.last@cawgcadets.org` for a
+  cadet unit's commander would address an account that does not exist. **Required on the
+  cadets tenant** — `validateTenantConfig()` does not flag it, because blank is correct
+  everywhere else.
+
+### Notes
+
+- **Unlike `LSCodeNotify.gs`, the first run is deliberately loud.** That module diffs against
+  recorded state and is silent on first run by construction; this one reports a *standing*
+  condition, so the first run surfaces the whole existing backlog. Run
+  `previewRecoveryEmailCompliance()` (sends nothing, writes nothing) and check the volume
+  before scheduling.
+- Recipient addresses resolve **directory → derived → CAPWATCH primary**. CAPWATCH primary is
+  last deliberately, since a wrong or personal CAPWATCH primary is the very thing this module
+  exists to report. On a cadet tenant the local directory is skipped (command staff are seniors
+  in the peer tenant), so addresses there are derived and unverified.
+- **Interacts with the duplicate-account work below, which landed the same day.** The command
+  directory map is built from `getActiveUsers()`, which is active-only — so where a member has
+  a duplicate pair, this addresses whichever twin is *not* suspended. That is why the first
+  live run correctly reached a `.N`-suffixed commander account rather than the canonical
+  `first.last` one. Once `suspendOrphanDuplicates()` retires the orphans, the map resolves to
+  the surviving account on the next run; the map is rebuilt every run, so nothing is pinned.
+
+### Fixed (`RecoveryEmailNotify.gs` 1.0.1) — both found by the first live preview
+
+- **Derivation alone produced dead addresses.** `first.last@<domain>` reproduces only the
+  *default* account name; `addOrUpdateUser` prefers the real directory address when an account
+  is not the default. The live wing turned up five classes that would have been silent
+  dead-letter sends: an apostrophe stripped in the real account, a **`.3` duplicate-account
+  suffix**, a CAPWATCH nickname vs the legal first name, a surname changed since account
+  creation, and a middle name concatenated into the CAPWATCH first name. Recipients are now
+  resolved from this tenant's directory first, and only derived when it has no entry — which
+  is always the case on a cadet tenant, and why that path is retained rather than replaced.
+- **The preview misreported recipients.** It printed the raw duty list, so a unit where one
+  person holds several of these duties showed them repeatedly (four times, in one case) — while
+  the send had always deduplicated. The preview is the surface an operator checks recipients
+  on, so it now runs the same reduction as the send and reports the addressee and Cc separately.
+- Members merged from the **ManualMembers sheet are skipped**: they never pass through
+  `addContactInfo()`, so read naively every one of them would look non-compliant.
+- Own state file and own trigger, never touching provisioning — same isolation rationale as
+  `LSCodeNotify.gs`. The monthly trigger **must be created as the automation account**
+  (Send-As identity); the IT failure-summary sends without a `from` override so that
+  misconfiguration still gets reported.
+- Verification: `npm test` — 2 new suites (118 assertions), mutation-checked (disabling the
+  suppression window fails 9 assertions across both files; removing the manual-member guard
+  fails 3).
 ## [2026-07-19] — Stop provisioning from creating duplicate Workspace accounts
 
 A member (and, it turned out, a wider population) held two active accounts, neither

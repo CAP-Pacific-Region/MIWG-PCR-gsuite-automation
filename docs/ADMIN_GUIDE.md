@@ -148,7 +148,11 @@ Open any project in the browser from the repo with e.g. `npm run open:seniors`.
 
 - Automated mail sender: `automation@cawgcap.org` (display name "CAWG Information Technology").
 - IT support mailbox: `it@cawgcap.org`.
-- Recruiting/retention: `recruiting@cawgcap.org`, Director `adam.staley@cawgcap.org`.
+- Recruiting/retention: `recruiting@cawgcap.org`. The Director of Recruiting & Retention is an
+  individual, so their address is **not** version-controlled — it lives in the
+  `TENANT_DIRECTOR_RECRUITING_EMAIL` Script Property on each project. Read it from there
+  (Project Settings → Script Properties) rather than from this repo, and update it there when
+  the role changes.
 - Upstream code authors (historical): Luke Bunge, Jeremy Ginnard (Michigan Wing);
   PCR config by Noel Luneau.
 
@@ -419,6 +423,17 @@ the data runs after the download. Apps Script schedules within a 1-hour window, 
 | 10 | `updateChatSpaces()` | Daily or weekly | Sync squadron/committee Chat spaces & membership. |
 | 11 | `updateResources()` | Weekly (Sun) | Aircraft/vehicle Calendar resources + squadron buildings. **Seniors only** (`MANAGE_RESOURCES`). |
 | 12 | `manageLicenseLifecycle()` | Monthly | Reactivate renewed, delete long-ineligible accounts to free seats. |
+| 13 | `notifyLSCodeChanges()` | Weekly (Mon) | Mail unit CCs when a member's FBI background check is granted or lapses. **Seniors only.** The cadence *is* the reported detection window. |
+| 14 | `notifyRecoveryEmailCompliance()` | Monthly (1st) | Mail unit CCs + personnel officers + deputies about members whose email record blocks a password reset. **Seniors + cadets.** |
+
+> ⚠️ **Both notification triggers must be created while signed in as the automation
+> account.** A time-driven trigger runs as whoever created it, and the digests send as
+> `AUTOMATION_SENDER_EMAIL` — which Gmail permits only for an account owning that verified
+> Send-As alias. Created under any other identity (e.g. `it@`), *every* digest fails with
+> "Invalid argument". This happened live on 2026-07-16. Both modules' IT failure-summaries
+> deliberately send *without* a `from` override so the alarm still gets through when the
+> identity is wrong — an "attention needed" email listing every unit as failed is the
+> signature of exactly this misconfiguration.
 
 `updateCAWGCadetGroups()` (cross-tenant cadet groups) and the recruiting/retention emails run on
 their own cadence where enabled. **Confirm the actual triggers in each project** — this table is
@@ -585,6 +600,34 @@ no-ops elsewhere). State lives in the `Transitions` sheet. See the
 - `doPost(e)` / `doGet(e)` — the web-app webhook (not run manually).
 - `testMissionProvisioningPayload_()` — provision a `TEST-001` mission locally to verify wiring.
 
+### Notifications to command staff (`notifications/`)
+Both modules mail unit command staff, keep their **own** Drive state file, and run on their
+**own** trigger — a failure in either cannot affect account provisioning. Both trigger must be
+owned by the automation account (see the warning in [Section 8](#8-what-runs-when-the-automation-schedule)).
+
+- `previewLSCodeChanges()` / `notifyLSCodeChanges()` — FBI background-check changes.
+  **Seniors only** (`RUN_LSCODE_NOTIFICATIONS`). First run is **silent by design** (it lays a
+  baseline); only a *change* against recorded state notifies. `installLSCodeWeeklyTrigger()`.
+- `previewRecoveryEmailCompliance()` / `notifyRecoveryEmailCompliance()` — members whose
+  CAPWATCH email record would stop them resetting their password: no CAP address in the
+  PRIMARY slot, and/or no personal (non-CAP) address on file at all. **Seniors + cadets**
+  (`RUN_RECOVERY_EMAIL_NOTIFICATIONS`). Sent to the unit commander, copying its personnel
+  officers (primary *and* assistant) and deputy commanders. `installRecoveryComplianceMonthlyTrigger()`.
+  - ⚠️ Unlike LSCode, the **first run is deliberately loud** — it reports a standing condition,
+    so it surfaces the entire existing backlog at once. **Run the preview first and look at the
+    volume** before scheduling it.
+  - A member reported once is not reported again for **3 months**, even if uncorrected. A member
+    who fixes the issue drops out of state, so a later relapse is reported immediately.
+  - Cadet-lite members are excluded automatically (no account ⇒ no password). A cadet whose own
+    secondary email is empty but who has a **parent/guardian** address on file is *not* flagged
+    for recovery — that address is a working reset path.
+  - On the **cadets** tenant this requires `TENANT_COMMAND_EMAIL_DOMAIN` = the senior domain
+    (`@cawgcap.org`): a cadet unit's commander and personnel officer are seniors and hold no
+    cadet-domain account, so without it every digest is addressed to an account that
+    does not exist.
+- `testRecoveryDigestToTestEmail()` / `testLSCodeDigestToTestEmail()` — render a digest from
+  fabricated data to `TENANT_TEST_EMAIL`, to review wording without waiting for a real run.
+
 **Rule of thumb:** for anything that changes or deletes Workspace state, there is a `preview…`,
 `test…`, or `dryRun=true` variant. **Always run the preview first** and sanity-check the counts.
 
@@ -624,6 +667,14 @@ src/
 │
 ├── mission-provisioning/
 │   └── MissionProvisioning.gs     # doPost webhook: Group + Chat space + Drive folder per mission.
+│
+├── notifications/                 # Push signals to unit command staff. Each keeps its OWN state
+│   │                              # file and trigger, and never touches provisioning.
+│   ├── LSCodeNotify.gs            # Weekly: FBI background-check (Member.txt LSCode) changes.
+│   │                              # Seniors only — cadet records carry no LSCode.
+│   └── RecoveryEmailNotify.gs     # Monthly: members whose CAPWATCH email record blocks a
+│                                  # password reset. Seniors + cadets. 3-month per-member quiet
+│                                  # period; needs TENANT_COMMAND_EMAIL_DOMAIN on cadets.
 │
 └── recruiting-and-retention/
     ├── SendRetentionEmail.gs      # Age-out / expiration / welcome emails.

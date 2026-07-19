@@ -11,6 +11,8 @@
   "TENANT_REGION": "",
   "TENANT_DOMAIN": "FILL_IN_cadet_domain (e.g. the cawgcadets.org equivalent)",
   "TENANT_EMAIL_DOMAIN": "FILL_IN_@cadet_domain",
+  "_command_domain_note": "Unit command staff (commanders, personnel officers, deputy commanders) are SENIOR members and hold no cadet-domain account, so notifications/RecoveryEmailNotify.gs must address them on the SENIOR domain. Required on a cadet tenant; blank would derive addresses on the cadet domain and mail nobody.",
+  "TENANT_COMMAND_EMAIL_DOMAIN": "FILL_IN_@senior_domain",
   "XT_PEER_DOMAIN": "",
   "TENANT_CAPWATCH_ORGID": "FILL_IN_HI_wing_orgid",
   "TENANT_CAPWATCH_DATA_FOLDER_ID": "FILL_IN_drive_folder_id",

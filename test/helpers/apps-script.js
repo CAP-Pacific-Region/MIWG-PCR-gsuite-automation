@@ -137,7 +137,8 @@ function makeDrive(files) {
  * so a test can reproduce the wrong-identity failure.
  *
  * @param {Object} [opts] - { failFrom: string[] }
- * @returns {Object} { gmail, sent } where `sent` accumulates { to, subject, html, from }
+ * @returns {Object} { gmail, sent } where `sent` accumulates
+ *   { to, subject, body, html, from, cc, replyTo }
  */
 function makeGmail(opts) {
   const failFrom = (opts && opts.failFrom) || [];
@@ -149,10 +150,49 @@ function makeGmail(opts) {
         if (from && failFrom.indexOf(from) !== -1) {
           throw new Error('Invalid argument: ' + from);
         }
-        sent.push({ to, subject, body, html: options && options.htmlBody, from: from });
+        sent.push({
+          to, subject, body,
+          html: options && options.htmlBody,
+          from: from,
+          cc: options && options.cc,
+          replyTo: options && options.replyTo
+        });
       }
     },
     sent
+  };
+}
+
+/**
+ * A stand-in for the global Date whose "now" a test can move.
+ *
+ * Modules that suppress a notification for N months decide that by comparing a
+ * recorded date against today, so the only way to test the window without
+ * waiting months is to control what "today" is. `new Date()` inside the module
+ * yields the clock's current instant; every other construction (new Date(y, m, d),
+ * new Date(iso)) behaves normally, so date arithmetic in the module is real.
+ *
+ * Inject as the `Date` global via loadModule, then move it with set().
+ *
+ * @param {string} nowIso - Starting date, 'yyyy-MM-dd'
+ * @returns {Object} { Date, set } — set(iso) moves the clock
+ */
+function makeClock(nowIso) {
+  const RealDate = Date;
+  const state = { now: new RealDate(nowIso + 'T12:00:00Z') };
+
+  function FakeDate(...args) {
+    if (args.length === 0) return new RealDate(state.now.getTime());
+    return new RealDate(...args);
+  }
+  FakeDate.prototype = RealDate.prototype;
+  FakeDate.now = () => state.now.getTime();
+  FakeDate.UTC = RealDate.UTC;
+  FakeDate.parse = RealDate.parse;
+
+  return {
+    Date: FakeDate,
+    set: iso => { state.now = new RealDate(iso + 'T12:00:00Z'); }
   };
 }
 
@@ -181,6 +221,6 @@ function makeChecker() {
 }
 
 module.exports = {
-  loadModule, makeLogger, makeDrive, makeGmail, makeChecker,
+  loadModule, makeLogger, makeDrive, makeGmail, makeChecker, makeClock,
   Session, Utilities, parseCsv
 };

@@ -333,10 +333,27 @@ function buildSharedContactEntryXml_(c, existingJsonEntry) {
   return XmlService.getPrettyFormat().format(doc);
 }
 
-function testDeleteExternalContact() {
-  const emailToDelete = "edward.gelzinis@hiwgcap.org";
-  const result = deleteExternalContactByEmail(emailToDelete);
+/**
+ * Deletes one external contact by address. Requires an explicit argument: this
+ * previously hard-coded a real person's address, so picking it from the editor's
+ * function dropdown and pressing Run would delete that individual's contact
+ * without any prompt. An explicit argument makes that impossible, and keeps a
+ * member address out of version control.
+ *
+ * @param {string} email - Address of the external contact to delete
+ * @returns {string} Result from deleteExternalContactByEmail()
+ */
+function testDeleteExternalContact(email) {
+  const target = String(email === undefined || email === null ? '' : email).trim();
+  if (!target) {
+    throw new Error('testDeleteExternalContact(email) requires an explicit address — ' +
+      'refusing to guess which contact to delete. Call it as ' +
+      'testDeleteExternalContact(\'someone@example.org\').');
+  }
+
+  const result = deleteExternalContactByEmail(target);
   Logger.info("Delete result: " + result);
+  return result;
 }
 
 /**
