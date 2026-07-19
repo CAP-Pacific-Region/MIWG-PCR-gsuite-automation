@@ -1,10 +1,15 @@
 /**
  * Duplicate Workspace Account Scanner  (READ-ONLY diagnostic)
  *
- * Version: 1.1.0
+ * Version: 1.2.0
  * Date: 2026-07-19
  *
- * Changes: 1.1.0 — reports which FIELD carries each CAPID
+ * Changes: 1.2.0 — accounts already retired by suspendOrphanDuplicates (whose only
+ *   carrier for a CAPID is the duplicate_retired_capid marker) are EXCLUDED from the
+ *   duplicate grouping and counted separately. Without this a completed cleanup would
+ *   still report the same group count and look like it had done nothing, and a re-run
+ *   would reprocess accounts it had already retired.
+ *   1.1.0 — reports which FIELD carries each CAPID
  *   (capidCarriersForUser_) plus a count of accounts invisible to an
  *   `externalId=<capid>` query — the number that decides whether the duplicate-create
  *   guard can actually see this population. Each account is now labelled KEEP /
@@ -45,6 +50,19 @@
 
 /** A CAPID on these tenants is a 5-7 digit number. */
 var DUP_SCAN_CAPID_RE = /^\d{5,7}$/;
+
+/**
+ * Carrier label written for a CAPID parked on an account already retired by
+ * suspendOrphanDuplicates. An account whose ONLY carrier for a CAPID is this marker
+ * is no longer part of that member's duplicate set, so it is excluded from the
+ * grouping below — otherwise a completed cleanup would still report the same group
+ * count and look like it had done nothing, and a re-run would reprocess accounts it
+ * had already retired.
+ *
+ * MUST match RETIRED_CAPID_EXTERNALID_TYPE / RETIRED_CAPID_CUSTOM_TYPE in
+ * DuplicateAccountGuard.gs, in the label format capidCarriersForUser_ produces.
+ */
+var DUP_SCAN_RETIRED_CARRIER = 'externalId:custom/duplicate_retired_capid';
 
 /**
  * Pulls every CAPID-shaped identifier off a Directory User resource, from all
@@ -170,6 +188,7 @@ function scanDuplicateAccountsByCapid() {
   const byCapid = {};        // capid -> [accountInfo, ...]
   let scannedUsers = 0;
   let usersWithoutCapid = 0;
+  let retiredAccounts = 0;   // already retired by suspendOrphanDuplicates
   let pageToken = null;
 
   do {
@@ -191,6 +210,15 @@ function scanDuplicateAccountsByCapid() {
       // Carriers are per-CAPID, so the entry is built inside the loop.
       capids.forEach(function (capid) {
         const carriers = capidCarriersForUser_(u, capid);
+
+        // Already retired for this CAPID — not part of the live duplicate set.
+        if (carriers.length > 0 && carriers.every(function (c) {
+          return c === DUP_SCAN_RETIRED_CARRIER;
+        })) {
+          retiredAccounts++;
+          return;
+        }
+
         (byCapid[capid] = byCapid[capid] || []).push({
           email: u.primaryEmail,
           created: u.creationTime || null,
@@ -329,6 +357,7 @@ function scanDuplicateAccountsByCapid() {
     usersWithoutCapid: usersWithoutCapid,
     duplicateCapidCount: groups.length,
     duplicateAccountCount: duplicateAccountCount,
+    retiredAccounts: retiredAccounts,
     guardBlindAccounts: guardBlindAccounts,
     carrierCounts: carrierCounts,
     groups: groups,
