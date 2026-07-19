@@ -1,10 +1,18 @@
 /**
  * Duplicate Workspace Account Scanner  (READ-ONLY diagnostic)
  *
- * Version: 1.3.0
+ * Version: 1.4.0
  * Date: 2026-07-19
  *
- * Changes: 1.3.0 — added scanAccountsWithoutCapid(), which LISTS the accounts the
+ * Changes: 1.4.0 — accounts in administrative / NHQ-staff org units
+ *   (DUP_SCAN_EXEMPT_OU_SUBSTRINGS: "zz-administrative", "nhq employees") are blanket-exempt
+ *   from needing a CAPID. Those containers hold role, workstation and staff identities that
+ *   are not CAP members and are never provisioned from CAPWATCH, so they were noise in the
+ *   UNKNOWN bucket. Matched case-insensitively as a substring because the same unit is
+ *   spelled differently per tenant (/ZZ-Administrative vs /zz-Administrative). This is the
+ *   ONE signal that outranks a CAPWATCH roster match — the exemption is deliberately
+ *   blanket — but a roster match is still PRINTED on the account so the fact stays visible.
+ *   1.3.0 — added scanAccountsWithoutCapid(), which LISTS the accounts the
  *   duplicate scan can only count. An account with no readable CAPID is invisible to
  *   BOTH the provisioning map and the duplicate-create guard's `externalId=` lookup, so
  *   if it belongs to a real member, provisioning cannot match them and will create a
@@ -400,19 +408,41 @@ var DUP_SCAN_ROLE_LOCALPARTS = [
 ];
 
 /**
+ * Org units whose accounts are BLANKET-exempt from needing a CAPID: administrative
+ * and NHQ-staff containers hold role, workstation and staff identities that are not
+ * CAP members and are never provisioned from CAPWATCH.
+ *
+ * Matched case-insensitively as a substring of orgUnitPath, because the same unit is
+ * spelled differently per tenant (`/ZZ-Administrative` on seniors, `/zz-Administrative`
+ * on cadets).
+ *
+ * Unlike every other signal here, this one OUTRANKS a CAPWATCH roster match — an OU
+ * exemption is deliberately blanket. The roster match is still printed on the account
+ * when there is one, so the fact stays visible rather than being silently swallowed.
+ */
+var DUP_SCAN_EXEMPT_OU_SUBSTRINGS = ['zz-administrative', 'nhq employees'];
+
+/**
  * Classifies an account as role/service-like, with the reasons why. Pure.
  * @param {Object} user Directory User (projection:'full')
- * @returns {{isRole: boolean, reasons: string[]}}
+ * @returns {{isRole: boolean, exemptOu: boolean, reasons: string[]}}
  */
 function looksLikeRoleAccount_(user) {
   const reasons = [];
   const local = String((user && user.primaryEmail) || '').split('@')[0].toLowerCase();
+  const ou = String((user && user.orgUnitPath) || '').toLowerCase();
+
+  let exemptOu = false;
+  DUP_SCAN_EXEMPT_OU_SUBSTRINGS.forEach(function (frag) {
+    if (ou.indexOf(frag) > -1) exemptOu = true;
+  });
+  if (exemptOu) reasons.push('exempt-ou');
 
   if (DUP_SCAN_ROLE_LOCALPARTS.indexOf(local) > -1) reasons.push('role-localpart');
   if (user && user.isAdmin) reasons.push('super-admin');
   if (user && user.isDelegatedAdmin) reasons.push('delegated-admin');
 
-  return { isRole: reasons.length > 0, reasons: reasons };
+  return { isRole: reasons.length > 0, exemptOu: exemptOu, reasons: reasons };
 }
 
 /**
@@ -497,9 +527,11 @@ function scanAccountsWithoutCapid() {
         rosterCapid: rosterCapid
       };
 
-      // A roster match outranks a role hint: a real member sitting on a role-shaped
-      // localpart is still a member account provisioning cannot see.
-      if (rosterCapid) likelyMember.push(info);
+      // An OU exemption is blanket and wins outright (admin / NHQ-staff containers hold
+      // non-member identities). Otherwise a roster match outranks a role hint: a real
+      // member on a role-shaped localpart is still an account provisioning cannot see.
+      if (cls.exemptOu) role.push(info);
+      else if (rosterCapid) likelyMember.push(info);
       else if (cls.isRole) role.push(info);
       else unknown.push(info);
     });
