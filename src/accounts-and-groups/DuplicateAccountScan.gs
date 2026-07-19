@@ -321,6 +321,7 @@ function scanDuplicateAccountsByCapid() {
     '\nScanned users .................... ' + scannedUsers +
     '\n  with a readable CAPID .......... ' + usersWithCapid +
     '\n  with NO readable CAPID ......... ' + usersWithoutCapid +
+    '\n  already RETIRED (excluded) ..... ' + retiredAccounts +
     '\nCAPIDs with >1 account ........... ' + groups.length +
     '\nAccounts in those groups ......... ' + duplicateAccountCount +
     '\n  INVISIBLE to externalId query .. ' + guardBlindAccounts +
