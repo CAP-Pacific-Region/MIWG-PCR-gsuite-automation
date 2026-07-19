@@ -458,6 +458,23 @@ an internal helper. **Preview/test functions never modify Workspace** — use th
 - `addAliasesFromSheet()` / `updateMissingAliases`-style helpers — alias repair.
 - `getMembers()`, `getSquadrons()`, `getAEMembers()` — data builders (used by tests/other modules).
 
+### Duplicate accounts (`DuplicateAccountScan.gs`, `DuplicateAccountGuard.gs`)
+Provisioning used to create a **second** account for a member when their real account
+was invisible to the CAPID→email map — i.e. it was suspended, tagged under a
+different externalId type, or created out-of-band in `last.first` order (the format
+the code never generates). `addOrUpdateUser()` now does a live CAPID lookup before
+inserting and updates the existing account in place instead (see `UpdateMembers.gs`
+1.17.0). To find and retire orphans that already exist:
+- `scanDuplicateAccountsByCapid()` — **read-only.** Lists every CAPID with >1 account
+  (emails, created dates, suspended/never-signed-in, reversed vs `.N` localparts) and
+  how widespread it is. Run this first; results go to the Execution log.
+- `suspendOrphanDuplicates(dryRun)` — retires the non-authoritative, never-signed-in
+  twins by retyping their `organization` externalId to a `duplicate_retired_capid`
+  marker and suspending them (the retype is what stops `reactivateRenewedMembers()`
+  from un-suspending them again). **Defaults to a dry run**; pass `false` to apply.
+  **Never deletes**; orphans with login history are skipped for manual review.
+  Reversible — change the externalId type back to `organization` and unsuspend.
+
 ### Org units / OU paths (`SyncOrgPaths.gs`)
 - `syncOrgPaths()` — rebuild the ORGID→OU mapping and **auto-create OUs** for newly activated
   squadrons; emails a summary of added/needs-manual/deactivated units.
