@@ -10,6 +10,37 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-19] — Rescue: cross-tenant contacts 0.2.1/0.2.2 existed only on the tenants
+
+`CrossTenantContacts.gs` was **0.2.2 on the seniors and region tenants (byte-identical
+on both) but 0.2.0 in git** — two versions of live, working code that existed nowhere in
+the repo. Because `clasp push` deploys the whole `src/` tree, the next push from any
+branch would have silently reverted it and re-broken the cross-tenant sync. Captured
+here verbatim from the live projects so git and the tenants agree again. Cadets was
+already 0.2.0 and is unaffected.
+
+### Fixed (`CrossTenantContacts.gs` 0.2.0 → 0.2.2)
+
+- **0.2.2 HOTFIX.** 0.2.1 had added `employeeId` to the self-directory `fields` param,
+  but the Directory API has **no selectable top-level `employeeId` field**, so every
+  self-directory read 400'd and aborted the entire sync. Reverted to externalId-only
+  (where the Admin console's "Employee ID" actually lives). Same trap recorded in
+  `ManageLicenses.gs` 1.1.0 — worth treating as a standing gotcha.
+- **0.2.1 card-shape hash.** `xtHash_` keyed only on display fields, so the 0.2.0
+  sort-key change (moving the sort value into `givenName`) left the hash unchanged for
+  any contact whose display text didn't also change — reconcile skipped the rewrite and
+  they kept sorting by first name. New `XT_CARD_FORMAT` is folded into the hash to force
+  a one-time rewrite whenever the card *shape* changes.
+- **0.2.1 own-domain guard.** A self-published contact whose CAPWATCH email is on one of
+  this tenant's own domains (`cfg.ownDomains`) is now skipped — such a member has an
+  account, and publishing it shadowed the real directory user.
+
+> **Note on the 0.2.1 "self-publish shadow".** Its root-cause note was a misdiagnosis:
+> the reported GAL double-listing was **two real Workspace accounts for one member**, not
+> a self-published contact. That is the duplicate-account defect fixed in the entry below
+> and cleaned up on cadets (27 duplicates retired). The own-domain guard is still correct
+> as a backstop, so it is kept.
+
 ## [2026-07-19] — Monthly recovery-email compliance digest to unit command staff
 
 A member resets their Workspace password through a personal, non-CAP address — you cannot
