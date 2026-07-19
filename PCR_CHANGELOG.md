@@ -73,13 +73,24 @@ members it could not match by CAPID. The scan corrected two assumptions:
   `ManageLicenses.gs` depend on its active-only contract, so provisioning got its own
   map builder rather than a widened one.
 
-### Known gap
+### Verified against the live tenant
 
-The guard finds accounts with an `externalId=<capid>` query, so an account carrying
-its CAPID **only** in a top-level `employeeId` is invisible to it. The scanner now
-reports per-account CAPID carriers and a count of such accounts; that number must be
-**0** for the duplicate groups before any cleanup is run, otherwise the guard cannot
-keep those pairs stable and the lookup needs widening first.
+The first live scan confirmed the guard covers the whole population: **0** of the 56
+duplicate accounts are invisible to the `externalId=<capid>` lookup — the carrier
+histogram is uniformly `externalId:organization`. So the 2025-11-24 import *was*
+CAPID-tagged, and the 2026-01-23 run duplicated it only because the old map filtered
+suspended users and never saw those accounts.
+
+Reviewing that scan also caught two defects, fixed in `DuplicateAccountGuard.gs` 1.2.0:
+
+- **Login recency, not a boolean.** One pair has BOTH accounts signed into — one used
+  days ago, one months earlier. A has-ever-signed-in boolean tied them, so "newest
+  created" won and marked the **actively used** account for retirement. Ranking is now
+  on the `lastLogin` timestamp.
+- **Preview must equal action.** `suspendOrphanDuplicates` re-ranked with a canonical
+  `first.last` drawn from CAPWATCH that the scan's preview does not use, so the account
+  an admin reviewed as KEEP could differ from the one cleanup kept. Cleanup now consumes
+  the scan's own decision.
 
 ## [2026-07-18] — Cross-tenant contacts: sort by last name, and carry cadet-lite into the cadet GAL
 

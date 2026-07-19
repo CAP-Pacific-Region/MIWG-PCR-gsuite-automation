@@ -53,7 +53,7 @@ section('3. chooseAuthoritativeAccount_ — LOGIN HISTORY outranks the canonical
   // member logs into; the newer canonically-named twin has never been signed into.
   // Preferring the canonical name here would retire the account in active use.
   const realWorld = [
-    { email: 'sam.roe.2@example.org', suspended: false, created: '2025-11-24T00:00:00Z', neverSignedIn: false },
+    { email: 'sam.roe.2@example.org', suspended: false, created: '2025-11-24T00:00:00Z', lastLogin: '2026-07-15T00:00:00Z', neverSignedIn: false },
     { email: 'sam.roe@example.org', suspended: false, created: '2026-01-23T00:00:00Z', neverSignedIn: true }
   ];
   check('the signed-into account wins over the canonical-but-dead twin',
@@ -62,17 +62,34 @@ section('3. chooseAuthoritativeAccount_ — LOGIN HISTORY outranks the canonical
 
   check('hyphen-drift variant: in-use hyphenated account beats the dead canonical one',
     m.chooseAuthoritativeAccount_([
-      { email: 'lu-ann.fernandez@example.org', suspended: false, created: '2025-11-24T00:00:00Z', neverSignedIn: false },
+      { email: 'lu-ann.fernandez@example.org', suspended: false, created: '2025-11-24T00:00:00Z', lastLogin: '2026-07-08T00:00:00Z', neverSignedIn: false },
       { email: 'luann.fernandez@example.org', suspended: false, created: '2026-01-23T00:00:00Z', neverSignedIn: true }
     ], 'luann.fernandez').email,
     'lu-ann.fernandez@example.org');
 
   check('login history beats even active-vs-suspended',
     m.chooseAuthoritativeAccount_([
-      { email: 'used.but.suspended@x.org', suspended: true, created: '2025-01-01T00:00:00Z', neverSignedIn: false },
+      { email: 'used.but.suspended@x.org', suspended: true, created: '2025-01-01T00:00:00Z', lastLogin: '2026-06-01T00:00:00Z', neverSignedIn: false },
       { email: 'fresh.active@x.org', suspended: false, created: '2026-01-01T00:00:00Z', neverSignedIn: true }
     ], '').email,
     'used.but.suspended@x.org');
+
+  // BOTH accounts have login history — the case a has-ever-signed-in boolean tied,
+  // letting "newest created" pick the STALE account and mark the actively-used one
+  // for retirement. Recency must decide.
+  check('both signed in: the RECENTLY used account wins over a stale one',
+    m.chooseAuthoritativeAccount_([
+      { email: 'stale.newer@x.org', suspended: false, created: '2026-01-23T00:00:00Z', lastLogin: '2026-01-26T00:00:00Z', neverSignedIn: false },
+      { email: 'active.older@x.org', suspended: false, created: '2025-11-24T00:00:00Z', lastLogin: '2026-07-15T00:00:00Z', neverSignedIn: false }
+    ], '').email,
+    'active.older@x.org');
+
+  check('both signed in: recency beats the canonical name too',
+    m.chooseAuthoritativeAccount_([
+      { email: 'sam.roe@x.org', suspended: false, created: '2026-01-23T00:00:00Z', lastLogin: '2026-01-26T00:00:00Z', neverSignedIn: false },
+      { email: 'roe.sam@x.org', suspended: false, created: '2025-11-24T00:00:00Z', lastLogin: '2026-07-15T00:00:00Z', neverSignedIn: false }
+    ], 'sam.roe').email,
+    'roe.sam@x.org');
 
   // With login history equal, the older tie-breakers still apply.
   check('both never signed in: canonical first.last wins',
