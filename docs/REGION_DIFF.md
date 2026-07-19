@@ -210,7 +210,7 @@ license lifecycle, retention email. **Not** squadron groups, **not** org-path sy
    single shared module with the three corrections from the §3 note (flag-gate new features,
    keep `customer:"my_customer"`, keep `INDEFINITE` fallback).
 
-**Deploy-side (executed 2026-07-09 as `automation@pcr.cap.gov` — the internal owner; an external-org account gets a 403 on push, see §0/ADMIN_GUIDE):**
+**Deploy-side (executed 2026-07-09 as `automation@pcr.cap.gov` — the internal owner. Since then, `it@cawgcap.org` has been granted **editor** on the region project specifically so region can be pushed from the seniors-side ops account; either account works. Only an account with no grant on the project gets the misleading 403 on push — see §0/ADMIN_GUIDE):**
 
 4. **Back up** the live "PCR Automation" project (versioned clasp pull, archived).
 5. **Set Script Properties** on "PCR Automation" from `config-tenants/region.json`
