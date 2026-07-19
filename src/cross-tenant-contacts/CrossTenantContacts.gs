@@ -32,7 +32,16 @@
  * Requires (beyond the shared manifest): the legacy Domain Shared Contacts
  * scope  https://www.google.com/m8/feeds  (added to appsscript.json).
  *
- * Version: 0.2.1 (draft)
+ * Version: 0.2.2 (draft)
+ * 0.2.2: HOTFIX. 0.2.1 added `employeeId` to the self-directory `fields` param,
+ *   but the Directory API has no selectable top-level employeeId field -> every
+ *   self-directory read 400'd and aborted the whole sync on the cadets tenant.
+ *   Reverted to externalId-only (where the Admin console "Employee ID" actually
+ *   lives). The own-domain guard stays as the backstop. NOTE: the 0.2.1
+ *   "self-publish shadow" it was chasing was a misdiagnosis — the reported
+ *   double-listing was two real Workspace accounts for one member, not a
+ *   self-published contact (see the separate UpdateMembers duplicate-account
+ *   investigation).
  * 0.2.1: follow-ups to 0.2.0 after first live run.
  *   - HASH: xtHash_ keyed only on display fields, so the 0.2.0 card-SHAPE change
  *     (sort value into givenName) left the hash unchanged for any contact whose
@@ -524,11 +533,11 @@ function xtPeerWorkspaceEmailByCapid_(cfg) {
  * exists in the directory, so we must not re-publish them as a contact. Only a
  * member with no account at all should become a self-published shared contact.
  *
- * The CAPID is indexed from BOTH the organization externalId AND employeeId —
- * provisioning writes it to both (UpdateMembers.gs), but accounts created by an
- * older path may carry it in only one. Keying on externalId alone let such
- * account-holders slip the skip and get self-published, shadowing their own
- * account with a duplicate contact.
+ * The CAPID is read from the organization externalId — where provisioning writes
+ * it (UpdateMembers.gs) and where the Admin console's "Employee ID" actually
+ * lives. (The Directory API User resource has no selectable top-level employeeId
+ * field; requesting it in `fields` 400s.) The own-domain guard in
+ * xtBuildDesiredContacts_ is the backstop for any account missing this externalId.
  */
 function xtSelfWorkspaceEmailByCapid_() {
   const token = ScriptApp.getOAuthToken();
@@ -538,7 +547,7 @@ function xtSelfWorkspaceEmailByCapid_() {
   do {
     const url = 'https://admin.googleapis.com/admin/directory/v1/users' +
       '?customer=my_customer&maxResults=500&projection=full' +
-      '&fields=nextPageToken,users(primaryEmail,externalIds,employeeId)' +
+      '&fields=nextPageToken,users(primaryEmail,externalIds)' +
       (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
 
     const resp = UrlFetchApp.fetch(url, {
@@ -556,10 +565,8 @@ function xtSelfWorkspaceEmailByCapid_() {
       const email = String(u.primaryEmail || '').trim().toLowerCase();
       if (!email) return;
       const org = (u.externalIds || []).find(id => id && id.type === 'organization');
-      [org && org.value, u.employeeId].forEach(v => {
-        const capid = String(v == null ? '' : v).trim();
-        if (capid) map[capid] = email;                 // any CAPID -> this account exists
-      });
+      const capid = String((org && org.value) || '').trim();
+      if (capid) map[capid] = email;                   // CAPID -> this account exists
     });
 
     pageToken = body.nextPageToken || '';

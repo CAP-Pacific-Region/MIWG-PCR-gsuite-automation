@@ -53,14 +53,22 @@ into the other.
   reconcile saw "unchanged" and skipped the rewrite, so those kept `givenName=First` and still
   sorted by first name. Verified live on seniors: 1,830 rewritten, 822 left old-format. Added
   `XT_CARD_FORMAT` to the hash so a shape change forces a one-time rewrite of the whole set.
-- **Self-publish shadowed real accounts.** The self no-account publish created a duplicate contact
-  over an account-holder's own account (observed: a C/2dLt cadet commander appearing twice in the
-  cadet directory). Two causes: the account-existence skip keyed only on the org `externalId`, so
-  an account carrying its CAPID only in `employeeId` slipped through; and a tenant-domain CAPWATCH
-  email was published as if personal. Now the self account map indexes CAPID from `externalId`
-  **and** `employeeId`, and a domain guard drops any self-contact whose email is on one of this
-  tenant's own domains (`cfg.ownDomains`). Existing shadow contacts self-heal — no longer desired,
-  so the reconcile deletes them on the next run.
+- **Self-publish domain guard (defensive).** Added a guard that drops any self-published contact
+  whose resolved email is on one of this tenant's own domains (`cfg.ownDomains` = `DOMAIN` /
+  `EMAIL_DOMAIN` / `SECONDARY_EMAIL_DOMAIN`): a member "reachable" at a tenant address has an
+  account (or an alias of one), so publishing it would shadow the real directory user. The
+  account-existence skip continues to key on the organization `externalId` (where provisioning and
+  the Admin console "Employee ID" both store the CAPID).
+
+### Hotfix (`CrossTenantContacts.gs` 0.2.2)
+
+- 0.2.1 also tried to index the self account map on a top-level `employeeId` field. The Directory
+  API has **no selectable `employeeId`**, so requesting it in the `fields` param returned `400
+  Invalid field selection` and **aborted the whole sync on the cadets tenant**. Reverted to
+  `externalId`-only. The reported "duplicate" that prompted the account-detection change was a
+  **misdiagnosis** — the member had two real Workspace accounts (a provisioning issue tracked
+  separately in `UpdateMembers.gs`), not a self-published shadow. The domain guard is retained as a
+  correct, harmless invariant (self-published contacts are personal-email only).
 
 ---
 

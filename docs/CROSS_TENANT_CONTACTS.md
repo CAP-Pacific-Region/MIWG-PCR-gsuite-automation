@@ -87,9 +87,9 @@ Two mechanics make this work:
 - **Account check.** `xtSelfWorkspaceEmailByCapid_()` reads *this* tenant's own directory (the
   script's own `admin.directory.user.readonly` token) so members who already have an account are
   skipped — they are native directory users and must not be duplicated as a shared contact. A
-  suspended account still counts as existing. The CAPID is matched from **both** the organization
-  `externalId` and `employeeId` (provisioning writes both, but an older account may carry only
-  one — keying on `externalId` alone let such account-holders slip through and get self-published).
+  suspended account still counts as existing. The CAPID is read from the organization `externalId`
+  (where provisioning and the Admin console's "Employee ID" both store it; the Directory API has no
+  selectable top-level `employeeId` field).
 - **Own-domain guard.** As a backstop, any self-contact whose resolved email is on one of this
   tenant's own domains (`cfg.ownDomains` = `DOMAIN` / `EMAIL_DOMAIN` / `SECONDARY_EMAIL_DOMAIN`) is
   dropped: a member "reachable" at a tenant address has an account (or an alias of one), so
