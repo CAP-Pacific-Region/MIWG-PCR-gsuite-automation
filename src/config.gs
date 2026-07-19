@@ -4,9 +4,15 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.8.0
- * Date: 2026-07-18
- * Changes: Added PROFILE_.CROSS_TENANT.SELF_NO_ACCOUNT_TYPES (consumed by
+ * Version: 1.9.0
+ * Date: 2026-07-19
+ * Changes: Added PROFILE_.RUN_RECOVERY_EMAIL_NOTIFICATIONS (on for seniors and
+ *   cadets, off for region) and CONFIG.COMMAND_EMAIL_DOMAIN (optional Script
+ *   Property TENANT_COMMAND_EMAIL_DOMAIN, blank defaults to EMAIL_DOMAIN), both
+ *   consumed by notifications/RecoveryEmailNotify.gs. The command domain exists
+ *   because unit command staff are SENIOR members, so on the cadets tenant their
+ *   account lives on the senior domain rather than the tenant's own.
+ *   1.8.0: Added PROFILE_.CROSS_TENANT.SELF_NO_ACCOUNT_TYPES (consumed by
  *   cross-tenant-contacts/CrossTenantContacts.gs) — this tenant's own member
  *   types that get no Workspace account and so are absent from its native
  *   directory, to be self-published into its GAL as shared contacts. ['CADET']
@@ -93,6 +99,13 @@ function getTenantConfig_() {
     DOMAIN: get('TENANT_DOMAIN'),
     EMAIL_DOMAIN: get('TENANT_EMAIL_DOMAIN'),
     SECONDARY_EMAIL_DOMAIN: get('TENANT_SECONDARY_EMAIL_DOMAIN'),
+    // Domain that unit COMMAND STAFF (commanders, personnel officers, deputies)
+    // hold their accounts on. Blank falls back to EMAIL_DOMAIN below, which is
+    // right for the seniors tenant. Command staff are senior members, so the
+    // CADETS tenant must set this to the senior domain (@cawgcap.org) — deriving
+    // a commander's address on @cawgcadets.org would address an account that
+    // does not exist. Consumed by notifications/RecoveryEmailNotify.gs.
+    COMMAND_EMAIL_DOMAIN: get('TENANT_COMMAND_EMAIL_DOMAIN'),
     CAPWATCH_ORGID: get('TENANT_CAPWATCH_ORGID'),
     WING: get('TENANT_WING'),
     // Display forms of the wing, both optional. When blank they are derived from
@@ -168,6 +181,10 @@ const TENANT_PROFILES_ = {
     // LSCode) is granted or lapses. On here: this is the tenant that carries the
     // fingerprinted members.
     RUN_LSCODE_NOTIFICATIONS: true,
+    // Monthly digest to unit command staff listing members whose CAPWATCH email
+    // record would block a password reset (no CAP address in PRIMARY, and/or no
+    // personal address anywhere). On here: every senior member holds an account.
+    RUN_RECOVERY_EMAIL_NOTIFICATIONS: true,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: true,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: true,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -227,6 +244,13 @@ const TENANT_PROFILES_ = {
     // tracks the senior-side record rather than "has a check on file" for
     // everyone. Do not read the column as a universal background-check flag.
     RUN_LSCODE_NOTIFICATIONS: false,
+    // On, unlike LSCode: cadets DO hold accounts and DO need a working recovery
+    // address. Cadet-lite members are excluded automatically (they get no
+    // account), and a cadet whose own secondary is empty but who has a parent
+    // email on file is not flagged — that parent address is the recovery path.
+    // REQUIRES TENANT_COMMAND_EMAIL_DOMAIN to be set to the senior domain here:
+    // a cadet unit's commander and personnel officer are seniors.
+    RUN_RECOVERY_EMAIL_NOTIFICATIONS: true,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -289,6 +313,10 @@ const TENANT_PROFILES_ = {
     // "squadron commander" is the region commander, sitting alongside the ~50
     // members a digest would describe. Flip to true if PCR/CC wants it.
     RUN_LSCODE_NOTIFICATIONS: false,
+    // Off for the same reason as LSCode: a single-unit region HQ, where the only
+    // "unit commander" is the region commander sitting alongside the ~50 members
+    // the digest would describe. A spreadsheet serves that better than mail.
+    RUN_RECOVERY_EMAIL_NOTIFICATIONS: false,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [], // no subordinate squadrons
@@ -380,6 +408,7 @@ function setupTenantConfig() {
     TENANT_DOMAIN: '',                     // e.g. cawgcap.org  (cadets: cawgcadets.org)
     TENANT_EMAIL_DOMAIN: '',               // e.g. @cawgcap.org
     TENANT_SECONDARY_EMAIL_DOMAIN: '',     // e.g. @cawg.cap.gov (bare 'cawg.cap.gov' also accepted); '' unless the tenant has a verified secondary domain
+    TENANT_COMMAND_EMAIL_DOMAIN: '',       // domain unit command staff hold accounts on; '' = EMAIL_DOMAIN. CADETS tenant: set to the senior domain (e.g. @cawgcap.org)
     TENANT_CAPWATCH_ORGID: '',             // e.g. 188
     TENANT_WING: '',                       // e.g. CA  (HI for Hawaii Wing)
     TENANT_WING_ABBREVIATION: '',          // e.g. CAWG/HIWG; '' derives <WING>+WG
@@ -486,6 +515,18 @@ EMAIL_DOMAIN: TENANT.EMAIL_DOMAIN,
  * accounts-and-groups/SecondaryDomainAliases.gs). '' disables that module.
  */
 SECONDARY_EMAIL_DOMAIN: TENANT.SECONDARY_EMAIL_DOMAIN,
+
+/**
+ * Domain that unit command staff (commanders, personnel officers, deputy
+ * commanders) hold their Workspace accounts on, used to address them as
+ * first.last@<domain>. Defaults to this tenant's own EMAIL_DOMAIN.
+ *
+ * It is separately configurable because command staff are SENIOR members: on the
+ * cadets tenant they have no cadet-domain account, so TENANT_COMMAND_EMAIL_DOMAIN
+ * must point at the senior domain there. Consumed by
+ * notifications/RecoveryEmailNotify.gs.
+ */
+COMMAND_EMAIL_DOMAIN: TENANT.COMMAND_EMAIL_DOMAIN || TENANT.EMAIL_DOMAIN,
 
 /** Google Workspace domain used for API calls. */
 DOMAIN: TENANT.DOMAIN,

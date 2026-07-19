@@ -56,6 +56,11 @@ mode, the squadron-group set, region flags, and cross-tenant behavior:
 2. Note the wing's **CAPWATCH ORGID** and two-letter **wing code** (`HI`).
 3. (Optional) a **verified secondary domain** if the tenant will hand out parallel
    addresses (`TENANT_SECONDARY_EMAIL_DOMAIN`; seniors-style only).
+4. On a **cadet** tenant, note the **senior** tenant's email domain — it goes in
+   `TENANT_COMMAND_EMAIL_DOMAIN` (Phase 6). Unit commanders, personnel officers and
+   deputy commanders are senior members, so `notifications/RecoveryEmailNotify.gs`
+   addresses them on the senior domain; left blank it would derive addresses on the
+   cadet domain, where those people have no account.
 
 ## Phase 3 — Standard GCP project + APIs + OAuth (per tenant)
 
@@ -121,6 +126,11 @@ services + OAuth scopes and deploys with the push; you re-consent once per proje
 3. Add **secrets** by hand in Project Settings → Script Properties: `SA_IMPERSONATION_EMAIL`,
    `SA_PRIVATE_KEY` (from Phase 4), and `XT_PEER_SA_KEY` if using cross-tenant.
 4. Run **`validateTenantConfig()`** — it lists any missing required key.
+5. On a **cadet** tenant, set `TENANT_COMMAND_EMAIL_DOMAIN` to the senior domain
+   (e.g. `@cawgcap.org`). It is optional and *not* flagged by `validateTenantConfig()` —
+   blank silently falls back to this tenant's own `TENANT_EMAIL_DOMAIN`, which sends the
+   monthly recovery-email digests to cadet-domain addresses that do not exist. See
+   [`config-tenants/cadets.json`](../config-tenants/cadets.json).
 
 Full key inventory: [Admin Guide §7](ADMIN_GUIDE.md#7-secrets-and-script-properties-the-part-that-breaks-silently)
 and [config-tenants/README.md](../config-tenants/README.md).

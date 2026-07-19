@@ -6,6 +6,8 @@
   "XT_PEER_DOMAIN": "cawgcap.org",
   "TENANT_DOMAIN": "cawgcadets.org",
   "TENANT_EMAIL_DOMAIN": "@cawgcadets.org",
+  "_command_domain_note": "Unit command staff (commanders, personnel officers, deputy commanders) are SENIOR members and hold no cawgcadets.org account, so notifications/RecoveryEmailNotify.gs must address them on the senior domain. Required on this tenant; blank would derive first.last@cawgcadets.org and mail nobody.",
+  "TENANT_COMMAND_EMAIL_DOMAIN": "@cawgcap.org",
   "TENANT_CAPWATCH_ORGID": "188",
   "TENANT_WING": "CA",
   "TENANT_REGION": "",
