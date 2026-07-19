@@ -1,10 +1,19 @@
 /**
  * Duplicate Workspace Account Scanner  (READ-ONLY diagnostic)
  *
- * Version: 1.2.0
+ * Version: 1.3.0
  * Date: 2026-07-19
  *
- * Changes: 1.2.0 — accounts already retired by suspendOrphanDuplicates (whose only
+ * Changes: 1.3.0 — added scanAccountsWithoutCapid(), which LISTS the accounts the
+ *   duplicate scan can only count. An account with no readable CAPID is invisible to
+ *   BOTH the provisioning map and the duplicate-create guard's `externalId=` lookup, so
+ *   if it belongs to a real member, provisioning cannot match them and will create a
+ *   SECOND account — the remaining hole in the guard. Each is cross-referenced against
+ *   the CAPWATCH roster by derived first.last localpart, so a member account that merely
+ *   LOST its CAPID tag is called out for re-tagging. Role/service accounts (IT,
+ *   automation, admin, …) are classified but STILL LISTED — never silently hidden, since
+ *   a silent exemption is how a real member's untagged account would go unnoticed.
+ *   1.2.0 — accounts already retired by suspendOrphanDuplicates (whose only
  *   carrier for a CAPID is the duplicate_retired_capid marker) are EXCLUDED from the
  *   duplicate grouping and counted separately. Without this a completed cleanup would
  *   still report the same group count and look like it had done nothing, and a re-run
@@ -372,5 +381,187 @@ function scanDuplicateAccountsByCapid() {
     durationMs: result.durationMs
   });
 
+  return result;
+}
+
+/* ===========================================================================
+ * ACCOUNTS WITH NO READABLE CAPID
+ * ======================================================================== */
+
+/**
+ * Localparts that normally belong to role / service accounts rather than members.
+ * Matching one only CLASSIFIES an account — it is still listed in the report. A
+ * silent exemption is precisely how a real member's untagged account would slip by.
+ */
+var DUP_SCAN_ROLE_LOCALPARTS = [
+  'it', 'automation', 'admin', 'administrator', 'postmaster', 'abuse', 'noreply',
+  'no-reply', 'donotreply', 'support', 'help', 'helpdesk', 'info', 'webmaster',
+  'security', 'billing', 'notifications', 'calendar', 'test'
+];
+
+/**
+ * Classifies an account as role/service-like, with the reasons why. Pure.
+ * @param {Object} user Directory User (projection:'full')
+ * @returns {{isRole: boolean, reasons: string[]}}
+ */
+function looksLikeRoleAccount_(user) {
+  const reasons = [];
+  const local = String((user && user.primaryEmail) || '').split('@')[0].toLowerCase();
+
+  if (DUP_SCAN_ROLE_LOCALPARTS.indexOf(local) > -1) reasons.push('role-localpart');
+  if (user && user.isAdmin) reasons.push('super-admin');
+  if (user && user.isDelegatedAdmin) reasons.push('delegated-admin');
+
+  return { isRole: reasons.length > 0, reasons: reasons };
+}
+
+/**
+ * The localpart provisioning would derive for a member — mirrors `baseEmail` in
+ * addOrUpdateUser (lowercase, whitespace stripped, hyphens KEPT). Used to spot an
+ * account that IS a member's, just missing its CAPID tag. Pure.
+ * @returns {string} e.g. "jane.doe"
+ */
+function derivedLocalpartForMember_(member) {
+  return (String((member && member.firstName) || '') + '.' +
+          String((member && member.lastName) || ''))
+    .toLowerCase().replace(/\s+/g, '');
+}
+
+/**
+ * READ-ONLY. Lists every account carrying no readable CAPID, classified so the
+ * genuinely concerning ones surface.
+ *
+ * WHY IT MATTERS: the provisioning map and the duplicate-create guard both locate a
+ * member's existing account BY CAPID. An account with none is invisible to both — so
+ * if it belongs to a real member, provisioning will not match them and will create a
+ * SECOND account. These are the remaining hole in the duplicate guard.
+ *
+ * Buckets:
+ *   LIKELY MEMBER — localpart matches a CAPWATCH member's derived first.last. Almost
+ *                   certainly a member account that lost (or never got) its CAPID tag.
+ *   UNKNOWN       — neither role-like nor roster-matched. Needs a human.
+ *   ROLE/SERVICE  — IT, automation, admin, etc. Listed, not hidden.
+ *
+ * @returns {Object} summary + the three buckets
+ */
+function scanAccountsWithoutCapid() {
+  const start = new Date();
+  Logger.info('No-CAPID account scan starting (read-only)');
+
+  // CAPWATCH roster keyed by the localpart provisioning would derive. Best effort:
+  // without it the cross-reference is skipped, not fatal.
+  const memberByLocalpart = {};
+  let rosterSize = 0;
+  try {
+    const members = getMembers();
+    Object.keys(members).forEach(function (capid) {
+      const lp = derivedLocalpartForMember_(members[capid]);
+      if (lp && lp !== '.') { memberByLocalpart[lp] = capid; rosterSize++; }
+    });
+  } catch (e) {
+    Logger.warn('CAPWATCH roster unavailable — skipping the roster cross-reference', {
+      errorMessage: e.message
+    });
+  }
+
+  const likelyMember = [], unknown = [], role = [];
+  let scannedUsers = 0;
+  let pageToken = null;
+
+  do {
+    const page = AdminDirectory.Users.list({
+      customer: 'my_customer',
+      maxResults: 500,
+      projection: 'full',
+      pageToken: pageToken
+    });
+
+    (page.users || []).forEach(function (u) {
+      scannedUsers++;
+      if (extractCapidsFromUser_(u).length > 0) return;   // has a CAPID; not our problem
+
+      const local = String(u.primaryEmail || '').split('@')[0].toLowerCase();
+      const cls = looksLikeRoleAccount_(u);
+      const rosterCapid = memberByLocalpart[local] || null;
+
+      const info = {
+        email: u.primaryEmail,
+        fullName: (u.name && u.name.fullName) || '',
+        created: u.creationTime || null,
+        lastLogin: u.lastLoginTime || null,
+        neverSignedIn: neverLoggedIn_(u.lastLoginTime),
+        suspended: !!u.suspended,
+        orgUnitPath: u.orgUnitPath || '',
+        aliases: (u.aliases || []).length,
+        classification: cls.reasons,
+        rosterCapid: rosterCapid
+      };
+
+      // A roster match outranks a role hint: a real member sitting on a role-shaped
+      // localpart is still a member account provisioning cannot see.
+      if (rosterCapid) likelyMember.push(info);
+      else if (cls.isRole) role.push(info);
+      else unknown.push(info);
+    });
+
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  const total = likelyMember.length + unknown.length + role.length;
+
+  // Summary as its own entry — Apps Script truncates one oversized message.
+  Logger.info('===== ACCOUNTS WITH NO READABLE CAPID =====' +
+    '\nScanned users .................... ' + scannedUsers +
+    '\nNo readable CAPID ............... ' + total +
+    '\n  LIKELY MEMBER (needs re-tag) .. ' + likelyMember.length +
+    '   <-- provisioning cannot see these' +
+    '\n  UNKNOWN (needs review) ........ ' + unknown.length +
+    '\n  role / service ................ ' + role.length +
+    '\nCAPWATCH roster entries ......... ' + rosterSize +
+    (rosterSize ? '' : '   (roster unavailable — matches skipped)'));
+
+  function render_(title, list, note) {
+    if (!list.length) return;
+    const lines = ['===== ' + title + ' (' + list.length + ') ====='];
+    if (note) lines.push(note, '');
+    list.sort(function (a, b) { return String(a.email).localeCompare(String(b.email)); });
+    list.forEach(function (a) {
+      lines.push('    ' + a.email + (a.fullName ? '   "' + a.fullName + '"' : '') +
+        '\n        created=' + (a.created || '?') +
+        '  ' + (a.suspended ? 'SUSPENDED' : 'active') +
+        '  ' + (a.neverSignedIn ? 'never-signed-in' : 'last-login=' + a.lastLogin) +
+        '  ou=' + a.orgUnitPath +
+        (a.aliases ? '  aliases=' + a.aliases : '') +
+        (a.rosterCapid ? '\n        ROSTER MATCH -> CAPID ' + a.rosterCapid : '') +
+        (a.classification.length ? '\n        classified: ' + a.classification.join(',') : ''));
+    });
+    Logger.info(lines.join('\n'));
+  }
+
+  render_('LIKELY MEMBER ACCOUNTS MISSING A CAPID', likelyMember,
+    'These localparts match a CAPWATCH member. Provisioning cannot match them by CAPID,\n' +
+    'so it will create a SECOND account for them. Fix: set the organization externalId to\n' +
+    'the CAPID shown (Admin console "Employee ID"), then re-run the duplicate scan.');
+  render_('UNKNOWN — NO CAPID, NOT ROLE-LIKE, NOT ON THE ROSTER', unknown,
+    'Could be departed members, shared mailboxes, or test accounts. Needs a human.');
+  render_('ROLE / SERVICE ACCOUNTS (expected to have no CAPID)', role,
+    'Listed for completeness — classified, not hidden.');
+
+  const result = {
+    scannedUsers: scannedUsers,
+    totalWithoutCapid: total,
+    likelyMember: likelyMember,
+    unknown: unknown,
+    role: role,
+    rosterSize: rosterSize,
+    durationMs: new Date() - start
+  };
+  Logger.info('No-CAPID account scan complete', {
+    totalWithoutCapid: total,
+    likelyMember: likelyMember.length,
+    unknown: unknown.length,
+    role: role.length,
+    durationMs: result.durationMs
+  });
   return result;
 }

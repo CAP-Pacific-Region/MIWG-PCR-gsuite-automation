@@ -491,6 +491,13 @@ inserting and updates the existing account in place instead (see `UpdateMembers.
   > `first.last` twin has never been signed into. Before running cleanup, confirm the
   > "invisible to externalId query" count is **0** — if it isn't, those pairs can't be
   > kept stable yet.
+- `scanAccountsWithoutCapid()` — **read-only.** Lists every account with no readable
+  CAPID, split into **LIKELY MEMBER** (localpart matches a CAPWATCH member — provisioning
+  cannot see them, so it will create a *second* account for them; fix by setting the
+  organization externalId / Admin console "Employee ID" to the CAPID shown), **UNKNOWN**
+  (needs a human), and **role/service** (IT, automation, admin — classified but still
+  listed, never silently hidden). These accounts are the remaining hole in the duplicate
+  guard, which matches members by CAPID.
 - `suspendOrphanDuplicates(dryRun)` — retires the non-authoritative, never-signed-in
   twins by retyping their `organization` externalId to a `duplicate_retired_capid`
   marker and suspending them (the retype is what stops `reactivateRenewedMembers()`

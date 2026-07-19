@@ -15,7 +15,7 @@ const { section, check, done } = makeChecker();
 
 const m = loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: {} }, [
   'extractCapidsFromUser_', 'localpartTokens_', 'classifyLocalpartPair_', 'neverLoggedIn_',
-  'capidCarriersForUser_'
+  'capidCarriersForUser_', 'looksLikeRoleAccount_', 'derivedLocalpartForMember_'
 ]);
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,40 @@ section('5. capidCarriersForUser_ — which field holds the CAPID decides guard 
   check('a different CAPID on the account is not reported',
     m.capidCarriersForUser_({ externalIds: [{ type: 'organization', value: '999999' }] }, '123456'),
     []);
+}
+
+// ---------------------------------------------------------------------------
+section('6. looksLikeRoleAccount_ — classifies, and always reports WHY');
+{
+  check('a role localpart', m.looksLikeRoleAccount_({ primaryEmail: 'it@example.org' }),
+    { isRole: true, reasons: ['role-localpart'] });
+  check('automation', m.looksLikeRoleAccount_({ primaryEmail: 'automation@example.org' }),
+    { isRole: true, reasons: ['role-localpart'] });
+  check('super admin flagged even on a person-shaped localpart',
+    m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org', isAdmin: true }),
+    { isRole: true, reasons: ['super-admin'] });
+  check('both reasons reported',
+    m.looksLikeRoleAccount_({ primaryEmail: 'admin@example.org', isDelegatedAdmin: true }),
+    { isRole: true, reasons: ['role-localpart', 'delegated-admin'] });
+  check('an ordinary member account is not role-like',
+    m.looksLikeRoleAccount_({ primaryEmail: 'sam.roe@example.org' }),
+    { isRole: false, reasons: [] });
+  // "it" must match only as a whole localpart, never as a substring of a name.
+  check('a name merely containing a role word is NOT role-like',
+    m.looksLikeRoleAccount_({ primaryEmail: 'italo.smith@example.org' }),
+    { isRole: false, reasons: [] });
+}
+
+// ---------------------------------------------------------------------------
+section('7. derivedLocalpartForMember_ — mirrors baseEmail (hyphens KEPT)');
+{
+  check('plain', m.derivedLocalpartForMember_({ firstName: 'Sam', lastName: 'Roe' }), 'sam.roe');
+  check('lowercased', m.derivedLocalpartForMember_({ firstName: 'SAM', lastName: 'ROE' }), 'sam.roe');
+  check('internal whitespace stripped',
+    m.derivedLocalpartForMember_({ firstName: 'Mary Jane', lastName: 'Van Doren' }), 'maryjane.vandoren');
+  check('hyphens are KEPT (baseEmail strips only whitespace)',
+    m.derivedLocalpartForMember_({ firstName: 'Lu-Ann', lastName: 'Roe-Smith' }), 'lu-ann.roe-smith');
+  check('missing fields do not throw', m.derivedLocalpartForMember_({}), '.');
 }
 
 done();
