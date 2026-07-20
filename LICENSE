@@ -1,7 +1,8 @@
 MIT License
 
 Copyright (c) 2025 Michigan Wing Civil Air Patrol
-Copyright (c) 2025-2026 Pacific Region Civil Air Patrol (modifications)
+Copyright (c) 2025-2026 Pacific Region Civil Air Patrol and contributors
+                        (modifications)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,11 +25,10 @@ SOFTWARE.
 ---
 
 ATTRIBUTION:
-This project was originally developed by Michigan Wing Civil Air Patrol, which
-retains copyright over its original work. Pacific Region Civil Air Patrol has
-made substantial modifications and additions to the code and holds copyright
-over those portions. All contributions from both organizations are released
-under the MIT License above.
+This project was originally developed by Michigan Wing Civil Air Patrol.
+Subsequent modifications and additions were contributed by Pacific Region
+Civil Air Patrol volunteers, who retain copyright in their respective
+contributions and release them under the MIT License above.
 
 ---
 
