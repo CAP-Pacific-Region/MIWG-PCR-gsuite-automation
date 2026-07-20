@@ -499,6 +499,16 @@ inserting and updates the existing account in place instead (see `UpdateMembers.
   > `first.last` twin has never been signed into. Before running cleanup, confirm the
   > "invisible to externalId query" count is **0** — if it isn't, those pairs can't be
   > kept stable yet.
+- `findSecondaryDomainAliasBlockers()` — **read-only** (`SecondaryDomainAliases.gs`).
+  The secondary domain is meant to carry **aliases** on primary-domain accounts. A separate
+  **account** sitting on `first.last@<secondary>` occupies that exact address, so the alias
+  insert 409s — and the row then **latches** (reported once, silent thereafter by design),
+  leaving that member with no secondary alias indefinitely. This pairs each secondary-domain
+  account with the primary account it is denying. Typically original-population artifacts:
+  never signed in, often suspended, no CAPID.
+  > **After clearing a blocker, the alias will still not be added on its own.**
+  > `shouldSkipLatched_` only un-latches when the row's alias address *changes*, so nudge
+  > column B on that row to force a retry.
 - `scanAccountsWithoutCapid()` — **read-only.** Lists every account with no readable
   CAPID, split into **LIKELY MEMBER** (localpart matches a CAPWATCH member — provisioning
   cannot see them, so it will create a *second* account for them; fix by setting the
