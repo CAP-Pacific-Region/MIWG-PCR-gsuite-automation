@@ -6,9 +6,18 @@
  * curated opt-in list, not the whole roster — only listed accounts are touched.
  * Safe to run unattended on a daily trigger.
  * Author: Maj Isaac Wilson IV, California Wing
- * Version: 1.2.1
- * Date: 2026-07-14
- * Changes: Accept TENANT_SECONDARY_EMAIL_DOMAIN with or without a leading '@'. It
+ * Version: 1.3.0
+ * Date: 2026-07-19
+ * Changes: 1.3.0 — added findSecondaryDomainAliasBlockers(), a READ-ONLY diagnostic
+ *   for the silent failure this module's latching creates. The secondary domain is meant
+ *   to carry ALIASES on primary-domain accounts, but a separate ACCOUNT sitting on
+ *   first.last@<secondary> occupies that exact address, so Users.Aliases.insert 409s and
+ *   the row latches — reported once, silent thereafter (by design, so the log stays
+ *   readable). The affected member then has no secondary alias indefinitely, with one
+ *   stale CONFLICT row as the only trace. The diagnostic pairs each secondary-domain
+ *   account with the primary-domain account it is denying, so the blockers can be cleared
+ *   deliberately. Found on seniors: four such accounts, all original-population artifacts.
+ *   1.2.1 — Accept TENANT_SECONDARY_EMAIL_DOMAIN with or without a leading '@'. It
  *   was set bare on the seniors tenant, and the derive step concatenates, so every
  *   address came out as 'jane.doecawg.cap.gov' — no '@' at all. Caught by the first
  *   live preview.
@@ -323,4 +332,136 @@ function isDomainVerified_(secondaryDomain) {
 function secondaryAliasCell_(row, index) {
   const v = row[index];
   return (v === undefined || v === null) ? '' : v;
+}
+
+/**
+ * READ-ONLY DIAGNOSTIC — finds secondary-domain addresses that exist as their own
+ * ACCOUNT instead of being available as an alias.
+ *
+ * WHY THIS EXISTS: the secondary domain is meant to carry ALIASES on members'
+ * primary-domain accounts. A separate account sitting on `first.last@<secondary>`
+ * occupies that exact address, so Users.Aliases.insert 409s. processSecondaryDomainAliases_
+ * then LATCHES the conflict (reports once, silent thereafter, by design so the log
+ * stays readable) — which means the affected members have quietly had no
+ * secondary-domain alias since whenever that account appeared, with one stale
+ * CONFLICT row as the only evidence.
+ *
+ * These blockers are typically original-population artifacts: never signed into,
+ * often suspended, and carrying no CAPID (so scanAccountsWithoutCapid lists them too).
+ *
+ * Writes NOTHING. Uses admin.directory.user.readonly, already in appsscript.json.
+ *
+ * @returns {Object} { secondaryDomain, blockers: [...], strays: [...], scannedUsers }
+ */
+function findSecondaryDomainAliasBlockers() {
+  const start = new Date();
+  const domain = normalizeSecondaryDomain_(CONFIG.SECONDARY_EMAIL_DOMAIN || '');
+  if (!domain) {
+    Logger.info('No secondary domain configured for this tenant; nothing to check.', {
+      hint: 'Set TENANT_SECONDARY_EMAIL_DOMAIN in Script Properties, e.g. @cawg.cap.gov'
+    });
+    return { secondaryDomain: '', blockers: [], strays: [], scannedUsers: 0 };
+  }
+  Logger.info('Secondary-domain alias blocker scan starting (read-only)', { domain: domain });
+
+  // Every account in the tenant, indexed by primaryEmail, plus the set of addresses
+  // already held as aliases (an alias also occupies an address).
+  const byEmail = {};
+  const aliasOwner = {};
+  let scannedUsers = 0;
+  let pageToken = null;
+
+  do {
+    const page = AdminDirectory.Users.list({
+      customer: 'my_customer',
+      maxResults: 500,
+      projection: 'full',
+      pageToken: pageToken
+    });
+    (page.users || []).forEach(function (u) {
+      scannedUsers++;
+      const email = String(u.primaryEmail || '').toLowerCase();
+      byEmail[email] = u;
+      (u.aliases || []).forEach(function (a) {
+        aliasOwner[String(a).toLowerCase()] = email;
+      });
+    });
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  const suffix = domain.toLowerCase();          // '@cawg.cap.gov'
+  const blockers = [];                          // stray blocks a real primary account
+  const strays = [];                            // on the secondary domain, no primary counterpart
+
+  Object.keys(byEmail).forEach(function (email) {
+    if (email.slice(-suffix.length) !== suffix) return;   // not on the secondary domain
+    const u = byEmail[email];
+    const local = email.slice(0, email.length - suffix.length);
+
+    // Which primary-domain account WOULD want this address as its alias?
+    const primaryEmail = local + String(CONFIG.EMAIL_DOMAIN || '').toLowerCase();
+    const primary = byEmail[primaryEmail];
+
+    const info = {
+      strayAccount: u.primaryEmail,
+      created: u.creationTime || null,
+      suspended: !!u.suspended,
+      neverSignedIn: !u.lastLoginTime || new Date(u.lastLoginTime).getTime() <= 0,
+      lastLogin: u.lastLoginTime || null,
+      orgUnitPath: u.orgUnitPath || '',
+      blocksAliasFor: primary ? primary.primaryEmail : null,
+      primaryAlreadyHasAlias: !!aliasOwner[email]
+    };
+    if (primary) blockers.push(info); else strays.push(info);
+  });
+
+  blockers.sort(function (a, b) { return String(a.strayAccount).localeCompare(String(b.strayAccount)); });
+  strays.sort(function (a, b) { return String(a.strayAccount).localeCompare(String(b.strayAccount)); });
+
+  Logger.info('===== SECONDARY-DOMAIN ALIAS BLOCKERS =====' +
+    '\nSecondary domain ................ ' + domain +
+    '\nScanned users ................... ' + scannedUsers +
+    '\nBLOCKERS (alias is blocked) ..... ' + blockers.length +
+    '   <-- each denies a real account its alias' +
+    '\nStrays (no primary counterpart) . ' + strays.length);
+
+  function render_(title, list, note) {
+    if (!list.length) return;
+    const lines = ['===== ' + title + ' (' + list.length + ') ====='];
+    if (note) lines.push(note, '');
+    list.forEach(function (b) {
+      lines.push('    ' + b.strayAccount +
+        '\n        created=' + (b.created || '?') +
+        '  ' + (b.suspended ? 'SUSPENDED' : 'active') +
+        '  ' + (b.neverSignedIn ? 'never-signed-in' : 'last-login=' + b.lastLogin) +
+        '  ou=' + b.orgUnitPath +
+        (b.blocksAliasFor ? '\n        BLOCKS the secondary alias for: ' + b.blocksAliasFor : '') +
+        (b.primaryAlreadyHasAlias ? '\n        (address is ALSO held as an alias — inconsistent, investigate)' : ''));
+    });
+    Logger.info(lines.join('\n'));
+  }
+
+  render_('BLOCKERS — a real primary account is being denied its alias', blockers,
+    'Each stray below occupies the exact address the alias module wants to add to the\n' +
+    'primary account named under it. Users.Aliases.insert 409s and the row LATCHES, so it\n' +
+    'is reported once and then stays silent. If the stray is never-signed-in it holds no\n' +
+    'mail: retire or delete it, then RE-RUN the alias module. NOTE: shouldSkipLatched_ only\n' +
+    'un-latches when the row\'s alias address CHANGES, so clearing the blocker alone will\n' +
+    'not retry it — nudge column B on that row to force a retry.');
+  render_('STRAYS — on the secondary domain with no primary-domain counterpart', strays,
+    'These block nothing today. Likely original-population artifacts; confirm before removing.');
+
+  const result = {
+    secondaryDomain: domain,
+    scannedUsers: scannedUsers,
+    blockers: blockers,
+    strays: strays,
+    durationMs: new Date() - start
+  };
+  Logger.info('Secondary-domain alias blocker scan complete', {
+    blockers: blockers.length,
+    strays: strays.length,
+    durationMs: result.durationMs
+  });
+  return result;
 }
