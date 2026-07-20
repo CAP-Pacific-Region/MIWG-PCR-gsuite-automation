@@ -1,6 +1,8 @@
 MIT License
 
 Copyright (c) 2025 Michigan Wing Civil Air Patrol
+Copyright (c) 2025-2026 Pacific Region Civil Air Patrol and contributors
+                        (modifications)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,9 +24,18 @@ SOFTWARE.
 
 ---
 
+ATTRIBUTION:
+This project was originally developed by Michigan Wing Civil Air Patrol.
+Subsequent modifications and additions were contributed by Pacific Region
+Civil Air Patrol volunteers, who retain copyright in their respective
+contributions and release them under the MIT License above.
+
+---
+
 DISCLAIMER:
-This is an unofficial project developed by Michigan Wing IT volunteers. It is
-not endorsed by or affiliated with Civil Air Patrol National Headquarters.
+This is an unofficial project developed by Michigan Wing and Pacific Region IT
+volunteers. It is not endorsed by or affiliated with Civil Air Patrol National
+Headquarters.
 
 Use of this software requires:
 - Valid CAP eServices credentials
