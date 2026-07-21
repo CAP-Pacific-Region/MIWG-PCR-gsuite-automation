@@ -1,0 +1,12 @@
+# clasp writes a .clasp.json wherever it is run (e.g. `clasp create-script`).
+# This repo does NOT use one: every project is addressed explicitly through
+# clasp-targets/<name>.clasp.json and `clasp -P`. A stray root .clasp.json would
+# silently become the default target for a bare `clasp push` — which is exactly
+# the "pushed to the wrong tenant" mistake the -P convention exists to prevent.
+.clasp.json
+**/.clasp.json
+
+# clasp's local credentials. NEVER commit these.
+.clasprc.json
+
+node_modules/
