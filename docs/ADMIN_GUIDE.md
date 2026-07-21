@@ -425,7 +425,7 @@ the data runs after the download. Apps Script schedules within a 1-hour window, 
 | 4 | `updateEmailGroups()` | Daily, 5–6 AM | Sync wing/duty/specialty distribution groups. |
 | 5 | `updateAllSquadronGroups()` | Daily, 6–7 AM | Squadron all-hands/cadets/seniors/parents + public-contact + access groups. Batches via `SQUADRON_BATCH_INDEX`. |
 | 6 | `updateAdditionalGroupMembers()` | Daily, 6–7 AM | Merge manual additions from the `User Additions` sheet. |
-| 7 | `addSecondaryDomainAliases()` | Daily, 7–8 AM | Give accounts on the `Secondary Aliases` tab a matching address on the tenant's secondary domain. **Seniors only** (`TENANT_SECONDARY_EMAIL_DOMAIN`). Must run *after* `updateAllMembers()` so a same-morning account already exists. |
+| 7 | `addSecondaryDomainAliases()` | Daily, 7–8 AM | Give accounts on the `Secondary Aliases` tab a matching address on the tenant's secondary domain. **Seniors only** (`TENANT_SECONDARY_EMAIL_DOMAIN`). Must run *after* `updateAllMembers()` so a same-morning account already exists. The tab can be edited by hand or through the [Secondary Alias web app](ALIAS_WEB_APP.md). |
 | 8 | `updateAllSendAsNames()` | Daily, 8–9 AM | Sync Directory displayName **and** Gmail Send-As names (primary + org-owned aliases) from CAPWATCH, so promotions propagate. Resumable: time-boxes at 25 min and self-schedules a continuation, so one firing may span several executions. |
 | 9 | `syncMemberCalendarsDaily()` | Daily | Share unit calendars with new/transferred members. |
 | 10 | `updateChatSpaces()` | Daily or weekly | Sync squadron/committee Chat spaces & membership. |

@@ -10,6 +10,69 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-20] — Secondary Alias admin web app (`webapp/`, new script project)
+
+An HTML admin UI for the `Secondary Aliases` tab: look a member up by **CAPID**, add them
+(the alias is created immediately, not at the next nightly run), or remove them (the row
+comes off the tab **and** the alias is revoked). Authorization is Workspace-group
+membership, so the IT director can grant and revoke access from the Admin console without a
+redeploy.
+
+### Added
+
+- **`webapp/`** — a **separate Apps Script project**, not part of `src/`. Own clasp target
+  (`clasp-targets/alias-webapp.clasp.json`), own manifest, own Script Properties, four
+  OAuth scopes instead of thirty. New npm scripts `push:webapp` / `pull:webapp` /
+  `status:webapp` / `open:webapp`.
+  - `Config.gs` 1.0.0, `Auth.gs` 1.0.0, `Directory.gs` 1.0.0, `AliasAdminApi.gs` 1.0.0,
+    `Index.html` 1.0.0.
+- **`docs/ALIAS_WEB_APP.md`** — setup runbook, access model, the sheet contract, and
+  troubleshooting.
+- **`test/AliasWebApp.test.js`** — 49 assertions, run by `npm test`.
+
+### Why a separate project (the constraint that drove the design)
+
+`src/mission-provisioning/MissionProvisioning.gs` already owns `doGet`/`doPost` for the
+FileMaker webhook, and `src/appsscript.json` deploys the web app **`ANYONE_ANONYMOUS` +
+`USER_DEPLOYING`**. A project has exactly one `doGet`, and an admin UI on that deployment
+would have let anyone who learned the URL mint aliases with the deployer's admin rights.
+Adding routing instead would have made the security boundary a single conditional. So the
+UI got its own project at `access: DOMAIN`, and the webhook was left untouched.
+
+### Two hazards this had to design around
+
+- **Cross-project row alignment.** `addSecondaryDomainAliases()` commits columns C–D
+  *positionally* (`getRange(2, 3, dataRowCountAtReadTime, 2)`), which makes row position a
+  shared data structure — and `LockService` locks are **per-project**, so the web app and
+  the nightly trigger cannot interlock. A row deleted mid-run would have written every
+  status below it one row too high, silently. The web app therefore never shifts a row:
+  adds append or reuse a blank, removals **clear in place**. Blank rows in the tab are now
+  expected, and the next add reuses them.
+- **Removal is the only destructive call in the codebase.** `webappRemoveAliasFromAccount_`
+  re-checks three things before deleting: the address is on the *secondary* domain (a
+  suffix check, not `indexOf` — a lookalike `…@cawg.cap.gov.evil.com` is refused), it is not
+  the account's primary, and it is actually an alias on that account. A stale row whose
+  alias is already gone still comes off the tab, reported `NOT PRESENT`. Both write helpers
+  also re-assert authorization themselves rather than resting on Apps Script keeping
+  trailing-underscore functions out of `google.script.run`'s dispatch.
+
+### Notes
+
+- Duplicate CAPIDs are **shown, not resolved** — the app lists every account carrying the
+  CAPID, ranked by last sign-in, and makes the human choose. On these tenants the
+  canonical-looking address is often the dead twin.
+- Address derivation and CAPID resolution are **duplicated** from
+  `SecondaryDomainAliases.gs` / `DuplicateAccountGuard.gs` (separate projects cannot share
+  code without a library deploy step). The test runs both copies over the same inputs and
+  fails if they diverge — a divergence would otherwise appear only as a row whose status
+  flips every night.
+- New sheet columns **E** (`CAPID`) and **F** (`Added By`) on `Secondary Aliases`, plus a new
+  append-only `Alias Admin Log` tab. Both sit outside the nightly module's write range.
+- Tenant-generic; self-disables where `TENANT_SECONDARY_EMAIL_DOMAIN` is blank. Seniors is
+  the only tenant worth deploying to today.
+- **Not yet deployed** — the script project must be created and its ID filled into
+  `clasp-targets/alias-webapp.clasp.json`. See `docs/ALIAS_WEB_APP.md` § Setup.
+
 ## [2026-07-19] — Rescue: cross-tenant contacts 0.2.1/0.2.2 existed only on the tenants
 
 `CrossTenantContacts.gs` was **0.2.2 on the seniors and region tenants (byte-identical

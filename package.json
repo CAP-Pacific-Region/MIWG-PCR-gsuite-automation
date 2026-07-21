@@ -14,6 +14,10 @@
     "status:region": "clasp status -P clasp-targets/region.clasp.json",
     "push:region": "clasp push -P clasp-targets/region.clasp.json",
     "pull:region": "clasp pull -P clasp-targets/region.clasp.json",
-    "open:region": "clasp open-script -P clasp-targets/region.clasp.json"
+    "open:region": "clasp open-script -P clasp-targets/region.clasp.json",
+    "status:webapp": "clasp status -P clasp-targets/alias-webapp.clasp.json",
+    "push:webapp": "clasp push -P clasp-targets/alias-webapp.clasp.json",
+    "pull:webapp": "clasp pull -P clasp-targets/alias-webapp.clasp.json",
+    "open:webapp": "clasp open-script -P clasp-targets/alias-webapp.clasp.json"
   }
 }

@@ -217,12 +217,14 @@ automation account** ([Accounts & Groups module](src/accounts-and-groups/README.
 | Region features (`src/region`) | Region duty groups + Chat spaces; region-wide unit-visit report (Pacific) |
 | Mission Provisioning (`src/mission-provisioning`) | Webhook that provisions a Group + Chat space + Drive folder per mission |
 | [Recruiting & Retention](src/recruiting-and-retention/README.md) | Age-out / expiration / welcome emails |
+| [Secondary Alias web app](docs/ALIAS_WEB_APP.md) (`webapp/`) | Separate script project: HTML admin UI to add/remove secondary-domain aliases by CAPID |
 
 ## Documentation
 
 - **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the operational runbook (start here for anything live).
 - **[New Tenant / New Wing Setup](docs/NEW_TENANT_SETUP.md)** — bare-metal, end-to-end runbook for provisioning a brand-new tenant from nothing (Hawaii-Wing worked example).
 - **[Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md)** — seniors ⇄ cadets shared-contact sync.
+- **[Secondary Alias Web App](docs/ALIAS_WEB_APP.md)** — the `webapp/` admin UI: setup, the access model, and the sheet contract it shares with the nightly run.
 - **[Pacific Diff](docs/REGION_DIFF.md)** / **[GCP Project Migration](docs/GCP_PROJECT_MIGRATION.md)** — Pacific-specific setup and the standard-GCP-project migration.
 - **[Spreadsheet Setup](docs/SPREADSHEET_SETUP.md)** — the automation config spreadsheet tabs.
 - **[API Reference](docs/API_REFERENCE.md)** · **[Utilities](docs/UTILITIES.md)** · **[Development Guide](docs/DEVELOPMENT.md)** · **[Troubleshooting](docs/TROUBLESHOOTING.md)** — internals, inherited from the upstream single-wing project and reconciled for the multi-tenant model (each carries a note on what changed).

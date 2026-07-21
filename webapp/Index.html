@@ -1,0 +1,289 @@
+<!--
+  File: Index.html
+  Description: Single-page UI for the Secondary Alias admin web app. Talks to
+  AliasAdminApi.gs over google.script.run; holds no authority of its own — every
+  action is re-authorized and re-validated server-side.
+  Author: Maj Isaac Wilson IV, California Wing
+  Version: 1.0.0
+  Date: 2026-07-20
+-->
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    :root {
+      --ink: #1f2328; --muted: #59636e; --line: #d8dee4; --bg: #fff;
+      --accent: #0a3d62; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+      --chip: #f6f8fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 1.5rem; background: var(--bg); color: var(--ink);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    .wrap { max-width: 940px; margin: 0 auto; }
+    header { border-bottom: 1px solid var(--line); padding-bottom: .9rem; margin-bottom: 1.4rem; }
+    h1 { margin: 0 0 .2rem; font-size: 1.35rem; }
+    .sub { color: var(--muted); font-size: .875rem; }
+    h2 { font-size: 1rem; margin: 1.8rem 0 .6rem; }
+
+    .banner { padding: .7rem .9rem; border-radius: 6px; margin-bottom: 1rem; font-size: .875rem; }
+    .banner.warn { background: #fff8c5; border: 1px solid #d4a72c; color: #4d2d00; }
+    .banner.bad { background: #ffebe9; border: 1px solid #ff818266; color: #82071e; }
+    .banner.ok { background: #dafbe1; border: 1px solid #1a7f3733; color: #0a3622; }
+    .banner.hidden, .hidden { display: none; }
+
+    .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+    input[type=text] {
+      font: inherit; padding: .45rem .6rem; border: 1px solid var(--line);
+      border-radius: 6px; width: 11rem;
+    }
+    button {
+      font: inherit; padding: .45rem .9rem; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger { color: var(--bad); }
+    button:disabled { opacity: .5; cursor: default; }
+
+    table { border-collapse: collapse; width: 100%; font-size: .875rem; }
+    th, td { text-align: left; padding: .5rem .55rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+    td.email { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .84rem; }
+    .tag { display: inline-block; font-size: .75rem; padding: .05rem .4rem; border-radius: 999px; background: var(--chip); border: 1px solid var(--line); color: var(--muted); }
+    .tag.bad { color: var(--bad); border-color: #ff818266; background: #ffebe9; }
+    .tag.ok { color: var(--ok); border-color: #1a7f3733; background: #dafbe1; }
+    .s-ok { color: var(--ok); } .s-warn { color: var(--warn); } .s-bad { color: var(--bad); }
+    .empty { color: var(--muted); padding: 1rem 0; font-size: .875rem; }
+    .cand { border: 1px solid var(--line); border-radius: 6px; padding: .7rem .8rem; margin-bottom: .5rem; }
+    .cand .meta { color: var(--muted); font-size: .8rem; margin-top: .2rem; }
+    .spinner { color: var(--muted); font-size: .85rem; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><?= orgLabel ?> Secondary Aliases</h1>
+    <div class="sub">
+      Signed in as <?= actor ?> &middot; adding a member here gives their account a
+      matching address on the wing&rsquo;s secondary domain.
+    </div>
+  </header>
+
+  <div id="configBanner" class="banner bad hidden"></div>
+  <div id="flash" class="banner hidden"></div>
+
+  <h2>Add a member</h2>
+  <div class="row">
+    <input type="text" id="capid" placeholder="CAPID" inputmode="numeric" autocomplete="off">
+    <button class="primary" id="lookupBtn">Look up</button>
+    <span class="spinner hidden" id="lookupSpin">Searching the directory&hellip;</span>
+  </div>
+  <div id="candidates"></div>
+
+  <h2>Currently listed <span class="tag" id="count">0</span></h2>
+  <div id="listing"><div class="spinner">Loading&hellip;</div></div>
+</div>
+
+<script>
+var STATE = { secondaryDomain: '', domainVerified: false, entries: [] };
+
+function el(id) { return document.getElementById(id); }
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function flash(message, kind) {
+  var f = el('flash');
+  f.textContent = message;
+  f.className = 'banner ' + (kind || 'ok');
+}
+
+function clearFlash() { el('flash').className = 'banner hidden'; }
+
+/**
+ * google.script.run failures arrive as an Error whose message is whatever the
+ * server threw — which for this app is always a sentence written for a human
+ * (see requireAuthorized_ and the validation in AliasAdminApi.gs). Show it as-is.
+ */
+function onFailure(err) {
+  flash(err && err.message ? err.message : 'Something went wrong.', 'bad');
+  setBusy(false);
+}
+
+function setBusy(busy) {
+  el('lookupBtn').disabled = busy;
+  el('lookupSpin').className = busy ? 'spinner' : 'spinner hidden';
+}
+
+// ---------------------------------------------------------------- initial load
+google.script.run.withSuccessHandler(function (state) {
+  STATE.secondaryDomain = state.secondaryDomain;
+  STATE.domainVerified = state.domainVerified;
+  renderEntries(state.entries);
+
+  // Both of these make every add fail in a way that is hard to read from the
+  // resulting sheet rows alone, so say it up front rather than after the failure.
+  if (!state.secondaryDomain) {
+    showConfig('No secondary domain is configured for this tenant, so nothing can be aliased. ' +
+      'Set TENANT_SECONDARY_EMAIL_DOMAIN in this script project’s Script Properties.');
+  } else if (!state.domainVerified) {
+    showConfig(state.secondaryDomain + ' is not a verified domain in this tenant yet. ' +
+      'Aliases cannot be created until it is verified in Admin console › Domains.');
+  }
+}).withFailureHandler(function (err) {
+  el('listing').innerHTML = '';
+  onFailure(err);
+}).apiGetState();
+
+function showConfig(message) {
+  var b = el('configBanner');
+  b.textContent = message;
+  b.className = 'banner warn';
+}
+
+// -------------------------------------------------------------------- look up
+el('lookupBtn').addEventListener('click', doLookup);
+el('capid').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLookup(); });
+
+function doLookup() {
+  var capid = el('capid').value.trim();
+  if (!capid) return;
+  clearFlash();
+  el('candidates').innerHTML = '';
+  setBusy(true);
+  google.script.run
+    .withSuccessHandler(renderCandidates)
+    .withFailureHandler(onFailure)
+    .apiLookupCapid(capid);
+}
+
+function renderCandidates(result) {
+  setBusy(false);
+  var box = el('candidates');
+
+  if (!result.accounts.length) {
+    box.innerHTML = '<div class="empty">No account in this tenant carries CAPID ' +
+      esc(result.capid) + '. The member may be on the cadet tenant, or may not have ' +
+      'been provisioned yet.</div>';
+    return;
+  }
+
+  var html = '';
+  // More than one account for a CAPID means duplicates. Do not hide them behind a
+  // best guess: on these tenants the tidy-looking address is often the dead twin,
+  // and picking wrong here aliases an account nobody reads.
+  if (result.accounts.length > 1) {
+    html += '<div class="banner warn">CAPID ' + esc(result.capid) + ' has ' +
+      result.accounts.length + ' accounts. Pick the one the member actually uses — ' +
+      'last sign-in is the most reliable signal.</div>';
+  }
+
+  result.accounts.forEach(function (a) {
+    var tags = '';
+    if (a.suspended) tags += ' <span class="tag bad">suspended</span>';
+    if (a.neverSignedIn) tags += ' <span class="tag">never signed in</span>';
+    if (a.hasAlias) tags += ' <span class="tag ok">alias exists</span>';
+    if (a.onSheet) tags += ' <span class="tag">already listed</span>';
+
+    html += '<div class="cand">' +
+      '<div><strong>' + esc(a.name || '(no name)') + '</strong>' + tags + '</div>' +
+      '<div class="meta">' + esc(a.email) + ' &rarr; ' + esc(a.derivedAlias) + '</div>' +
+      '<div class="meta">' + esc(a.orgUnitPath) +
+        (a.lastLogin ? ' &middot; last sign-in ' + esc(a.lastLogin) : '') + '</div>' +
+      '<div class="row" style="margin-top:.6rem">' +
+        '<button class="primary" data-add="' + esc(a.email) + '" data-capid="' + esc(result.capid) + '">' +
+          (a.onSheet ? 'Re-check this account' : 'Add and create alias') +
+        '</button>' +
+      '</div>' +
+    '</div>';
+  });
+
+  box.innerHTML = html;
+  Array.prototype.forEach.call(box.querySelectorAll('[data-add]'), function (btn) {
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      btn.textContent = 'Working…';
+      clearFlash();
+      google.script.run
+        .withSuccessHandler(function (res) {
+          renderEntries(res.entries);
+          el('candidates').innerHTML = '';
+          el('capid').value = '';
+          flash(res.status, res.ok ? 'ok' : 'bad');
+        })
+        .withFailureHandler(function (err) { btn.disabled = false; onFailure(err); })
+        .apiAddByCapid(btn.getAttribute('data-capid'), btn.getAttribute('data-add'));
+    });
+  });
+}
+
+// -------------------------------------------------------------------- listing
+function statusClass(status) {
+  if (/^(OK|ADDED)/.test(status)) return 's-ok';
+  if (/^(CONFLICT|ERROR|REFUSED)/.test(status)) return 's-bad';
+  return 's-warn';
+}
+
+function renderEntries(entries) {
+  STATE.entries = entries || [];
+  el('count').textContent = STATE.entries.length;
+
+  if (!STATE.entries.length) {
+    el('listing').innerHTML = '<div class="empty">Nobody is listed yet.</div>';
+    return;
+  }
+
+  var html = '<table><thead><tr>' +
+    '<th>CAPID</th><th>Account</th><th>Alias</th><th>Status</th><th>Last run</th><th>Added by</th><th></th>' +
+    '</tr></thead><tbody>';
+
+  STATE.entries.forEach(function (e) {
+    var alias = e.aliasOverride || deriveAlias(e.primaryEmail);
+    html += '<tr>' +
+      '<td>' + esc(e.capid || '—') + '</td>' +
+      '<td class="email">' + esc(e.primaryEmail) + '</td>' +
+      '<td class="email">' + esc(alias) + '</td>' +
+      '<td class="' + statusClass(e.status) + '">' + esc(e.status || '—') + '</td>' +
+      '<td>' + esc(e.lastRun) + '</td>' +
+      '<td class="email">' + esc(e.addedBy || '—') + '</td>' +
+      '<td><button class="danger" data-remove="' + esc(e.primaryEmail) + '">Remove</button></td>' +
+    '</tr>';
+  });
+
+  el('listing').innerHTML = html + '</tbody></table>';
+
+  Array.prototype.forEach.call(el('listing').querySelectorAll('[data-remove]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var email = btn.getAttribute('data-remove');
+      // This revokes a working address. Confirm it, and say plainly what breaks —
+      // mail sent to that alias will bounce from the moment it is removed.
+      if (!window.confirm('Remove ' + email + ' from the list and revoke their secondary ' +
+          'address?\n\nMail sent to the alias will stop being delivered immediately.')) return;
+      btn.disabled = true;
+      btn.textContent = 'Working…';
+      clearFlash();
+      google.script.run
+        .withSuccessHandler(function (res) {
+          renderEntries(res.entries);
+          flash(res.status, res.ok ? 'ok' : 'bad');
+        })
+        .withFailureHandler(function (err) { btn.disabled = false; btn.textContent = 'Remove'; onFailure(err); })
+        .apiRemoveByEmail(email);
+    });
+  });
+}
+
+/** Client-side mirror of webappDeriveSecondaryAlias_, for display only. */
+function deriveAlias(primaryEmail) {
+  var at = String(primaryEmail).indexOf('@');
+  if (at <= 0 || !STATE.secondaryDomain) return '';
+  return primaryEmail.slice(0, at) + STATE.secondaryDomain;
+}
+</script>
+</body>
+</html>

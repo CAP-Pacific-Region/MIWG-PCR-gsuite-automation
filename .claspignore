@@ -2,3 +2,7 @@
 **/*
 # Except what's inside src/
 !src/**
+# ...and webapp/, the standalone Secondary Alias admin web app. It is a SEPARATE
+# script project with its own clasp target and rootDir, so a push of src/ never
+# collects these files and a push of webapp/ never collects src/.
+!webapp/**

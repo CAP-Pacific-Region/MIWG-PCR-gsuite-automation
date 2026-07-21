@@ -38,7 +38,8 @@ creates/manages it; you only need the empty tab to exist.
 | `Manual Members` | Optional | input | `updateAllMembers()` (members added by hand) |
 | `External Contacts` | Region only (`RUN_SHARED_CONTACTS`) | input | `runExternalContactsToDomainSharedContacts()` |
 | `Aliases` | Optional | input | send-as alias assignment in `updateAllMembers()` |
-| `Secondary Aliases` | Optional | input + Auto | `addSecondaryDomainAliases()` (cols A–B yours, C–D written back) |
+| `Secondary Aliases` | Optional | input + Auto | `addSecondaryDomainAliases()` (cols A–B yours, C–D written back, E–F by the web app) |
+| `Alias Admin Log` | Auto | Auto | audit trail written by the [Secondary Alias web app](ALIAS_WEB_APP.md) |
 | `Error Emails` | **Yes** (must exist) | Auto | error reporting at the end of `updateEmailGroups()` |
 | `Log` (in the retention sheet) | Auto | Auto | `logEmailSent()` in retention emails |
 
@@ -134,10 +135,21 @@ gets a **directory alias** that keeps the local part of its primary address but 
 | B | `Alias Email` | Optional override; leave blank to derive local part + secondary domain |
 | C | `Status` | **Written by the script** — `ADDED`, `OK — already present`, `CONFLICT`, or `ERROR` |
 | D | `Last Run` | **Written by the script** — timestamp of the last attempt |
+| E | `CAPID` | **Written by the web app** — the CAPID a row was added under; blank on hand-added rows |
+| F | `Added By` | **Written by the web app** — who added the row |
 
 This tab is an **opt-in list**, not the roster — only the accounts you list here get an
 address on the secondary domain. Nothing is added automatically, so a new member who should
-have one needs a row added by hand.
+have one needs a row added — by hand, or through the
+[Secondary Alias web app](ALIAS_WEB_APP.md), which looks members up by CAPID and creates
+the alias immediately.
+
+> **Blank rows in the middle are normal.** The web app *clears* a row rather than deleting
+> it, because deleting one would shift every row below it while `addSecondaryDomainAliases()`
+> may be holding a positional write-back — the two run in different script projects and
+> cannot take a shared lock. The next add reuses the blank. See
+> [ALIAS_WEB_APP.md](ALIAS_WEB_APP.md#the-sheet-contract) for the full reasoning; deleting
+> blank rows by hand is safe when no run is in flight.
 
 Prerequisites: the secondary domain must be **added and verified** in the tenant
 (Admin console > Domains > Manage domains), and `TENANT_SECONDARY_EMAIL_DOMAIN` must be
