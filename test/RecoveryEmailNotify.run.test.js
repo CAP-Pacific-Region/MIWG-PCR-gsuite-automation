@@ -148,7 +148,7 @@ function harness(files, opts) {
     TEST_EMAIL: 'test@cawgcap.org'
   }, [
     'notifyRecoveryEmailCompliance', 'previewRecoveryEmailCompliance',
-    'installRecoveryComplianceMonthlyTrigger'
+    'installRecoveryComplianceMonthlyTrigger', 'testRecoveryDigestForOrg'
   ]);
 
   return { m, sent, log: calls, clock, state };
@@ -504,7 +504,54 @@ section('16. A corrupt state file refuses to run rather than re-reporting everyo
 }
 
 // ---------------------------------------------------------------------------
-section('17. installRecoveryComplianceMonthlyTrigger dedupes and schedules monthly');
+section('17. The one-unit test digest is real, targeted, and consumes nothing');
+{
+  // Member 1 (org 100): EMAIL suppressed by prior state, TWOSV new.
+  // Member 9 (org 200): flagged, but not the unit under test.
+  const files = {};
+  const seeded = JSON.stringify({
+    version: 2,
+    written: '2026-01-01',
+    members: { '1': { categories: { EMAIL: '2025-12-15' } } }
+  });
+  files[STATE_FILE] = seeded;
+  const { m, sent } = harness(files, {
+    members: { '1': noRecovery('1', '100'), '9': noRecovery('9', '200') },
+    accounts: [account('1', { twoSv: false }), account('9')]
+  });
+
+  const summary = m.testRecoveryDigestForOrg('100');
+
+  check('one mail', sent.length, 1);
+  check('to the test recipient, not the commander', sent[0].to, 'test@cawgcap.org');
+  check('with no Cc', sent[0].cc, undefined);
+  check('and no from override — it must run as anyone', sent[0].from, undefined);
+  check('subject is marked as a test and names the charter',
+    sent[0].subject, 'TEST — Member account issues needing attention in your unit — PCR-CA-070');
+  check('greets the real commander', sent[0].html.indexOf('Maj Alpha,') > -1, true);
+  check('shows the unit\'s member', /<td>1<\/td>/.test(sent[0].html), true);
+  check('with only the reportable issue',
+    sent[0].html.indexOf('2-Step Verification is not enabled') > -1, true);
+  check('the suppressed email issue stays out',
+    sent[0].html.indexOf('No personal (non-CAP) email on file'), -1);
+  check('the other unit\'s member stays out', /<td>9<\/td>/.test(sent[0].html), false);
+  check('reported count matches', summary, { orgid: '100', reportable: 1, sent: 1 });
+
+  // The whole point of the helper: nothing is consumed.
+  check('state file untouched — nobody added to the cooldown', files[STATE_FILE], seeded);
+
+  const real = m.notifyRecoveryEmailCompliance();
+  check('the real run afterwards still reports both members', real.reported, 2);
+
+  // A unit with nothing reportable sends nothing.
+  const quiet = harness({}, { members: { '2': ok('2') } });
+  const nothing = quiet.m.testRecoveryDigestForOrg('100');
+  check('a compliant unit sends no test mail', quiet.sent.length, 0);
+  check('and says so', nothing, { orgid: '100', reportable: 0, sent: 0 });
+}
+
+// ---------------------------------------------------------------------------
+section('18. installRecoveryComplianceMonthlyTrigger dedupes and schedules monthly');
 {
   const created = [];
   const deleted = [];

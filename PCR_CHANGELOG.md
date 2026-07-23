@@ -51,6 +51,13 @@ into** — the latter silently missing every communication sent to them.
   `lastLoginTime` and `creationTime`. Purely additive — the active-only contract and
   every existing field are unchanged.
 
+- **`testRecoveryDigestForOrg(orgid, recipient)` (RecoveryEmailNotify.gs 1.2.0)** —
+  renders ONE unit's real digest, post-suppression (exactly the rows the next run
+  would send that unit), and mails it to a test recipient only. Reads state, writes
+  nothing — nobody lands on the cooldown, so the real run still reports everyone
+  shown. No `from` override, so it runs from any signed-in account. The Run dropdown
+  cannot pass arguments; call it from a scratch.gs wrapper.
+
 ## [2026-07-19] — Domain-aware duplicate authority + derived-address drift scan
 
 ### Changed (`DuplicateAccountGuard.gs` 1.3.0, `DuplicateAccountScan.gs` 1.5.0, `UpdateMembers.gs` 1.18.1)

@@ -1,9 +1,14 @@
 /**
  * Account-Compliance Notification (recovery email, 2SV, first sign-in)
  *
- * Version: 1.1.0
+ * Version: 1.2.0
  * Date: 2026-07-23
- * Changes: Two new Workspace-sourced conditions join the digest: accounts with
+ * Changes: 1.2.0 — new testRecoveryDigestForOrg(orgid, recipient): renders ONE
+ *   unit's real digest (post-suppression, exactly what the next run would send
+ *   that unit) and mails it to a test recipient only. Reads state, writes
+ *   nothing — nobody lands on the cooldown. No `from` override, so it runs
+ *   from any signed-in account. Call from a scratch.gs wrapper to pass args.
+ *   1.1.0 — Two new Workspace-sourced conditions join the digest: accounts with
  *   2-Step Verification not enabled, and accounts never signed into 60+ days
  *   after creation. Both read the tenant's own directory (getActiveUsers now
  *   carries isEnrolledIn2Sv/lastLoginTime/creationTime); a directory read that
@@ -1256,6 +1261,94 @@ function installRecoveryComplianceMonthlyTrigger() {
 // ============================================================================
 // TEST
 // ============================================================================
+
+/**
+ * Renders ONE unit's REAL digest — exactly the rows the next run would report
+ * for that unit — and mails it to a test recipient, and nobody else.
+ *
+ * Reads the suppression state, so what you see is what the unit's command
+ * staff would get (issues inside their window are excluded, exactly as the
+ * real send excludes them) — but WRITES NOTHING: nobody is added to the
+ * cooldown, so the real run afterwards still reports everyone shown here.
+ *
+ * Sends WITHOUT the automation `from` override, deliberately: this is run by
+ * hand while reviewing, and it must work from whatever account is signed in
+ * rather than requiring the automation account's Send-As alias.
+ *
+ * The editor's Run dropdown cannot pass arguments — call it from a scratch.gs
+ * wrapper, e.g.:
+ *   function myUnitDigestTest() { testRecoveryDigestForOrg('1299'); }
+ *
+ * @param {string} orgid - Unit ORGID to render
+ * @param {string} [recipient] - Where to send it; defaults to TEST_EMAIL
+ * @returns {Object} { orgid, reportable, sent }
+ */
+function testRecoveryDigestForOrg(orgid, recipient) {
+  const targetOrg = String(orgid || '').trim();
+  if (!targetOrg) {
+    throw new Error(
+      'Pass a unit ORGID — run from a scratch.gs wrapper, e.g. ' +
+      "function myUnitDigestTest() { testRecoveryDigestForOrg('1299'); }");
+  }
+  const to = String(recipient || TEST_EMAIL || '').trim();
+  if (!to) throw new Error('No recipient: pass one, or set TENANT_TEST_EMAIL.');
+
+  if (!PROFILE_.RUN_RECOVERY_EMAIL_NOTIFICATIONS) {
+    Logger.info('Recovery-email notifications disabled for this tenant profile', {
+      profile: TENANT_PROFILE
+    });
+    return { skipped: true };
+  }
+
+  clearCache();
+  const start = new Date();
+  const todayIso = rcIsoDate_(start);
+
+  const members = getMembers(CONFIG.MEMBER_TYPES.ACTIVE, false, false);
+  const accounts = getActiveUsers();
+  const evaluation = rcEvaluateMembers_(members, rcBuildAccountMap_(accounts), start);
+  const prior = rcLoadState_();
+
+  // Same per-category reduction the real run performs, so the rendered rows are
+  // the rows the commander would actually receive — nothing suppressed sneaks
+  // back in just because this is a test.
+  const flagged = [];
+  Object.keys(evaluation.flagged).forEach(function (capid) {
+    const member = evaluation.flagged[capid];
+    if (String(member.orgid) !== targetOrg) return;
+    const priorCategories = (prior[capid] && prior[capid].categories) || {};
+    const reportable = member.categories.filter(
+      c => !rcIsSuppressed_(priorCategories[c], todayIso));
+    if (!reportable.length) return;
+    member.reportCategories = reportable;
+    flagged.push(member);
+  });
+
+  if (!flagged.length) {
+    Logger.info('Test digest: nothing reportable for this unit right now', { orgid: targetOrg });
+    return { orgid: targetOrg, reportable: 0, sent: 0 };
+  }
+
+  // The real addressee, so the greeting renders as the commander would see it —
+  // but the mail goes ONLY to the test recipient, with no Cc.
+  const recipients = rcBuildRecipientDirectory_(accounts)[targetOrg] || [];
+  const addressee = recipients.length
+    ? rcSelectAddressees_(recipients).addressee
+    : { rank: '', lastName: '(no command staff found)' };
+
+  GmailApp.sendEmail(to,
+    'TEST — ' + RECOVERY_NOTIFY_CONFIG.SUBJECT + ' — ' + flagged[0].charter,
+    'See the HTML version of this message.',
+    { htmlBody: rcBuildDigestHtml_(addressee, flagged), name: SENDER_NAME });
+
+  Logger.info('Test digest sent for one unit — state NOT written', {
+    orgid: targetOrg,
+    orgName: flagged[0].orgName,
+    to: to,
+    members: flagged.map(f => f.capid + ' [' + f.reportCategories.join('+') + ']')
+  });
+  return { orgid: targetOrg, reportable: flagged.length, sent: 1 };
+}
 
 /**
  * Renders a digest from fabricated data and sends it to TEST_EMAIL, so the
