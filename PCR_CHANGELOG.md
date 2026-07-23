@@ -51,6 +51,10 @@ into** — the latter silently missing every communication sent to them.
   `lastLoginTime` and `creationTime`. Purely additive — the active-only contract and
   every existing field are unchanged.
 
+- **Never-signed-in guidance routes to the support portal (RecoveryEmailNotify.gs
+  1.2.1)** — "file a support ticket at support.pcrcap.org" instead of the IT mailbox,
+  matching the 2SV block. Came out of the first one-unit live test.
+
 - **`testRecoveryDigestForOrg(orgid, recipient)` (RecoveryEmailNotify.gs 1.2.0)** —
   renders ONE unit's real digest, post-suppression (exactly the rows the next run
   would send that unit), and mails it to a test recipient only. Reads state, writes

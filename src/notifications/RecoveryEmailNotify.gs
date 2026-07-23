@@ -1,9 +1,12 @@
 /**
  * Account-Compliance Notification (recovery email, 2SV, first sign-in)
  *
- * Version: 1.2.0
+ * Version: 1.2.1
  * Date: 2026-07-23
- * Changes: 1.2.0 — new testRecoveryDigestForOrg(orgid, recipient): renders ONE
+ * Changes: 1.2.1 — the never-signed-in guidance routes members to the support
+ *   portal (SUPPORT_TICKET_URL) instead of the IT mailbox, matching the 2SV
+ *   block; came out of the first one-unit live test.
+ *   1.2.0 — new testRecoveryDigestForOrg(orgid, recipient): renders ONE
  *   unit's real digest (post-suppression, exactly what the next run would send
  *   that unit) and mails it to a test recipient only. Reads state, writes
  *   nothing — nobody lands on the cooldown. No `from` override, so it runs
@@ -1106,6 +1109,7 @@ function rcBuildDigestHtml_(addressee, flagged) {
   }
 
   if (anyLogin) {
+    const ticketUrl = RECOVERY_NOTIFY_CONFIG.SUPPORT_TICKET_URL;
     guidance +=
       '<div class="action"><p><strong>Never signed in:</strong> these members\' ' + label +
       ' accounts were created over ' + RECOVERY_NOTIFY_CONFIG.FIRST_LOGIN_GRACE_DAYS +
@@ -1113,8 +1117,8 @@ function rcBuildDigestHtml_(addressee, flagged) {
       'communications sent to them. Please ask them to sign in at ' +
       '<a href="https://mail.google.com">mail.google.com</a> with their ' + label +
       ' address. A member who does not know their password can use the "Forgot password" ' +
-      'link (the reset goes to the personal address in eServices) or contact ' +
-      rcEscapeHtml_(ITSUPPORT_EMAIL) + '.</p></div>' +
+      'link (the reset goes to the personal address in eServices) or file a support ' +
+      'ticket at <a href="' + ticketUrl + '">' + rcEscapeHtml_(ticketUrl) + '</a>.</p></div>' +
 
     '<p></p>';
   }

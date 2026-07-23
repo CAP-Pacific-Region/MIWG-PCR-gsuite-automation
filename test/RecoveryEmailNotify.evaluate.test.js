@@ -486,6 +486,15 @@ section('16. The digest explains each issue present, and only those');
     twoSvOnly.indexOf('two-step-verification') > -1, true);
   check('and no eServices guidance',
     twoSvOnly.indexOf('CAP.PersonnelInfo.Web') === -1, true);
+
+  // The never-signed-in advice routes members to the support portal, not to an
+  // email address — an inbox is where these requests go to die.
+  const loginOnly = rcBuildDigestHtml_(
+    { rank: 'Maj', lastName: 'Alpha' },
+    [{ capid: '444', name: 'SM D Member', type: 'SENIOR', flagLogin: true, accountCreated: '2026-04-01', categories: ['LOGIN'] }]
+  );
+  check('never-signed-in guidance routes to the support portal',
+    /file a support ticket at <a href="https:\/\/support\.pcrcap\.org">/.test(loginOnly), true);
 }
 
 // ---------------------------------------------------------------------------
