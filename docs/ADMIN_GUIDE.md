@@ -664,6 +664,9 @@ owned by the automation account (see the warning in [Section 8](#8-what-runs-whe
     drops out of state, so a later relapse is reported immediately.
   - A never-used account is flagged only for the sign-in, never also for 2SV; when a CAPID
     holds duplicate accounts, the one most recently signed into is the one judged.
+  - `testRecoveryDigestForOrg(orgid, recipient?)` — one unit's **real** digest
+    (post-suppression), mailed to a test recipient only (default `TENANT_TEST_EMAIL`);
+    reads state, writes nothing. Run it from a scratch.gs wrapper to pass the ORGID.
   - Cadet-lite members are excluded automatically (no account ⇒ no password). A cadet whose own
     secondary email is empty but who has a **parent/guardian** address on file is *not* flagged
     for recovery — that address is a working reset path.
