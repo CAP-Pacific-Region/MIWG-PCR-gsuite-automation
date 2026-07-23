@@ -1,5 +1,27 @@
 # PCR Changelog
 
+## [2026-07-19] — Domain-aware duplicate authority + derived-address drift scan
+
+### Changed (`DuplicateAccountGuard.gs` 1.3.0, `DuplicateAccountScan.gs` 1.5.0, `UpdateMembers.gs` 1.18.1)
+
+- **`chooseAuthoritativeAccount_` is now domain-aware.** An account on the tenant's
+  configured email domain outranks a legacy-domain twin — below login recency and
+  active (never retire the account a member actually uses), above everything else.
+  Motivated by the region tenant's domain-migration pair (identical localpart, legacy
+  vs configured domain, both never used), where the old ordering fell through to
+  "newest created" and picked correctly only by luck. All three call sites pass
+  `CONFIG.EMAIL_DOMAIN`, so scan preview and cleanup keep deciding identically.
+
+### Added (`DuplicateAccountScan.gs` 1.5.0)
+
+- **`scanDerivedAddressDrift()`** — read-only; for every account whose CAPID matches a
+  CAPWATCH member, compares the address it HAS against what provisioning would DERIVE
+  today, classified. Built to settle where the odd in-use addresses came from: a
+  `punctuation` drift means the CAPWATCH name lacks the punctuation the address
+  carries — i.e. `baseEmail` has been deriving faithfully and the odd addresses
+  predate provisioning (original population). Mismatches are stable, not defects —
+  the CAPID map updates those accounts in place.
+
 Pacific Region (PCR) fork-specific changes to the CAPWATCH / Google Workspace
 automation, layered on top of the upstream `cap-miwg/gsuite-automation` project.
 Upstream changes are tracked in [CHANGELOG.md](CHANGELOG.md); **this file records

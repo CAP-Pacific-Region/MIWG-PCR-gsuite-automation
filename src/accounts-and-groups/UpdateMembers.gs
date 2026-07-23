@@ -1,10 +1,13 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.18.0
+ * Version: 1.18.1
  * Date: 2026-07-19
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.18.0)
- * Changes: 1.18.0 — updateAllMembers()/forceUpdateAllMembers() now build
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.18.1)
+ * Changes: 1.18.1 — the duplicate-create guard passes CONFIG.EMAIL_DOMAIN to
+ *   chooseAuthoritativeAccount_ so a configured-domain account outranks a
+ *   legacy-domain twin (DuplicateAccountGuard.gs 1.3.0). No other change.
+ *   1.18.0 — updateAllMembers()/forceUpdateAllMembers() now build
  *   workspaceEmailByCapid via buildProvisioningEmailByCapid_ (DuplicateAccountGuard.gs)
  *   instead of getActiveUsers(). The old map omitted SUSPENDED accounts and read the
  *   CAPID only from externalIds[type='organization'], so provisioning could conclude a
@@ -1210,7 +1213,7 @@ function addOrUpdateUser(member) {
     // place at its own address and DO NOT insert. See DuplicateAccountGuard.gs.
     const existingByCapid = findExistingAccountsByCapid_(member.capsn);
     if (existingByCapid.length > 0) {
-      const authoritative = chooseAuthoritativeAccount_(existingByCapid, baseEmail);
+      const authoritative = chooseAuthoritativeAccount_(existingByCapid, baseEmail, CONFIG.EMAIL_DOMAIN);
       Logger.warn('Duplicate-create prevented — existing account found by CAPID', {
         capsn: member.capsn,
         name: member.firstName + ' ' + member.lastName,

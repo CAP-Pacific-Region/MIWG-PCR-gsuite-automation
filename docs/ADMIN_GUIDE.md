@@ -516,6 +516,13 @@ inserting and updates the existing account in place instead (see `UpdateMembers.
   (needs a human), and **role/service** (IT, automation, admin — classified but still
   listed, never silently hidden). These accounts are the remaining hole in the duplicate
   guard, which matches members by CAPID.
+- `scanDerivedAddressDrift()` — **read-only.** For every account whose CAPID matches a
+  CAPWATCH member, compares the address it *has* with what provisioning would *derive*
+  today, classified (`collision-suffix` / `punctuation` / `reversed` / `initial` /
+  `other`). A `punctuation` drift means the CAPWATCH name lacks the punctuation the
+  address carries — the derivation was faithful and the odd address predates
+  provisioning. These mismatches are stable, not defects: the CAPID map updates each
+  account in place at its existing address.
 - `suspendOrphanDuplicates(dryRun)` — retires the non-authoritative, never-signed-in
   twins by retyping their `organization` externalId to a `duplicate_retired_capid`
   marker and suspending them (the retype is what stops `reactivateRenewedMembers()`
