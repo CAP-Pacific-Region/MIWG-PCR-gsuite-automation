@@ -129,7 +129,7 @@ services + OAuth scopes and deploys with the push; you re-consent once per proje
 5. On a **cadet** tenant, set `TENANT_COMMAND_EMAIL_DOMAIN` to the senior domain
    (e.g. `@cawgcap.org`). It is optional and *not* flagged by `validateTenantConfig()` —
    blank silently falls back to this tenant's own `TENANT_EMAIL_DOMAIN`, which sends the
-   monthly recovery-email digests to cadet-domain addresses that do not exist. See
+   monthly account-compliance digests to cadet-domain addresses that do not exist. See
    [`config-tenants/cadets.json`](../config-tenants/cadets.json).
 
 Full key inventory: [Admin Guide §7](ADMIN_GUIDE.md#7-secrets-and-script-properties-the-part-that-breaks-silently)

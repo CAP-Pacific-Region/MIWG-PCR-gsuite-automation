@@ -2,15 +2,17 @@
  * RecoveryEmailNotify.gs — end-to-end.
  *
  * Drives the real notifyRecoveryEmailCompliance() against a fake Drive, a Gmail
- * stub that records every send, and a clock a test can move.
+ * stub that records every send, a fake directory, and a clock a test can move.
  *
  * The question this exists to answer is the inverse of the LSCode module's. That
  * one must be SILENT on its first run; this one must be LOUD — it reports a
  * standing condition, so the first run is meant to surface the whole backlog.
  * What must not happen is the second run doing it again: a monthly job that
  * re-mails the same commander about the same member every month gets filtered to
- * trash, and the three-month window is the only thing preventing that. Moving the
- * clock is the only way to prove the window really opens and closes.
+ * trash, and the three-month window is the only thing preventing that. The
+ * window runs PER ISSUE CATEGORY (EMAIL / TWOSV / LOGIN), so a new kind of
+ * issue must still get through while an old one is quiet. Moving the clock is
+ * the only way to prove the windows really open and close.
  *
  * Run: npm test
  */
@@ -24,6 +26,7 @@ const MODULE = path.join(__dirname, '..', 'src', 'notifications', 'RecoveryEmail
 const { section, check, done } = makeChecker();
 
 const STATE_FILE = 'RecoveryComplianceState.txt';
+const EPOCH = '1970-01-01T00:00:00.000Z';
 
 // Commanders.txt: ORGID=0, CAPID=4, NameLast=8, NameFirst=9, Rank=12
 const COMMANDERS = [
@@ -54,9 +57,9 @@ function member(spec) {
     type: 'SENIOR',
     orgid: spec.orgid || '100',
     orgName: spec.orgid === '200' ? 'Bravo Squadron' : 'Alpha Squadron',
-    charter: spec.orgid === '200' ? 'PCR-CA-080' : 'PCR-CA-070',
-    primaryEmailValue: spec.primary
+    charter: spec.orgid === '200' ? 'PCR-CA-080' : 'PCR-CA-070'
   };
+  m.primaryEmailValue = spec.primary;
   if (!spec.manual) m.recoveryEmail = spec.recovery === undefined ? '' : spec.recovery;
   return m;
 }
@@ -71,11 +74,34 @@ function noRecovery(capid, orgid) {
 }
 
 /**
+ * A directory account. Healthy by default: in use, 2SV enrolled, created long
+ * before any test's clock.
+ *
+ * @param {string} capid - CAPID the account carries
+ * @param {Object} [spec] - { twoSv, lastLogin, created }
+ * @returns {Object} Account as getActiveUsers() returns it
+ */
+function account(capid, spec) {
+  const s = spec || {};
+  return {
+    capid: capid,
+    email: 'm' + capid + '@cawgcap.org',
+    isEnrolledIn2Sv: s.twoSv !== false,
+    lastLoginTime: s.lastLogin === undefined ? '2025-12-15T08:00:00.000Z' : s.lastLogin,
+    creationTime: s.created === undefined ? '2024-01-01T08:00:00.000Z' : s.created
+  };
+}
+
+/**
  * Builds a module instance over the given Drive contents.
  *
+ * The fake directory follows `state.members` unless a test pins
+ * `state.accounts`: every member gets a healthy account, so tests about the
+ * email conditions stay tests about the email conditions.
+ *
  * @param {Object} files - filename -> content, mutated in place by the module
- * @param {Object} opts - { members, enabled, failFrom, today, commanders, duties }
- * @returns {Object} { m, sent, log, clock }
+ * @param {Object} opts - { members, accounts, usersThrow, enabled, failFrom, today, commanders, duties }
+ * @returns {Object} { m, sent, log, clock, state }
  */
 function harness(files, opts) {
   const o = opts || {};
@@ -83,7 +109,7 @@ function harness(files, opts) {
   const { logger, calls } = makeLogger();
   const { gmail, sent } = makeGmail({ failFrom: o.failFrom || [] });
   const clock = makeClock(o.today || '2026-01-01');
-  const state = { members: o.members || {} };
+  const state = { members: o.members || {}, accounts: o.accounts || null };
 
   const m = loadModule(MODULE, {
     Logger: logger,
@@ -112,7 +138,9 @@ function harness(files, opts) {
       return [];
     },
     createEmailMap: () => ({}),
-    getActiveUsers: () => [],
+    getActiveUsers: o.usersThrow
+      ? () => { throw new Error('insufficient permission'); }
+      : () => (state.accounts || Object.keys(state.members).map(capid => account(capid))),
     executeWithRetry: fn => fn(),
     AUTOMATION_SENDER_EMAIL: 'automation@cawgcap.org',
     SENDER_NAME: 'CAWG Information Technology',
@@ -145,9 +173,10 @@ section('1. The first run reports the standing backlog — it is NOT silent');
   const state = JSON.parse(files[STATE_FILE]);
   check('records only the members it reported',
     Object.keys(state.members).sort(), ['1', '3']);
-  check('dated today', state.members['1'].lastNotified, '2026-01-01');
-  check('with the reason', [state.members['1'].reasons, state.members['3'].reasons],
-    ['RECOVERY', 'PRIMARY']);
+  check('as version 2, per-category', state.version, 2);
+  check('dated today, under the EMAIL category',
+    [state.members['1'].categories, state.members['3'].categories],
+    [{ EMAIL: '2026-01-01' }, { EMAIL: '2026-01-01' }]);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +201,7 @@ section('2. Running again the next month says nothing — the whole point');
 
   // The window runs from when they were told, so it stays 1 January.
   check('the recorded date has not drifted',
-    JSON.parse(files[STATE_FILE]).members['1'].lastNotified, '2026-01-01');
+    JSON.parse(files[STATE_FILE]).members['1'].categories.EMAIL, '2026-01-01');
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +217,7 @@ section('3. Three months on, an uncorrected member is reported again');
   check('a second digest goes out', sent.length, 2);
   check('reporting the member again', apr.reported, 1);
   check('and the window restarts from today',
-    JSON.parse(files[STATE_FILE]).members['1'].lastNotified, '2026-04-01');
+    JSON.parse(files[STATE_FILE]).members['1'].categories.EMAIL, '2026-04-01');
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +250,117 @@ section('4. A member who fixes it drops out — and a relapse is reported at onc
 }
 
 // ---------------------------------------------------------------------------
-section('5. The commander is the addressee; the staff are copied');
+section('5. A new 2SV lapse gets through while the email window is closed');
+{
+  const files = {};
+  const { m, sent, clock, state } = harness(files, { members: { '1': noRecovery('1') } });
+
+  m.notifyRecoveryEmailCompliance();
+  check('January: reported for the email issue', sent.length, 1);
+
+  // In February the member turns 2SV off. The email issue is inside its window;
+  // the 2SV issue is brand new — per-category suppression is what lets it out.
+  clock.set('2026-02-01');
+  state.accounts = [account('1', { twoSv: false })];
+  const feb = m.notifyRecoveryEmailCompliance();
+
+  check('February: a digest still goes out', sent.length, 2);
+  check('reporting the member', feb.reported, 1);
+  check('for the 2SV issue', sent[1].html.indexOf('2-Step Verification is not enabled') > -1, true);
+  check('WITHOUT re-listing the suppressed email issue',
+    sent[1].html.indexOf('No personal (non-CAP) email on file'), -1);
+
+  const record = JSON.parse(files[STATE_FILE]).members['1'].categories;
+  check('each category keeps its own date',
+    record, { EMAIL: '2026-01-01', TWOSV: '2026-02-01' });
+
+  // March: both issues persist, both windows are closed — silence.
+  clock.set('2026-03-01');
+  const mar = m.notifyRecoveryEmailCompliance();
+  check('March: quiet', sent.length, 2);
+  check('the member counts as suppressed', mar.suppressed, 1);
+}
+
+// ---------------------------------------------------------------------------
+section('6. The account conditions ride the same digest');
+{
+  const files = {};
+  const { m, sent } = harness(files, {
+    members: { '1': ok('1'), '2': ok('2'), '3': ok('3') },
+    accounts: [
+      account('1', { twoSv: false }),                                    // in use, no 2SV
+      account('2', { lastLogin: EPOCH, created: '2025-10-01T08:00:00.000Z' }), // 92 days unused
+      account('3', { lastLogin: EPOCH, created: '2025-12-20T08:00:00.000Z' })  // 12 days unused
+    ]
+  });
+  const summary = m.notifyRecoveryEmailCompliance();
+
+  check('one digest for the unit', sent.length, 1);
+  check('flagging the 2SV member and the never-signed-in member', summary.flagged, 2);
+  check('names the 2SV issue',
+    sent[0].html.indexOf('2-Step Verification is not enabled') > -1, true);
+  check('names the never-signed-in issue with the creation date',
+    sent[0].html.indexOf('Has never signed in to their account (created 2025-10-01)') > -1, true);
+  check('the young unused account is left alone', /<td>3<\/td>/.test(sent[0].html), false);
+
+  const state = JSON.parse(files[STATE_FILE]);
+  check('each under its own category',
+    [state.members['1'].categories, state.members['2'].categories],
+    [{ TWOSV: '2026-01-01' }, { LOGIN: '2026-01-01' }]);
+}
+
+// ---------------------------------------------------------------------------
+section('7. v1 state is migrated, not re-mailed');
+{
+  // A tenant that ran v1 has member-level dates for what is now the EMAIL
+  // category. Those windows must keep running: re-baselining would re-mail
+  // every previously-reported member the day this version deploys.
+  const files = {};
+  files[STATE_FILE] = JSON.stringify({
+    version: 1,
+    written: '2025-12-01',
+    members: { '1': { lastNotified: '2025-12-01', reasons: 'RECOVERY' } }
+  });
+  const { m, sent, clock } = harness(files, { members: { '1': noRecovery('1') } });
+
+  const jan = m.notifyRecoveryEmailCompliance();
+  check('January: still inside the migrated window', sent.length, 0);
+  check('counted as suppressed', jan.suppressed, 1);
+
+  const state = JSON.parse(files[STATE_FILE]);
+  check('the state file is rewritten as v2', state.version, 2);
+  check('with the v1 date under EMAIL',
+    state.members['1'].categories, { EMAIL: '2025-12-01' });
+
+  // Three months after the v1 report, the window opens as it always did.
+  clock.set('2026-03-01');
+  m.notifyRecoveryEmailCompliance();
+  check('March: reported again', sent.length, 1);
+}
+
+// ---------------------------------------------------------------------------
+section('8. A directory failure aborts rather than wiping the account windows');
+{
+  // A failed or empty directory read would make every member look account-less,
+  // dropping every TWOSV/LOGIN record — so the next healthy run would re-mail
+  // them all. Abort instead, exactly like the empty-roster case.
+  const files = {};
+  const { m, sent } = harness(files, { members: { '1': noRecovery('1') }, usersThrow: true });
+  const summary = m.notifyRecoveryEmailCompliance();
+
+  check('aborts', summary.aborted, true);
+  check('saying why', summary.reason, 'directory unavailable');
+  check('sends nothing', sent.length, 0);
+  check('writes no state file', files[STATE_FILE], undefined);
+
+  const empty = harness(files, { members: { '1': noRecovery('1') }, accounts: [] });
+  const summary2 = empty.m.notifyRecoveryEmailCompliance();
+  check('an empty directory aborts too', summary2.aborted, true);
+  check('saying why', summary2.reason, 'directory empty');
+}
+
+// ---------------------------------------------------------------------------
+section('9. The commander is the addressee; the staff are copied');
 {
   const files = {};
   const { m, sent } = harness(files, { members: { '1': noRecovery('1') } });
@@ -236,7 +375,7 @@ section('5. The commander is the addressee; the staff are copied');
 }
 
 // ---------------------------------------------------------------------------
-section('6. Each unit hears only about its own members');
+section('10. Each unit hears only about its own members');
 {
   const files = {};
   const { m, sent } = harness(files, {
@@ -256,7 +395,7 @@ section('6. Each unit hears only about its own members');
 }
 
 // ---------------------------------------------------------------------------
-section('7. A unit with no reachable staff stays pending, and IT is told');
+section('11. A unit with no reachable staff stays pending, and IT is told');
 {
   const files = {};
   const { m, sent } = harness(files, {
@@ -282,7 +421,7 @@ section('7. A unit with no reachable staff stays pending, and IT is told');
 }
 
 // ---------------------------------------------------------------------------
-section('8. Wrong sender identity: digests fail, the alarm still gets out');
+section('12. Wrong sender identity: digests fail, the alarm still gets out');
 {
   // The live 2026-07-16 LSCode failure, reproduced: the executing account cannot
   // send as automation@, so every digest bounces with "Invalid argument".
@@ -305,7 +444,7 @@ section('8. Wrong sender identity: digests fail, the alarm still gets out');
 }
 
 // ---------------------------------------------------------------------------
-section('9. preview sends nothing, writes nothing, consumes nothing');
+section('13. preview sends nothing, writes nothing, consumes nothing');
 {
   const files = {};
   const { m, sent } = harness(files, { members: { '1': noRecovery('1') } });
@@ -322,7 +461,7 @@ section('9. preview sends nothing, writes nothing, consumes nothing');
 }
 
 // ---------------------------------------------------------------------------
-section('10. A disabled profile does nothing at all');
+section('14. A disabled profile does nothing at all');
 {
   const files = {};
   const { m, sent } = harness(files, { members: { '1': noRecovery('1') }, enabled: false });
@@ -334,7 +473,7 @@ section('10. A disabled profile does nothing at all');
 }
 
 // ---------------------------------------------------------------------------
-section('11. An empty roster aborts rather than wiping the suppression state');
+section('15. An empty roster aborts rather than wiping the suppression state');
 {
   const files = {};
   const { m, sent, state } = harness(files, { members: { '1': noRecovery('1') } });
@@ -352,7 +491,7 @@ section('11. An empty roster aborts rather than wiping the suppression state');
 }
 
 // ---------------------------------------------------------------------------
-section('12. A corrupt state file refuses to run rather than re-reporting everyone');
+section('16. A corrupt state file refuses to run rather than re-reporting everyone');
 {
   const files = {};
   files[STATE_FILE] = '{ this is not json';
@@ -365,7 +504,7 @@ section('12. A corrupt state file refuses to run rather than re-reporting everyo
 }
 
 // ---------------------------------------------------------------------------
-section('13. installRecoveryComplianceMonthlyTrigger dedupes and schedules monthly');
+section('17. installRecoveryComplianceMonthlyTrigger dedupes and schedules monthly');
 {
   const created = [];
   const deleted = [];

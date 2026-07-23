@@ -1,16 +1,21 @@
 /**
- * Recovery-Email Compliance Notification
+ * Account-Compliance Notification (recovery email, 2SV, first sign-in)
  *
- * Version: 1.0.1
- * Date: 2026-07-19
- * Changes: Resolve recipients from this tenant's own directory before deriving
+ * Version: 1.1.0
+ * Date: 2026-07-23
+ * Changes: Two new Workspace-sourced conditions join the digest: accounts with
+ *   2-Step Verification not enabled, and accounts never signed into 60+ days
+ *   after creation. Both read the tenant's own directory (getActiveUsers now
+ *   carries isEnrolledIn2Sv/lastLoginTime/creationTime); a directory read that
+ *   fails or returns nothing aborts the run without touching state, for the
+ *   same reason an empty roster does. Suppression is now PER ISSUE CATEGORY
+ *   (EMAIL / TWOSV / LOGIN) so a member already inside the email window is
+ *   still reported when a 2SV gap appears — state v2, with v1 records migrated
+ *   in place (their lastNotified becomes the EMAIL category's date).
+ *   1.0.1: resolve recipients from this tenant's own directory before deriving
  *   the address, and share one addressee/Cc reduction between the send and the
- *   preview. Both came out of the first live preview: the preview printed the
- *   raw duty list (one person appeared four times in a unit that holds several
- *   duties), and derivation alone produced five classes of dead address —
- *   an apostrophe stripped in the real account, a '.3' duplicate-account suffix,
- *   a CAPWATCH nickname vs the legal first name, a surname changed since the
- *   account was created, and a middle name concatenated into the first name.
+ *   preview — both out of the first live preview, where the raw duty list
+ *   repeated people and derivation alone produced five classes of dead address.
  *   (1.0.0: new module. Mails each unit's commander, personnel officer(s) and
  *   deputy commander(s) a monthly digest of members under their direct command
  *   whose CAPWATCH email setup would leave them unable to reset their Workspace
@@ -27,11 +32,22 @@
  *   PRIMARY   = the member's CAP (tenant) address
  *   SECONDARY = a personal, non-CAP address
  *
- * Two independent conditions are reported, and a member can trip either or both:
+ * Four independent conditions are reported, and a member can trip any of them:
  *
  *   flagPrimary  - there is no tenant address in the PRIMARY slot. That covers a
  *                  personal address sitting in PRIMARY *and* no PRIMARY at all.
  *   flagRecovery - there is no usable personal recovery address anywhere.
+ *   flagTwoSv    - their Workspace account is in use (has been signed into) but
+ *                  2-Step Verification is not enabled on it.
+ *   flagLogin    - their Workspace account was created FIRST_LOGIN_GRACE_DAYS or
+ *                  more ago and has never been signed into at all.
+ *
+ * The first two come from CAPWATCH; the last two from this tenant's own
+ * directory, joined by CAPID. A member with no resolvable account is simply not
+ * evaluated on the account conditions — there is nothing to enroll or sign into.
+ * A never-signed-into account is deliberately NOT also flagged for 2SV: you
+ * cannot enroll an account you have never entered, and one row saying "has never
+ * signed in" already implies the rest.
  *
  * flagRecovery deliberately reuses `member.recoveryEmail`, which
  * UpdateMembers.gs already derives as
@@ -59,11 +75,15 @@
  * THE THREE-MONTH RULE
  * A standing condition would otherwise re-mail the same commander about the same
  * member every single month until the member acts, which is how a notification
- * gets filtered to trash. State records the date each member was last reported,
- * and a member is skipped until SUPPRESSION_MONTHS have passed. A member who
- * becomes compliant is dropped from state entirely, so if they later regress they
- * are reported on the next run rather than sitting silently inside a stale
- * suppression window.
+ * gets filtered to trash. State records, PER ISSUE CATEGORY, the date each
+ * member was last reported for it, and that category is skipped until
+ * SUPPRESSION_MONTHS have passed. The categories are EMAIL (flagPrimary and/or
+ * flagRecovery — they share one window, as they did before categories existed),
+ * TWOSV and LOGIN. Per-category matters: a member told about their email record
+ * in June whose 2SV lapse is noticed in July is reported for 2SV in July, not
+ * silently absorbed into the email window. A category that becomes compliant is
+ * dropped from state, so if it later regresses it is reported on the next run
+ * rather than sitting silently inside a stale suppression window.
  *
  * WHO GETS MAILED
  * The unit's commander (To), with its personnel officers and deputy commanders
@@ -107,12 +127,18 @@ const RECOVERY_NOTIFY_CONFIG = {
   // is the only thing standing between a standing condition and a monthly nag.
   STATE_FILE_NAME: 'RecoveryComplianceState.txt',
 
-  // Bumped when the state file's shape changes. An unrecognised version is
-  // re-baselined rather than guessed at — see rcLoadState_.
-  STATE_VERSION: 1,
+  // Bumped when the state file's shape changes. Version 1 (member-level date) is
+  // migrated in place; anything else unrecognised is re-baselined rather than
+  // guessed at — see rcLoadState_.
+  STATE_VERSION: 2,
 
-  // Do not report the same member again until this many months have passed.
+  // Do not report the same member FOR THE SAME ISSUE CATEGORY again until this
+  // many months have passed. Categories: EMAIL, TWOSV, LOGIN.
   SUPPRESSION_MONTHS: 3,
+
+  // An account this old that has never been signed into is reported. Younger
+  // accounts get the benefit of the doubt — new members take a while to start.
+  FIRST_LOGIN_GRACE_DAYS: 60,
 
   // Duty positions that receive the digest alongside the commander. Assistants
   // are included: the assistant personnel officer is frequently the person who
@@ -124,10 +150,21 @@ const RECOVERY_NOTIFY_CONFIG = {
     'Deputy Commander for Cadets'
   ],
 
-  SUBJECT: 'Member email records needing correction in your unit',
+  // Broadened from "email records" when the 2SV and first-sign-in conditions
+  // joined the digest — the issues are no longer only about eServices email.
+  SUBJECT: 'Member account issues needing attention in your unit',
 
-  // Where a commander or personnel officer can make the correction themselves.
+  // Where a commander or personnel officer can make the eServices email
+  // correction themselves.
   SELF_SERVICE_URL: 'https://www.capnhq.gov/CAP.PersonnelInfo.Web/',
+
+  // Where a member enables 2-Step Verification on their own account.
+  TWOSV_URL: 'https://myaccount.google.com/signinoptions/two-step-verification',
+
+  // Where a member files a support ticket — needed when 2SV enforcement has
+  // already locked them out, so they must be exempted before they can sign in
+  // and enroll. Region-wide portal, so it is correct for every tenant.
+  SUPPORT_TICKET_URL: 'https://support.pcrcap.org',
 
   // Spacing between unit digests, matching RETENTION_CONFIG.EMAIL_DELAY_MS.
   EMAIL_DELAY_MS: 1000
@@ -192,10 +229,30 @@ function runRecoveryNotification_(options) {
     return { aborted: true, reason: 'no members' };
   }
 
-  const evaluation = rcEvaluateMembers_(members);
+  // The account conditions (2SV, never signed in) read this tenant's own
+  // directory. A read that fails or comes back empty would make every member
+  // look account-less — dropping every TWOSV/LOGIN record from state and
+  // re-mailing those members the moment the directory recovers — so it aborts
+  // for exactly the reason an empty roster does.
+  let accounts;
+  try {
+    accounts = getActiveUsers();
+  } catch (e) {
+    Logger.error('Could not read the directory — aborting without touching state', {
+      errorMessage: e.message
+    });
+    return { aborted: true, reason: 'directory unavailable' };
+  }
+  if (!accounts.length) {
+    Logger.error('Directory returned no accounts — aborting without touching state');
+    return { aborted: true, reason: 'directory empty' };
+  }
+
+  const accountByCapid = rcBuildAccountMap_(accounts);
+  const evaluation = rcEvaluateMembers_(members, accountByCapid, start);
   const prior = rcLoadState_();
 
-  Logger.info('Recovery-email evaluation complete', {
+  Logger.info('Account-compliance evaluation complete', {
     members: capids.length,
     evaluated: evaluation.evaluated,
     compliant: evaluation.compliant,
@@ -205,31 +262,48 @@ function runRecoveryNotification_(options) {
 
   // Build the state this run will leave behind.
   //
-  // Compliant and departed members are simply absent from `flagged`, so they
-  // drop out of state here — that is what lets a member who regresses later be
-  // reported immediately instead of inside a stale suppression window.
+  // Compliant and departed members are simply absent from `flagged`, and a
+  // category no longer tripped is absent from `categories`, so both drop out of
+  // state here — that is what lets a regression be reported immediately instead
+  // of inside a stale suppression window.
   const nextState = {};
   const toNotify = {};   // orgid -> [flagged member, ...]
   let suppressed = 0;
 
   Object.keys(evaluation.flagged).forEach(function (capid) {
     const member = evaluation.flagged[capid];
-    const record = prior[capid];
+    const priorCategories = (prior[capid] && prior[capid].categories) || {};
 
-    if (record && rcIsSuppressed_(record.lastNotified, todayIso)) {
-      // Still inside the three-month window: carry the record forward untouched
-      // so the window continues to run from the date they were actually told.
+    // Each issue category runs its own window. A category still inside it
+    // carries its recorded date forward untouched, so the window continues to
+    // run from the date the unit was actually told about THAT issue; a category
+    // outside it (or new) is stamped today and reported.
+    const categories = {};
+    const reportable = [];
+    member.categories.forEach(function (category) {
+      if (rcIsSuppressed_(priorCategories[category], todayIso)) {
+        categories[category] = priorCategories[category];
+      } else {
+        categories[category] = todayIso;
+        reportable.push(category);
+      }
+    });
+
+    nextState[capid] = { categories: categories };
+
+    if (!reportable.length) {
       suppressed++;
-      nextState[capid] = record;
       return;
     }
 
-    nextState[capid] = { lastNotified: todayIso, reasons: member.reasons };
+    // The digest shows only the categories being reported this run; issues
+    // still inside their window stay quiet rather than becoming a monthly nag.
+    member.reportCategories = reportable;
     if (!toNotify[member.orgid]) toNotify[member.orgid] = [];
     toNotify[member.orgid].push(member);
   });
 
-  const recipientsByOrg = rcBuildRecipientDirectory_();
+  const recipientsByOrg = rcBuildRecipientDirectory_(accounts);
   const summary = {
     dryRun: dryRun,
     members: capids.length,
@@ -277,7 +351,7 @@ function runRecoveryNotification_(options) {
         orgName: flagged[0].orgName,
         to: selected.addressee.email,
         cc: selected.cc,
-        members: flagged.map(f => f.capid + ' [' + f.reasons + ']')
+        members: flagged.map(f => f.capid + ' [' + f.reportCategories.join('+') + ']')
       });
       summary.sent++;
       summary.reported += flagged.length;
@@ -322,8 +396,8 @@ function runRecoveryNotification_(options) {
  * deliver their digest retries them next time.
  *
  * Restoring the whole prior record — not just deleting — matters: a member who
- * was previously reported keeps their original lastNotified, so the suppression
- * window continues to run from when they were actually told.
+ * was previously reported keeps each category's original date, so those
+ * suppression windows continue to run from when the unit was actually told.
  *
  * @param {Object} nextState - State being built for this run
  * @param {Array<Object>} flagged - Flagged members for one unit
@@ -346,7 +420,53 @@ function rcRevertOrgState_(nextState, flagged, prior) {
 // ============================================================================
 
 /**
- * Applies the two compliance conditions to every member.
+ * Reduces the directory listing to CAPID -> account, keeping — when a CAPID
+ * holds several accounts (the known duplicate-account problem) — the one most
+ * recently signed into. That is the account the member actually uses, so it is
+ * the one whose 2SV and sign-in facts describe the member rather than an
+ * abandoned twin; judging the dead twin would flag people who are fine.
+ *
+ * @param {Array<Object>} accounts - getActiveUsers() output
+ * @returns {Object} CAPID -> { email, isEnrolledIn2Sv, lastLoginTime, creationTime }
+ */
+function rcBuildAccountMap_(accounts) {
+  const byCapid = {};
+  accounts.forEach(function (account) {
+    if (!account || !account.capid) return;
+    const capid = String(account.capid);
+    const existing = byCapid[capid];
+    if (!existing ||
+        rcTimestamp_(account.lastLoginTime) > rcTimestamp_(existing.lastLoginTime)) {
+      byCapid[capid] = account;
+    }
+  });
+  return byCapid;
+}
+
+/**
+ * True when the account has actually been signed into. The directory reports a
+ * never-used account's lastLoginTime as the epoch, so "parses to a positive
+ * timestamp" is exactly "has been signed into".
+ *
+ * @param {Object} account - Entry from rcBuildAccountMap_
+ * @returns {boolean} True if the account has ever been signed into
+ */
+function rcHasLoggedIn_(account) {
+  return rcTimestamp_(account.lastLoginTime) > 0;
+}
+
+/**
+ * @param {string} isoTimestamp - Directory timestamp, possibly absent
+ * @returns {number} Milliseconds since epoch, or 0 when absent/unparseable
+ */
+function rcTimestamp_(isoTimestamp) {
+  const ms = new Date(String(isoTimestamp || '')).getTime();
+  return isNaN(ms) ? 0 : ms;
+}
+
+/**
+ * Applies the compliance conditions to every member: the two CAPWATCH email
+ * conditions, and the two account conditions joined from the directory.
  *
  * Members merged from the ManualMembers sheet are skipped. They never pass
  * through addContactInfo() (loadManualMembers() merges them afterwards), so they
@@ -357,11 +477,19 @@ function rcRevertOrgState_(nextState, flagged, prior) {
  * contact derivation", because that derivation assigns it to every member it
  * sees, including '' when nothing qualifies.
  *
+ * A member with no account in the map is not evaluated on the account
+ * conditions: there is nothing to enroll or sign into. A never-signed-into
+ * account is flagged for LOGIN only, never also for 2SV — you cannot enroll an
+ * account you have never entered.
+ *
  * @param {Object} members - CAPID -> member object from getMembers()
+ * @param {Object} accountByCapid - CAPID -> account from rcBuildAccountMap_()
+ * @param {Date} now - This run's clock, for the first-sign-in grace period
  * @returns {Object} { flagged, evaluated, compliant, skipped }
  */
-function rcEvaluateMembers_(members) {
+function rcEvaluateMembers_(members, accountByCapid, now) {
   const result = { flagged: {}, evaluated: 0, compliant: 0, skipped: 0 };
+  const graceMs = RECOVERY_NOTIFY_CONFIG.FIRST_LOGIN_GRACE_DAYS * 24 * 60 * 60 * 1000;
 
   Object.keys(members).forEach(function (capid) {
     const m = members[capid];
@@ -376,10 +504,30 @@ function rcEvaluateMembers_(members) {
     const flagPrimary = !rcIsTenantDomainEmail_(m.primaryEmailValue);
     const flagRecovery = !m.recoveryEmail;
 
-    if (!flagPrimary && !flagRecovery) {
+    const account = accountByCapid[String(capid)];
+    let flagTwoSv = false;
+    let flagLogin = false;
+    if (account) {
+      if (rcHasLoggedIn_(account)) {
+        flagTwoSv = !account.isEnrolledIn2Sv;
+      } else {
+        const created = rcTimestamp_(account.creationTime);
+        flagLogin = created > 0 && (now.getTime() - created) >= graceMs;
+      }
+    }
+
+    if (!flagPrimary && !flagRecovery && !flagTwoSv && !flagLogin) {
       result.compliant++;
       return;
     }
+
+    // The suppression categories: PRIMARY and RECOVERY share the EMAIL window
+    // (as they did before categories existed); the account conditions each get
+    // their own.
+    const categories = [];
+    if (flagPrimary || flagRecovery) categories.push('EMAIL');
+    if (flagTwoSv) categories.push('TWOSV');
+    if (flagLogin) categories.push('LOGIN');
 
     result.flagged[capid] = {
       capid: String(capid),
@@ -390,7 +538,16 @@ function rcEvaluateMembers_(members) {
       charter: m.charter || '',
       flagPrimary: flagPrimary,
       flagRecovery: flagRecovery,
-      reasons: flagPrimary && flagRecovery ? 'BOTH' : (flagPrimary ? 'PRIMARY' : 'RECOVERY')
+      flagTwoSv: flagTwoSv,
+      flagLogin: flagLogin,
+      accountCreated: account && flagLogin ? String(account.creationTime).slice(0, 10) : '',
+      categories: categories,
+      reasons: [
+        flagPrimary ? 'PRIMARY' : '',
+        flagRecovery ? 'RECOVERY' : '',
+        flagTwoSv ? '2SV' : '',
+        flagLogin ? 'LOGIN' : ''
+      ].filter(String).join('+')
     };
   });
 
@@ -468,9 +625,10 @@ function rcIsSuppressed_(lastNotifiedIso, todayIso) {
  * Note Commanders.txt is nationwide, so this is only ever indexed by ORGIDs
  * drawn from this tenant's own members.
  *
+ * @param {Array<Object>} accounts - getActiveUsers() output, fetched once by the run
  * @returns {Object} Map of ORGID to an array of recipients
  */
-function rcBuildRecipientDirectory_() {
+function rcBuildRecipientDirectory_(accounts) {
   const nameByCapid = {};
   parseFile('Member').forEach(function (row) {
     const capid = String(row[0] || '').trim();
@@ -483,7 +641,7 @@ function rcBuildRecipientDirectory_() {
   });
 
   const emailMap = createEmailMap();
-  const directoryMap = rcBuildCommandDirectoryMap_();
+  const directoryMap = rcBuildCommandDirectoryMap_(accounts);
   const byOrg = {};
 
   const add = function (orgid, capid, role, nameInfo) {
@@ -550,12 +708,13 @@ function rcBuildRecipientDirectory_() {
  * the default — a `.2` duplicate, a manual creation, a rename. Those are
  * invisible to derivation and would be mailed into the void.
  *
- * Failure is non-fatal: a directory read that throws (scope/permission) falls
- * back to derivation rather than aborting a run that is otherwise fine.
+ * The listing is fetched once by the run (the account conditions need it too)
+ * and passed in, so this never issues its own directory read.
  *
+ * @param {Array<Object>} accounts - getActiveUsers() output
  * @returns {Object} CAPID -> primary email, or {} when not applicable
  */
-function rcBuildCommandDirectoryMap_() {
+function rcBuildCommandDirectoryMap_(accounts) {
   const commandDomain = String(CONFIG.COMMAND_EMAIL_DOMAIN || '').trim().toLowerCase().replace(/^@/, '');
   const ownDomain = String(CONFIG.EMAIL_DOMAIN || '').trim().toLowerCase().replace(/^@/, '');
 
@@ -567,19 +726,12 @@ function rcBuildCommandDirectoryMap_() {
     return {};
   }
 
-  try {
-    const map = {};
-    getActiveUsers().forEach(function (u) {
-      if (u && u.capid && u.email) map[String(u.capid)] = String(u.email);
-    });
-    Logger.info('Command directory map built from this tenant', { accounts: Object.keys(map).length });
-    return map;
-  } catch (e) {
-    Logger.warn('Could not read the directory — falling back to derived addresses', {
-      errorMessage: e.message
-    });
-    return {};
-  }
+  const map = {};
+  (accounts || []).forEach(function (u) {
+    if (u && u.capid && u.email) map[String(u.capid)] = String(u.email);
+  });
+  Logger.info('Command directory map built from this tenant', { accounts: Object.keys(map).length });
+  return map;
 }
 
 /**
@@ -632,7 +784,14 @@ function rcDeriveCommandEmail_(info) {
 // ============================================================================
 
 /**
- * Loads the recorded state: CAPID -> { lastNotified: 'yyyy-MM-dd', reasons }.
+ * Loads the recorded state: CAPID -> { categories: { EMAIL|TWOSV|LOGIN:
+ * 'yyyy-MM-dd' } }, each date being when the member was last reported for that
+ * category.
+ *
+ * Version 1 records (one member-level lastNotified, email conditions only) are
+ * migrated in place: their date becomes the EMAIL category's date, so windows
+ * already running when the account conditions were added keep running instead
+ * of re-mailing every previously-reported member.
  *
  * @returns {Object} Recorded members map, or {} if this tenant has no usable state
  */
@@ -664,6 +823,21 @@ function rcLoadState_() {
     );
   }
 
+  if (parsed && parsed.version === 1) {
+    // v1 stored one member-level date for what is now the EMAIL category.
+    const migrated = {};
+    Object.keys(parsed.members || {}).forEach(function (capid) {
+      const record = parsed.members[capid];
+      if (record && record.lastNotified) {
+        migrated[capid] = { categories: { EMAIL: record.lastNotified } };
+      }
+    });
+    Logger.info('Migrated v1 recovery-compliance state to per-category records', {
+      memberCount: Object.keys(migrated).length
+    });
+    return migrated;
+  }
+
   if (!parsed || parsed.version !== RECOVERY_NOTIFY_CONFIG.STATE_VERSION) {
     // At worst this costs one extra round of digests; the alternative is reading
     // an unknown shape and suppressing people we never actually told.
@@ -680,7 +854,7 @@ function rcLoadState_() {
 /**
  * Writes the members map, creating the file when absent.
  *
- * @param {Object} members - CAPID to { lastNotified, reasons }
+ * @param {Object} members - CAPID to { categories: { EMAIL|TWOSV|LOGIN: 'yyyy-MM-dd' } }
  * @returns {void}
  */
 function rcSaveState_(members) {
@@ -847,21 +1021,98 @@ function rcSendDigest_(orgid, recipients, flagged) {
 }
 
 /**
+ * Renders one unit's digest. Rows show only the categories being REPORTED this
+ * run (member.reportCategories); an issue still inside its suppression window
+ * stays out of the email entirely, so the digest never turns into a monthly
+ * re-listing of things the commander was already told.
+ *
+ * The guidance blocks are conditional on the issues actually present, so a
+ * digest that is all 2SV does not open with a lecture about eServices email
+ * slots.
+ *
  * @param {Object} addressee - Recipient the digest is addressed to
  * @param {Array<Object>} flagged - Flagged members for this unit
  * @returns {string} HTML body
  */
 function rcBuildDigestHtml_(addressee, flagged) {
   const url = RECOVERY_NOTIFY_CONFIG.SELF_SERVICE_URL;
+  const twoSvUrl = RECOVERY_NOTIFY_CONFIG.TWOSV_URL;
+  const label = rcEscapeHtml_(CONFIG.ORG_LABEL);
+
+  let anyEmail = false;
+  let anyTwoSv = false;
+  let anyLogin = false;
 
   const rows = flagged.map(function (m) {
+    // testRecoveryDigestToTestEmail and older callers pass no reportCategories;
+    // falling back to `categories` renders every current issue.
+    const cats = m.reportCategories || m.categories || [];
     const issues = [];
-    if (m.flagPrimary) issues.push('CAP email is not their PRIMARY email');
-    if (m.flagRecovery) issues.push('No personal (non-CAP) email on file');
+    if (cats.indexOf('EMAIL') > -1) {
+      anyEmail = true;
+      if (m.flagPrimary) issues.push('CAP email is not their PRIMARY email');
+      if (m.flagRecovery) issues.push('No personal (non-CAP) email on file');
+    }
+    if (cats.indexOf('TWOSV') > -1) {
+      anyTwoSv = true;
+      issues.push('2-Step Verification is not enabled on their account');
+    }
+    if (cats.indexOf('LOGIN') > -1) {
+      anyLogin = true;
+      issues.push('Has never signed in to their account' +
+        (m.accountCreated ? ' (created ' + m.accountCreated + ')' : ''));
+    }
     return '<tr><td>' + rcEscapeHtml_(m.name) + '</td><td>' + rcEscapeHtml_(m.capid) +
       '</td><td>' + rcEscapeHtml_(m.type) + '</td><td>' +
       issues.map(rcEscapeHtml_).join('<br>') + '</td></tr>';
   }).join('');
+
+  let guidance = '';
+
+  if (anyEmail) {
+    guidance +=
+      '<div class="action"><p><strong>Email record in eServices:</strong> password resets are ' +
+      'sent to a personal, non-' + label + ' address — a member locked out of their account ' +
+      'cannot receive a reset at that same account. Members should have their ' + label +
+      ' address listed as their <strong>primary</strong> email and a personal address listed ' +
+      'as their <strong>secondary</strong> email. Please contact these members and ask them ' +
+      'to correct their email addresses in eServices. If you are certain of a member\'s ' +
+      'information, you may make the change on their behalf — as a commander or personnel ' +
+      'officer you have the privileges to do so at ' +
+      '<a href="' + url + '">' + rcEscapeHtml_(url) + '</a>.</p></div>' +
+
+    '<p></p>';
+  }
+
+  if (anyTwoSv) {
+    const ticketUrl = RECOVERY_NOTIFY_CONFIG.SUPPORT_TICKET_URL;
+    guidance +=
+      '<div class="action"><p><strong>2-Step Verification:</strong> 2-Step Verification ' +
+      'protects a member\'s ' + label + ' account even if their password is guessed or ' +
+      'stolen, and it is expected on every account. Please ask these members to turn it on ' +
+      'at <a href="' + twoSvUrl + '">' + rcEscapeHtml_(twoSvUrl) + '</a> while signed in to ' +
+      'their ' + label + ' account — it takes about two minutes with the phone they already ' +
+      'carry. If a member is already locked out of their account for not having 2-Step ' +
+      'Verification enabled, they may need to file a support ticket at ' +
+      '<a href="' + ticketUrl + '">' + rcEscapeHtml_(ticketUrl) + '</a> to have their ' +
+      'account temporarily exempted so they can sign in and enroll.</p></div>' +
+
+    '<p></p>';
+  }
+
+  if (anyLogin) {
+    guidance +=
+      '<div class="action"><p><strong>Never signed in:</strong> these members\' ' + label +
+      ' accounts were created over ' + RECOVERY_NOTIFY_CONFIG.FIRST_LOGIN_GRACE_DAYS +
+      ' days ago and have never been used, so they are missing unit and wing ' +
+      'communications sent to them. Please ask them to sign in at ' +
+      '<a href="https://mail.google.com">mail.google.com</a> with their ' + label +
+      ' address. A member who does not know their password can use the "Forgot password" ' +
+      'link (the reset goes to the personal address in eServices) or contact ' +
+      rcEscapeHtml_(ITSUPPORT_EMAIL) + '.</p></div>' +
+
+    '<p></p>';
+  }
 
   return '<html><head><style>' +
     'body { font-family: Arial, sans-serif; color: #202124; }' +
@@ -876,30 +1127,20 @@ function rcBuildDigestHtml_(addressee, flagged) {
     '<p>' + rcEscapeHtml_([addressee.rank, addressee.lastName].filter(String).join(' ')) + ',</p>' +
 
     '<p>The following ' + flagged.length + ' member(s) under your direct command have an ' +
-    'email record in eServices that will prevent them from resetting their ' +
-    rcEscapeHtml_(CONFIG.ORG_LABEL) + ' account password.</p>' +
+    'issue with their ' + label + ' account or their email record in eServices that needs ' +
+    'attention. Each issue, and what to do about it, is explained below the table.</p>' +
 
-    '<p>Password resets are sent to a personal, non-' + rcEscapeHtml_(CONFIG.ORG_LABEL) +
-    ' address — a member locked out of their account cannot receive a reset at that same ' +
-    'account. Members should have their ' + rcEscapeHtml_(CONFIG.ORG_LABEL) +
-    ' address listed as their <strong>primary</strong> email and a personal address listed ' +
-    'as their <strong>secondary</strong> email.</p>' +
-
-    '<h2>Members needing correction (' + flagged.length + ')</h2>' +
+    '<h2>Members needing attention (' + flagged.length + ')</h2>' +
     '<table><tr><th>Member</th><th>CAPID</th><th>Type</th><th>Issue</th></tr>' +
     rows + '</table>' +
 
-    '<div class="action"><p><strong>What to do:</strong> please contact these members and ask ' +
-    'them to correct their email addresses in eServices. If you are certain of a member\'s ' +
-    'information, you may make the change on their behalf — as a commander or personnel ' +
-    'officer you have the privileges to do so at ' +
-    '<a href="' + url + '">' + rcEscapeHtml_(url) + '</a>.</p></div>' +
+    guidance +
 
-    '<hr><p class="footer">Automated notification derived from the CAPWATCH extract ' +
-    '(MbrContact). eServices is authoritative. To avoid repeat notices, a member reported ' +
-    'here will not be reported again for ' + RECOVERY_NOTIFY_CONFIG.SUPPRESSION_MONTHS +
-    ' months, even if the issue is not yet corrected. Questions: ' +
-    rcEscapeHtml_(ITSUPPORT_EMAIL) + '.</p></body></html>';
+    '<hr><p class="footer">Automated notification derived from the CAPWATCH extract and the ' +
+    label + ' account directory. eServices is authoritative for email records. To avoid ' +
+    'repeat notices, an issue reported here will not be reported again for ' +
+    RECOVERY_NOTIFY_CONFIG.SUPPRESSION_MONTHS + ' months, even if it is not yet corrected. ' +
+    'Questions: ' + rcEscapeHtml_(ITSUPPORT_EMAIL) + '.</p></body></html>';
 }
 
 /**
@@ -1027,15 +1268,18 @@ function testRecoveryDigestToTestEmail() {
   const flagged = [
     {
       capid: '123456', name: 'Capt Jamie Rivera', type: 'SENIOR', charter: 'PCR-CA-070',
-      orgName: 'Example Squadron', flagPrimary: true, flagRecovery: false
+      orgName: 'Example Squadron', flagPrimary: true, flagRecovery: false,
+      categories: ['EMAIL']
     },
     {
       capid: '234567', name: '2d Lt Alex Chen', type: 'SENIOR', charter: 'PCR-CA-070',
-      orgName: 'Example Squadron', flagPrimary: false, flagRecovery: true
+      orgName: 'Example Squadron', flagPrimary: false, flagRecovery: true,
+      flagTwoSv: true, categories: ['EMAIL', 'TWOSV']
     },
     {
       capid: '345678', name: 'C/CMSgt Sam Fitzgerald', type: 'CADET', charter: 'PCR-CA-070',
-      orgName: 'Example Squadron', flagPrimary: true, flagRecovery: true
+      orgName: 'Example Squadron', flagLogin: true, accountCreated: '2026-04-01',
+      categories: ['LOGIN']
     }
   ];
 

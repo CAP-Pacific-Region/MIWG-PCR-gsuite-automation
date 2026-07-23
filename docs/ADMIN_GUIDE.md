@@ -432,7 +432,7 @@ the data runs after the download. Apps Script schedules within a 1-hour window, 
 | 11 | `updateResources()` | Weekly (Sun) | Aircraft/vehicle Calendar resources + squadron buildings. **Seniors only** (`MANAGE_RESOURCES`). |
 | 12 | `manageLicenseLifecycle()` | Monthly | Reactivate renewed, delete long-ineligible accounts to free seats. |
 | 13 | `notifyLSCodeChanges()` | Weekly (Mon) | Mail unit CCs when a member's FBI background check is granted or lapses. **Seniors only.** The cadence *is* the reported detection window. |
-| 14 | `notifyRecoveryEmailCompliance()` | Monthly (1st) | Mail unit CCs + personnel officers + deputies about members whose email record blocks a password reset. **Seniors + cadets.** |
+| 14 | `notifyRecoveryEmailCompliance()` | Monthly (1st) | Mail unit CCs + personnel officers + deputies about members whose email record blocks a password reset, whose account lacks 2-Step Verification, or whose account was never signed into (60+ days). **Seniors + cadets.** |
 
 > ⚠️ **Both notification triggers must be created while signed in as the automation
 > account.** A time-driven trigger runs as whoever created it, and the digests send as
@@ -648,16 +648,22 @@ owned by the automation account (see the warning in [Section 8](#8-what-runs-whe
 - `previewLSCodeChanges()` / `notifyLSCodeChanges()` — FBI background-check changes.
   **Seniors only** (`RUN_LSCODE_NOTIFICATIONS`). First run is **silent by design** (it lays a
   baseline); only a *change* against recorded state notifies. `installLSCodeWeeklyTrigger()`.
-- `previewRecoveryEmailCompliance()` / `notifyRecoveryEmailCompliance()` — members whose
-  CAPWATCH email record would stop them resetting their password: no CAP address in the
-  PRIMARY slot, and/or no personal (non-CAP) address on file at all. **Seniors + cadets**
+- `previewRecoveryEmailCompliance()` / `notifyRecoveryEmailCompliance()` — members with
+  account issues under the unit's direct command: no CAP address in the CAPWATCH PRIMARY
+  slot, and/or no personal (non-CAP) address on file at all (either blocks a password
+  reset), and/or **2-Step Verification not enabled** on an in-use account, and/or an
+  account **never signed into 60+ days after creation**. **Seniors + cadets**
   (`RUN_RECOVERY_EMAIL_NOTIFICATIONS`). Sent to the unit commander, copying its personnel
   officers (primary *and* assistant) and deputy commanders. `installRecoveryComplianceMonthlyTrigger()`.
   - ⚠️ Unlike LSCode, the **first run is deliberately loud** — it reports a standing condition,
     so it surfaces the entire existing backlog at once. **Run the preview first and look at the
     volume** before scheduling it.
-  - A member reported once is not reported again for **3 months**, even if uncorrected. A member
-    who fixes the issue drops out of state, so a later relapse is reported immediately.
+  - An issue reported once is not reported again for **3 months**, even if uncorrected. The
+    window runs **per issue category** (email record / 2SV / never signed in), so a member
+    already inside the email window is still reported when a 2SV gap appears. A fixed issue
+    drops out of state, so a later relapse is reported immediately.
+  - A never-used account is flagged only for the sign-in, never also for 2SV; when a CAPID
+    holds duplicate accounts, the one most recently signed into is the one judged.
   - Cadet-lite members are excluded automatically (no account ⇒ no password). A cadet whose own
     secondary email is empty but who has a **parent/guardian** address on file is *not* flagged
     for recovery — that address is a working reset path.
@@ -712,9 +718,10 @@ src/
 │   │                              # file and trigger, and never touches provisioning.
 │   ├── LSCodeNotify.gs            # Weekly: FBI background-check (Member.txt LSCode) changes.
 │   │                              # Seniors only — cadet records carry no LSCode.
-│   └── RecoveryEmailNotify.gs     # Monthly: members whose CAPWATCH email record blocks a
-│                                  # password reset. Seniors + cadets. 3-month per-member quiet
-│                                  # period; needs TENANT_COMMAND_EMAIL_DOMAIN on cadets.
+│   └── RecoveryEmailNotify.gs     # Monthly: account issues — email record blocks a
+│                                  # password reset, no 2SV, never signed in. Seniors + cadets.
+│                                  # 3-month per-issue quiet period; needs
+│                                  # TENANT_COMMAND_EMAIL_DOMAIN on cadets.
 │
 └── recruiting-and-retention/
     ├── SendRetentionEmail.gs      # Age-out / expiration / welcome emails.
