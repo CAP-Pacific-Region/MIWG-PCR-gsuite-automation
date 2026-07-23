@@ -1,11 +1,18 @@
 /**
  * Duplicate Account Guard & Cleanup
  *
- * Version: 1.2.0
+ * Version: 1.3.0
  * Date: 2026-07-19
  * Author: Maj Isaac Wilson IV, California Wing
  *
- * Changes: 1.2.0 — two fixes found by reviewing the first live scan.
+ * Changes: 1.3.0 — chooseAuthoritativeAccount_ takes a preferredDomain and ranks
+ *   an account on the tenant's configured email domain above one on a legacy domain
+ *   (below login recency and active, above everything else). Motivated by the region
+ *   tenant's domain-migration twin: identical localpart on a legacy domain vs the
+ *   configured one, both never used — the old ordering fell through to "newest
+ *   created", which picked correctly by luck rather than policy. All three call sites
+ *   pass CONFIG.EMAIL_DOMAIN, so scan preview and cleanup keep deciding identically.
+ *   1.2.0 — two fixes found by reviewing the first live scan.
  *   (a) chooseAuthoritativeAccount_ ranks on the lastLogin TIMESTAMP, not a
  *   has-ever-signed-in boolean. One cadets pair has BOTH accounts signed into — one
  *   used days ago, one months ago — and the boolean tied them, so "newest created"
@@ -177,9 +184,10 @@ function dupGuardCanonicalLocalpart_(email) {
  *
  *   1. MOST RECENT login              (the member is demonstrably using it)
  *   2. active over suspended
- *   3. localpart equals canonical first.last
- *   4. no numeric collision suffix
- *   5. newest created
+ *   3. on the tenant's configured email domain
+ *   4. localpart equals canonical first.last
+ *   5. no numeric collision suffix
+ *   6. newest created
  *
  * Rule 1 compares the actual lastLogin TIMESTAMP, not a has-ever-signed-in boolean.
  * A boolean is not enough: the cadets tenant has a pair where BOTH accounts have
@@ -187,18 +195,34 @@ function dupGuardCanonicalLocalpart_(email) {
  * letting "newest created" pick the stale account and mark the actively-used one for
  * retirement. Never-signed-in sorts as 0, so it still loses to any real login.
  *
+ * Rule 3 exists because of the region tenant: a member held twin never-signed-in
+ * accounts on a LEGACY domain and on the configured one (a domain-migration artifact,
+ * identical localpart). Without a domain rule the pick fell through to "newest
+ * created" — which happened to be right, but by luck, not policy. The domain the
+ * tenant actually issues addresses on (CONFIG.EMAIL_DOMAIN) is the policy. It ranks
+ * BELOW login recency and active on purpose: never retire the account a member uses
+ * just because it sits on an old domain.
+ *
  * Pure.
  *
  * @param {Array<{email,suspended,created,lastLogin,neverSignedIn}>} accounts
  * @param {string} canonicalLocal firstname.lastname (no domain), or '' if unknown
+ * @param {string} [preferredDomain] the tenant's email domain ('@x.org' or 'x.org');
+ *   '' / omitted disables rule 3 (all accounts score equal on it)
  * @returns {Object|null} the chosen account
  */
-function chooseAuthoritativeAccount_(accounts, canonicalLocal) {
+function chooseAuthoritativeAccount_(accounts, canonicalLocal, preferredDomain) {
   if (!accounts || !accounts.length) return null;
   const canon = String(canonicalLocal || '').toLowerCase();
 
+  // Accept the domain with or without the leading '@' (Script Properties are typed
+  // by hand per tenant); '' disables the rule rather than matching nothing oddly.
+  const bareDom = String(preferredDomain || '').trim().toLowerCase().replace(/^@+/, '');
+  const domSuffix = bareDom ? '@' + bareDom : '';
+
   function score(a) {
-    const local = String(a.email || '').split('@')[0].toLowerCase();
+    const email = String(a.email || '').toLowerCase();
+    const local = email.split('@')[0];
     // Google returns the Unix epoch for never-signed-in accounts, which lands on 0
     // here anyway; the explicit flag guards a missing/!odd value.
     const loginAt = a.neverSignedIn
@@ -207,6 +231,7 @@ function chooseAuthoritativeAccount_(accounts, canonicalLocal) {
     return {
       loginAt: loginAt,
       active: a.suspended ? 0 : 1,
+      onDomain: (domSuffix && email.slice(-domSuffix.length) === domSuffix) ? 1 : 0,
       exact: (canon && local === canon) ? 1 : 0,
       noSuffix: /\.\d+$/.test(local) ? 0 : 1,
       created: new Date(a.created || 0).getTime()
@@ -217,6 +242,7 @@ function chooseAuthoritativeAccount_(accounts, canonicalLocal) {
     const sx = score(x), sy = score(y);
     return (sy.loginAt - sx.loginAt) ||   // most recently used first
            (sy.active - sx.active) ||
+           (sy.onDomain - sx.onDomain) || // tenant's configured domain over a legacy one
            (sy.exact - sx.exact) ||
            (sy.noSuffix - sx.noSuffix) ||
            (sy.created - sx.created);     // newest first
@@ -278,8 +304,8 @@ function buildProvisioningEmailByCapid_() {
     const accounts = byCapid[capid];
     if (accounts.length > 1) multi++;
     // No member name is available at map-build time, so there is no canonical hint;
-    // login history / active / newest is what decides.
-    const chosen = chooseAuthoritativeAccount_(accounts, '');
+    // login history / active / configured-domain / newest is what decides.
+    const chosen = chooseAuthoritativeAccount_(accounts, '', CONFIG.EMAIL_DOMAIN);
     if (chosen) map[capid] = chosen.email;
   });
 

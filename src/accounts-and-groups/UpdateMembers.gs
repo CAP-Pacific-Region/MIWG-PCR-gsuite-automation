@@ -9,6 +9,9 @@
  *   notifications/RecoveryEmailNotify.gs for the 2SV and never-logged-in
  *   checks). Purely additive: the active-only contract and every existing field
  *   are unchanged, so suspendExpiredMembers()/ManageLicenses.gs are unaffected.
+ *   1.18.1 — the duplicate-create guard passes CONFIG.EMAIL_DOMAIN to
+ *   chooseAuthoritativeAccount_ so a configured-domain account outranks a
+ *   legacy-domain twin (DuplicateAccountGuard.gs 1.3.0). No other change.
  *   1.18.0 — updateAllMembers()/forceUpdateAllMembers() now build
  *   workspaceEmailByCapid via buildProvisioningEmailByCapid_ (DuplicateAccountGuard.gs)
  *   instead of getActiveUsers(). The old map omitted SUSPENDED accounts and read the
@@ -1215,7 +1218,7 @@ function addOrUpdateUser(member) {
     // place at its own address and DO NOT insert. See DuplicateAccountGuard.gs.
     const existingByCapid = findExistingAccountsByCapid_(member.capsn);
     if (existingByCapid.length > 0) {
-      const authoritative = chooseAuthoritativeAccount_(existingByCapid, baseEmail);
+      const authoritative = chooseAuthoritativeAccount_(existingByCapid, baseEmail, CONFIG.EMAIL_DOMAIN);
       Logger.warn('Duplicate-create prevented — existing account found by CAPID', {
         capsn: member.capsn,
         name: member.firstName + ' ' + member.lastName,

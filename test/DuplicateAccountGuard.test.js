@@ -123,4 +123,61 @@ section('3. chooseAuthoritativeAccount_ — LOGIN HISTORY outranks the canonical
   check('empty input', m.chooseAuthoritativeAccount_([], 'a.b'), null);
 }
 
+// ---------------------------------------------------------------------------
+section('3b. domain awareness — configured domain beats a legacy one, by policy');
+{
+  // The region shape: identical localpart, legacy domain vs configured domain,
+  // both active and never signed in. Must be decided by domain, not created date —
+  // so the configured-domain account wins even when it is OLDER.
+  check('configured domain wins even as the OLDER account',
+    m.chooseAuthoritativeAccount_([
+      { email: 'sam.roe@legacy.org', suspended: false, created: '2026-05-05T00:00:00Z', neverSignedIn: true },
+      { email: 'sam.roe@current.gov', suspended: false, created: '2026-02-15T00:00:00Z', neverSignedIn: true }
+    ], '', '@current.gov').email,
+    'sam.roe@current.gov');
+
+  check('accepts the domain without a leading @ (hand-typed Script Property)',
+    m.chooseAuthoritativeAccount_([
+      { email: 'sam.roe@legacy.org', suspended: false, created: '2026-05-05T00:00:00Z', neverSignedIn: true },
+      { email: 'sam.roe@current.gov', suspended: false, created: '2026-02-15T00:00:00Z', neverSignedIn: true }
+    ], '', 'current.gov').email,
+    'sam.roe@current.gov');
+
+  check('login recency still outranks domain — never retire the used account',
+    m.chooseAuthoritativeAccount_([
+      { email: 'sam.roe@legacy.org', suspended: false, created: '2025-01-01T00:00:00Z', lastLogin: '2026-07-01T00:00:00Z', neverSignedIn: false },
+      { email: 'sam.roe@current.gov', suspended: false, created: '2026-02-15T00:00:00Z', neverSignedIn: true }
+    ], '', '@current.gov').email,
+    'sam.roe@legacy.org');
+
+  check('active still outranks domain',
+    m.chooseAuthoritativeAccount_([
+      { email: 'sam.roe@legacy.org', suspended: false, created: '2025-01-01T00:00:00Z', neverSignedIn: true },
+      { email: 'sam.roe@current.gov', suspended: true, created: '2026-02-15T00:00:00Z', neverSignedIn: true }
+    ], '', '@current.gov').email,
+    'sam.roe@legacy.org');
+
+  check('domain outranks the canonical-localpart hint',
+    m.chooseAuthoritativeAccount_([
+      { email: 'sam.roe@legacy.org', suspended: false, created: '2026-05-05T00:00:00Z', neverSignedIn: true },
+      { email: 'sam.roe.2@current.gov', suspended: false, created: '2026-02-15T00:00:00Z', neverSignedIn: true }
+    ], 'sam.roe', '@current.gov').email,
+    'sam.roe.2@current.gov');
+
+  check('no domain passed: rule is inert, prior behavior unchanged (newest wins)',
+    m.chooseAuthoritativeAccount_([
+      { email: 'sam.roe@legacy.org', suspended: false, created: '2026-05-05T00:00:00Z', neverSignedIn: true },
+      { email: 'sam.roe@current.gov', suspended: false, created: '2026-02-15T00:00:00Z', neverSignedIn: true }
+    ], '').email,
+    'sam.roe@legacy.org');
+
+  // A domain must match as a whole suffix: '@rent.gov' must not match '@current.gov'.
+  check('domain matches as a whole @suffix, never a substring',
+    m.chooseAuthoritativeAccount_([
+      { email: 'sam.roe@current.gov', suspended: false, created: '2026-05-05T00:00:00Z', neverSignedIn: true },
+      { email: 'sam.roe@rent.gov', suspended: false, created: '2026-02-15T00:00:00Z', neverSignedIn: true }
+    ], '', '@rent.gov').email,
+    'sam.roe@rent.gov');
+}
+
 done();
