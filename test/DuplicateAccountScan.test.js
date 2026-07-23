@@ -15,7 +15,8 @@ const { section, check, done } = makeChecker();
 
 const m = loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: {} }, [
   'extractCapidsFromUser_', 'localpartTokens_', 'classifyLocalpartPair_', 'neverLoggedIn_',
-  'capidCarriersForUser_', 'looksLikeRoleAccount_', 'derivedLocalpartForMember_'
+  'capidCarriersForUser_', 'looksLikeRoleAccount_', 'derivedLocalpartForMember_',
+  'classifyLocalpartDrift_'
 ]);
 
 // ---------------------------------------------------------------------------
@@ -147,6 +148,27 @@ section('7. derivedLocalpartForMember_ — mirrors baseEmail (hyphens KEPT)');
   check('hyphens are KEPT (baseEmail strips only whitespace)',
     m.derivedLocalpartForMember_({ firstName: 'Lu-Ann', lastName: 'Roe-Smith' }), 'lu-ann.roe-smith');
   check('missing fields do not throw', m.derivedLocalpartForMember_({}), '.');
+}
+
+// ---------------------------------------------------------------------------
+section('8. classifyLocalpartDrift_ — account address vs what CAPWATCH derives');
+{
+  check('exact derivation', m.classifyLocalpartDrift_('sam.roe', 'sam.roe'), 'match');
+  check('collision suffix', m.classifyLocalpartDrift_('sam.roe.2', 'sam.roe'), 'collision-suffix');
+  check('hyphen the CAPWATCH name lacks',
+    m.classifyLocalpartDrift_('lu-ann.roe', 'luann.roe'), 'punctuation');
+  check('hyphen in the surname', m.classifyLocalpartDrift_('sam.roe-smith', 'sam.roesmith'), 'punctuation');
+  check("apostrophe (obrien vs o'brien)",
+    m.classifyLocalpartDrift_('sam.obrien', "sam.o'brien"), 'punctuation');
+  check('reversed order', m.classifyLocalpartDrift_('roe.sam', 'sam.roe'), 'reversed');
+  check('first-initial account vs full derived',
+    m.classifyLocalpartDrift_('s.roe', 'sam.roe'), 'initial');
+  check('full account vs first-initial derived',
+    m.classifyLocalpartDrift_('sam.roe', 's.roe'), 'initial');
+  check('genuinely different names are other',
+    m.classifyLocalpartDrift_('cindy.roe', 'xin.roe'), 'other');
+  check('empty derived is other, never a false match', m.classifyLocalpartDrift_('sam.roe', ''), 'other');
+  check('bare-dot derived (missing name fields) is other', m.classifyLocalpartDrift_('sam.roe', '.'), 'other');
 }
 
 done();

@@ -1,10 +1,21 @@
 /**
  * Duplicate Workspace Account Scanner  (READ-ONLY diagnostic)
  *
- * Version: 1.4.0
+ * Version: 1.5.0
  * Date: 2026-07-19
  *
- * Changes: 1.4.0 — accounts in administrative / NHQ-staff org units
+ * Changes: 1.5.0 — (a) the KEEP/retire preview passes CONFIG.EMAIL_DOMAIN to
+ *   chooseAuthoritativeAccount_ (see DuplicateAccountGuard.gs 1.3.0), so an account on
+ *   the tenant's configured domain outranks a legacy-domain twin by policy instead of
+ *   the created-date tiebreak. (b) Added scanDerivedAddressDrift(): for every account
+ *   whose CAPID matches a CAPWATCH member, compares the address it HAS against what
+ *   provisioning would DERIVE today, classified (collision-suffix / punctuation /
+ *   reversed / initial / other). Settles where the odd addresses came from: a
+ *   'punctuation' drift means the CAPWATCH name lacks the punctuation the address
+ *   carries — i.e. baseEmail derived faithfully and the odd address predates
+ *   provisioning. These mismatches are stable (the CAPID map updates the account in
+ *   place), so they are documentation, not defects.
+ *   1.4.0 — accounts in administrative / NHQ-staff org units
  *   (DUP_SCAN_EXEMPT_OU_SUBSTRINGS: "zz-administrative", "nhq employees") are blanket-exempt
  *   from needing a CAPID. Those containers hold role, workstation and staff identities that
  *   are not CAP members and are never provisioned from CAPWATCH, so they were noise in the
@@ -293,7 +304,7 @@ function scanDuplicateAccountsByCapid() {
     // Preview exactly what cleanup would keep vs retire. Login history wins — the
     // canonically-named twin is frequently the DEAD one, so name shape is not a
     // safe signal. See chooseAuthoritativeAccount_ in DuplicateAccountGuard.gs.
-    const authoritative = chooseAuthoritativeAccount_(accounts, '');
+    const authoritative = chooseAuthoritativeAccount_(accounts, '', CONFIG.EMAIL_DOMAIN);
     accounts.forEach(function (a) {
       a.role = (authoritative && a.email === authoritative.email) ? 'KEEP' : 'retire';
     });
@@ -593,6 +604,173 @@ function scanAccountsWithoutCapid() {
     likelyMember: likelyMember.length,
     unknown: unknown.length,
     role: role.length,
+    durationMs: result.durationMs
+  });
+  return result;
+}
+
+/* ===========================================================================
+ * DERIVED-ADDRESS DRIFT
+ * ======================================================================== */
+
+/**
+ * Classifies how an account's actual localpart differs from what provisioning
+ * would derive from the member's CAPWATCH name today. Pure.
+ *
+ *   'match'            — identical; provisioning would derive exactly this address
+ *   'collision-suffix' — identical once the account's trailing .N is dropped
+ *   'punctuation'      — identical once hyphens/apostrophes etc. are stripped from
+ *                        BOTH (baseEmail strips only whitespace, so this class means
+ *                        the CAPWATCH name and the address disagree on punctuation)
+ *   'reversed'         — same tokens, opposite order (last.first vs first.last)
+ *   'initial'          — one side abbreviates the first token to its initial
+ *   'other'            — none of the above; needs eyes
+ *
+ * @param {string} accountLocal the localpart the account actually has
+ * @param {string} derivedLocal derivedLocalpartForMember_(rosterMember)
+ * @returns {string}
+ */
+function classifyLocalpartDrift_(accountLocal, derivedLocal) {
+  const raw = String(accountLocal || '').toLowerCase();
+  const d = String(derivedLocal || '').toLowerCase();
+  if (!raw || !d || d === '.') return 'other';
+  if (raw === d) return 'match';
+
+  const a = raw.replace(/\.\d+$/, '');            // drop a trailing collision suffix
+  if (a === d) return 'collision-suffix';
+
+  const strip = function (s) { return s.replace(/[^a-z0-9.]/g, ''); };
+  if (strip(a) === strip(d)) return 'punctuation';
+
+  const at = a.split('.'), dt = d.split('.');
+  if (at.length === dt.length && at.length >= 2 &&
+      at.slice().reverse().join('.') === d) return 'reversed';
+
+  if (at.length === dt.length && at.length >= 2 &&
+      at.slice(1).join('.') === dt.slice(1).join('.') &&
+      ((at[0].length === 1 && dt[0].charAt(0) === at[0]) ||
+       (dt[0].length === 1 && at[0].charAt(0) === dt[0]))) return 'initial';
+
+  return 'other';
+}
+
+/**
+ * READ-ONLY. For every account whose CAPID matches a CAPWATCH member, compares the
+ * address the account HAS against the address provisioning would DERIVE from the
+ * member's CAPWATCH name today, and reports every mismatch, classified.
+ *
+ * WHY: this settles where the odd addresses came from. If the in-use hyphenated /
+ * suffixed addresses show up here with a hyphen-free derived counterpart, then
+ * CAPWATCH's name fields are hyphen-free and baseEmail has been deriving faithfully
+ * all along — the odd addresses predate provisioning (original population) and there
+ * is no derivation bug to fix. The mismatches themselves are FINE and stable: the
+ * provisioning map resolves members by CAPID, so these accounts are updated in
+ * place at their existing address and no twin is created.
+ *
+ * Accounts whose CAPID is only the retired marker are skipped (intentionally parked).
+ *
+ * @returns {Object} summary + mismatches
+ */
+function scanDerivedAddressDrift() {
+  const start = new Date();
+  Logger.info('Derived-address drift scan starting (read-only)');
+
+  let members;
+  try {
+    members = getMembers();
+  } catch (e) {
+    Logger.error('CAPWATCH roster unavailable — drift scan needs it to derive addresses', {
+      errorMessage: e.message
+    });
+    return { error: 'roster unavailable' };
+  }
+
+  const mismatches = [];
+  const counts = { match: 0 };
+  let scannedUsers = 0, compared = 0;
+  let pageToken = null;
+
+  do {
+    const page = AdminDirectory.Users.list({
+      customer: 'my_customer',
+      maxResults: 500,
+      projection: 'full',
+      pageToken: pageToken
+    });
+
+    (page.users || []).forEach(function (u) {
+      scannedUsers++;
+      const email = String(u.primaryEmail || '');
+      const local = email.split('@')[0].toLowerCase();
+
+      extractCapidsFromUser_(u).forEach(function (capid) {
+        // Retired-marker-only carriage = deliberately parked; not provisioning's account.
+        const carriers = capidCarriersForUser_(u, capid);
+        if (carriers.length > 0 && carriers.every(function (c) {
+          return c === DUP_SCAN_RETIRED_CARRIER;
+        })) return;
+
+        const m = members[capid];
+        if (!m) return;                      // not on the roster (lapsed etc.) — nothing to derive
+        compared++;
+
+        const derived = derivedLocalpartForMember_(m);
+        const cls = classifyLocalpartDrift_(local, derived);
+        counts[cls] = (counts[cls] || 0) + 1;
+        if (cls === 'match') return;
+
+        mismatches.push({
+          email: email,
+          derivedLocalpart: derived,
+          drift: cls,
+          suspended: !!u.suspended,
+          neverSignedIn: neverLoggedIn_(u.lastLoginTime),
+          lastLogin: u.lastLoginTime || null
+        });
+      });
+    });
+
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  Logger.info('===== DERIVED-ADDRESS DRIFT =====' +
+    '\nScanned users .................... ' + scannedUsers +
+    '\nCompared against the roster ..... ' + compared +
+    '\n  match (derives exactly) ....... ' + (counts.match || 0) +
+    '\n  collision-suffix .............. ' + (counts['collision-suffix'] || 0) +
+    '\n  punctuation ................... ' + (counts.punctuation || 0) +
+    '   <-- CAPWATCH name lacks the punctuation the address has' +
+    '\n  reversed ...................... ' + (counts.reversed || 0) +
+    '\n  initial ....................... ' + (counts.initial || 0) +
+    '\n  other ......................... ' + (counts.other || 0));
+
+  const CHUNK = 15;
+  mismatches.sort(function (a, b) {
+    return (a.drift > b.drift ? 1 : a.drift < b.drift ? -1 : 0) ||
+           String(a.email).localeCompare(String(b.email));
+  });
+  for (let i = 0; i < mismatches.length; i += CHUNK) {
+    const lines = ['===== DRIFT DETAIL ' + (i + 1) + '-' +
+                   Math.min(i + CHUNK, mismatches.length) + ' of ' + mismatches.length + ' ====='];
+    mismatches.slice(i, i + CHUNK).forEach(function (mm) {
+      lines.push('    [' + mm.drift + '] ' + mm.email +
+        '\n        CAPWATCH would derive: ' + mm.derivedLocalpart +
+        '  ' + (mm.suspended ? 'SUSPENDED' : 'active') +
+        '  ' + (mm.neverSignedIn ? 'never-signed-in' : 'last-login=' + mm.lastLogin));
+    });
+    Logger.info(lines.join('\n'));
+  }
+
+  const result = {
+    scannedUsers: scannedUsers,
+    compared: compared,
+    counts: counts,
+    mismatches: mismatches,
+    durationMs: new Date() - start
+  };
+  Logger.info('Derived-address drift scan complete', {
+    compared: compared,
+    mismatches: mismatches.length,
     durationMs: result.durationMs
   });
   return result;
