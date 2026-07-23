@@ -461,12 +461,16 @@ section('16. The digest explains each issue present, and only those');
     ['111', '222', '333', '444'].every(id => new RegExp('<td>' + id + '</td>').test(html)), true);
   check('tells them to contact the member',
     html.indexOf('contact these members') > -1, true);
+  // Asserted as the exact anchor target, not a bare substring: stricter (the
+  // URL must be where a reader will click it, not merely somewhere in the
+  // body), and it keeps CodeQL from reading an indexOf-on-a-URL as an
+  // incomplete sanitization check.
   check('and that they may fix the email record themselves',
-    html.indexOf('https://www.capnhq.gov/CAP.PersonnelInfo.Web/') > -1, true);
+    /<a href="https:\/\/www\.capnhq\.gov\/CAP\.PersonnelInfo\.Web\/">/.test(html), true);
   check('points 2SV enrollment at the right place',
-    html.indexOf('https://myaccount.google.com/signinoptions/two-step-verification') > -1, true);
+    /<a href="https:\/\/myaccount\.google\.com\/signinoptions\/two-step-verification">/.test(html), true);
   check('and locked-out members at the support portal for an exemption',
-    html.indexOf('https://support.pcrcap.org') > -1, true);
+    /<a href="https:\/\/support\.pcrcap\.org">/.test(html), true);
   check('explains the three-month quiet period',
     html.indexOf('not be reported again for 3 months') > -1, true);
   check('uses the configured wing label, not a hard-coded one',
