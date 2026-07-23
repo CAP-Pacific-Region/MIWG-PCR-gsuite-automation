@@ -27,19 +27,28 @@ every new member after it — mails nobody. The digest dates a **window**, not a
 CAPWATCH publishes no date for an `LSCode` change; changing the trigger interval therefore
 changes what the digest claims.
 
-## RecoveryEmailNotify.gs — password-reset readiness
+## RecoveryEmailNotify.gs — account compliance (recovery email, 2SV, first sign-in)
 
 Mails a unit's commander (copying personnel officers, primary and assistant, and deputy
-commanders) about members under their **direct command** whose CAPWATCH email record would
-stop them resetting their Workspace password:
+commanders) a monthly digest of members under their **direct command** with account issues.
+Four conditions, the first two from CAPWATCH and the last two from the tenant's own directory
+(joined by CAPID):
 
 - no CAP address in the **PRIMARY** slot (a personal address there, or no primary at all), and/or
-- no personal, non-CAP address **anywhere** to receive a reset at.
+- no personal, non-CAP address **anywhere** to receive a password reset at, and/or
+- an account in use with **2-Step Verification** not enabled, and/or
+- an account **never signed into** 60+ days after creation.
+
+A never-used account is flagged only for the sign-in, never also for 2SV — you cannot enroll
+an account you have never entered. When a CAPID holds duplicate accounts, the one most
+recently signed into is the one judged.
 
 **Standing condition, not a change detector.** The first run is meant to be loud — it surfaces
 the whole existing backlog. Run `previewRecoveryEmailCompliance()` and check the volume first.
-A member reported once is quiet for **three months**; a member who fixes it drops out of state,
-so a relapse is reported immediately rather than inside a stale window.
+An issue reported once is quiet for **three months**, tracked **per issue category**
+(email / 2SV / sign-in), so a new kind of issue is reported even while an older one is inside
+its window. An issue that gets fixed drops out of state, so a relapse is reported immediately
+rather than inside a stale window.
 
 Reuses `member.recoveryEmail` from `UpdateMembers.gs` rather than re-deriving it, so it reports
 on exactly the value that populates the real Workspace recovery address. Two consequences are

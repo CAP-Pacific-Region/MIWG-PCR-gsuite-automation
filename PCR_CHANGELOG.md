@@ -10,6 +10,47 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-23] — 2SV and never-signed-in checks join the monthly compliance digest
+
+Commanders were told about email records that block a password reset, but not about the
+two account facts sitting next to them: members whose account has **2-Step Verification
+turned off**, and members whose account was **created 60+ days ago and never signed
+into** — the latter silently missing every communication sent to them.
+
+### Added (`RecoveryEmailNotify.gs` 1.1.0, `UpdateMembers.gs` 1.19.0)
+
+- **Two new conditions in the same digest**, read from the tenant's own directory and
+  joined to CAPWATCH members by CAPID:
+  - **2SV not enabled** on an account that is actually in use (has been signed into).
+  - **Never signed in**, 60+ days after account creation (`FIRST_LOGIN_GRACE_DAYS`);
+    younger accounts wait out the grace period.
+
+  A never-used account is flagged **only** for the sign-in, never also for 2SV — you
+  cannot enroll an account you have never entered. When a CAPID holds duplicate accounts,
+  the one **most recently signed into** is judged, not an abandoned twin. The digest
+  gains per-issue guidance blocks (eServices self-service / 2SV enrollment link, with the
+  support portal for members already locked out by 2SV enforcement / first-sign-in
+  instructions), included only when the issue is present; the subject broadens from
+  "email records" to "account issues".
+
+- **Per-category suppression (state v2).** The 3-month quiet window now runs per issue
+  category (`EMAIL` / `TWOSV` / `LOGIN`), so a member already inside the email window is
+  still reported the month a 2SV gap appears — and the digest shows **only** the
+  newly-reported issue, not a monthly re-listing of the suppressed one. v1 state files
+  are **migrated in place** (their member-level date becomes the `EMAIL` category's
+  date), so windows already running keep running instead of re-mailing every
+  previously-reported member on deploy.
+
+- **Directory failure aborts the run** without touching state, exactly like an empty
+  roster: a failed or empty `getActiveUsers()` read would make every member look
+  account-less, dropping every `TWOSV`/`LOGIN` window and re-mailing them all when the
+  directory recovered. The run now also fetches the directory **once**, shared between
+  the account checks and the command-staff address map.
+
+- **`getActiveUsers()` (UpdateMembers.gs 1.19.0)** now also returns `isEnrolledIn2Sv`,
+  `lastLoginTime` and `creationTime`. Purely additive — the active-only contract and
+  every existing field are unchanged.
+
 ## [2026-07-19] — Rescue: cross-tenant contacts 0.2.1/0.2.2 existed only on the tenants
 
 `CrossTenantContacts.gs` was **0.2.2 on the seniors and region tenants (byte-identical

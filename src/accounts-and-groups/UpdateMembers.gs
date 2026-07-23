@@ -1,10 +1,15 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.18.0
- * Date: 2026-07-19
+ * Version: 1.19.0
+ * Date: 2026-07-23
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.18.0)
- * Changes: 1.18.0 — updateAllMembers()/forceUpdateAllMembers() now build
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.19.0)
+ * Changes: 1.19.0 — getActiveUsers() now also returns isEnrolledIn2Sv,
+ *   lastLoginTime and creationTime on each account (consumed by
+ *   notifications/RecoveryEmailNotify.gs for the 2SV and never-logged-in
+ *   checks). Purely additive: the active-only contract and every existing field
+ *   are unchanged, so suspendExpiredMembers()/ManageLicenses.gs are unaffected.
+ *   1.18.0 — updateAllMembers()/forceUpdateAllMembers() now build
  *   workspaceEmailByCapid via buildProvisioningEmailByCapid_ (DuplicateAccountGuard.gs)
  *   instead of getActiveUsers(). The old map omitted SUSPENDED accounts and read the
  *   CAPID only from externalIds[type='organization'], so provisioning could conclude a
@@ -1427,7 +1432,7 @@ function getActiveUsers() {
       customer: "my_customer",
       maxResults: 500,
       query: 'isSuspended=false isAdmin=false',
-      fields: 'users(primaryEmail,externalIds),nextPageToken',
+      fields: 'users(primaryEmail,externalIds,isEnrolledIn2Sv,lastLoginTime,creationTime),nextPageToken',
       pageToken: nextPageToken
     });
 
@@ -1442,7 +1447,13 @@ function getActiveUsers() {
           activeUsers.push({
             email: page.users[i].primaryEmail,
             capid: capidExt.value,
-            lastUpdated: null // no schema anymore
+            lastUpdated: null, // no schema anymore
+            // Account-security facts, consumed by RecoveryEmailNotify.gs.
+            // lastLoginTime is the epoch ('1970-01-01T00:00:00.000Z') when the
+            // account has never been signed into.
+            isEnrolledIn2Sv: page.users[i].isEnrolledIn2Sv === true,
+            lastLoginTime: page.users[i].lastLoginTime || '',
+            creationTime: page.users[i].creationTime || ''
           });
         }
       }
