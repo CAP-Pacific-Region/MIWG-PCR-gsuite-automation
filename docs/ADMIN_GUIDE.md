@@ -92,7 +92,14 @@ These IDs are the load-bearing facts. Keep this table current — it is the map 
 | Cadets | `cawgcadets.org` | `automation@cawgcadets.org` | `clasp-targets/cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
 | Pacific Region | `pcr.cap.gov` | `automation@pcr.cap.gov` (project in a `pcr.cap.gov` Shared Drive) | `clasp-targets/region.clasp.json` | `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0` |
 
-Open any project in the browser from the repo with e.g. `npm run open:seniors`.
+There is also a **fourth, non-tenant script project**: the **Secondary Alias admin web app**
+(source [`webapp/`](../webapp), target `clasp-targets/alias-webapp.clasp.json`, scriptId
+`18D4sP07OktnjgES9CB5a7A4MIIJOinR3GgtikWXj1QxVaP7wDBn95GAa`). It is deliberately separate from
+`src/` — see [ALIAS_WEB_APP.md](ALIAS_WEB_APP.md) for why, plus setup and the access model.
+Related standalone modules are documented in [CROSS_TENANT_CONTACTS.md](CROSS_TENANT_CONTACTS.md).
+
+Open any project in the browser from the repo with e.g. `npm run open:seniors` (`open:webapp`
+for the alias web app).
 
 > **Pacific is deployed and verified (2026-07-09).** It runs the shared `src/` with
 > `TENANT_PROFILE=region`. Two things to know for future pushes:
@@ -231,9 +238,10 @@ Apps Script projects via three clasp targets. Each target is just a `{ scriptId,
 
 ```
 clasp-targets/
-├── seniors.clasp.json   → cawgcap.org project      (seniors tenant + cross-tenant driver)
-├── cadets.clasp.json    → cawgcadets.org project   (cadets tenant)
-└── region.clasp.json   → Pacific Region project   (pcr.cap.gov Shared Drive; deployed)
+├── seniors.clasp.json      → cawgcap.org project      (seniors tenant + cross-tenant driver)
+├── cadets.clasp.json       → cawgcadets.org project   (cadets tenant)
+├── region.clasp.json       → Pacific Region project   (pcr.cap.gov Shared Drive; deployed)
+└── alias-webapp.clasp.json → Secondary Alias admin web app (rootDir ../webapp — NOT src/; see ALIAS_WEB_APP.md)
 ```
 
 ### How the cadet split *actually* works
