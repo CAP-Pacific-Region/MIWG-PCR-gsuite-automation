@@ -1,10 +1,18 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.3.1
+ * Version: 1.4.0
  * Filename: SquadronGroups.gs
- * Saved: 2026-07-17
- * Changes: v1.3.1 — managed wing-scope display name returns
+ * Saved: 2026-07-25
+ * Changes: v1.4.0 — the wing recruiting mailbox added to every public-contact
+ *   group is now validated with sanitizeEmail() before use, not just checked for
+ *   truthiness. The config it reads held a literal placeholder string, which is
+ *   truthy, so updatePublicContactGroup() passed '<recruiting email dl here>' to
+ *   AdminDirectory.Members.insert once per unit per run and logged the failure.
+ *   A set-but-invalid value now warns and is skipped. The value itself moved to
+ *   the TENANT_RECRUITING_MAILBOX Script Property (config.gs 1.11.0); blank
+ *   disables the behavior and is the default.
+ *   v1.3.1 — managed wing-scope display name returns
  *   CONFIG.WING_ABBREVIATION instead of literal 'CAWG' (inside the existing
  *   WING==='CA' display branch — no behavior change for CA).
  *   SQUADRON_DISTRIBUTION_TOGGLES is now profile-driven (v1.3.0) — the
@@ -679,14 +687,24 @@ function updatePublicContactGroup(unitPrefix, squadron, squadronMembers) {
     // Build member list - specific roles plus recruiting mailbox
     const desiredMembers = getPublicContactMembers(squadron, squadronMembers);
 
-    // Add wing recruiting mailbox to all public contact groups
-    const recruitingMailbox = SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX;
+    // Add wing recruiting mailbox to all public contact groups. Blank disables
+    // it. Validate rather than trust: this config held a literal placeholder for
+    // a long time, and a truthiness check was enough to send that string to
+    // AdminDirectory.Members.insert once per unit per run.
+    const recruitingMailbox = sanitizeEmail(
+      SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX
+    );
     if (recruitingMailbox) {
-      desiredMembers[recruitingMailbox.toLowerCase()] = {
-        email: recruitingMailbox.toLowerCase(),
+      desiredMembers[recruitingMailbox] = {
+        email: recruitingMailbox,
         role: 'MEMBER',
         reason: 'Wing Recruiting Mailbox'
       };
+    } else if (SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX) {
+      Logger.warn('TENANT_RECRUITING_MAILBOX is set but is not a valid address — skipping', {
+        value: SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX,
+        groupEmail: groupEmail
+      });
     }
 
     // Update membership

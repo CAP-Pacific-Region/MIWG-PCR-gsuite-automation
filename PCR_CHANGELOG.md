@@ -10,6 +10,32 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-25] — Wing recruiting mailbox: placeholder string was being mailed into every unit group
+
+`SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX` held the literal
+`'<recruiting email DL here>'`. The consuming code gated on truthiness, and a placeholder is
+truthy — so `updatePublicContactGroup()` passed that string to
+`AdminDirectory.Members.insert()` **once per unit, per run**. On the seniors tenant, where
+`SQUADRON_PUBLIC_CONTACT_AUTO_CREATE` is on, that is every squadron every day. Each call failed
+and was caught and logged, so the symptom was a standing bank of member-add errors rather than a
+visible break, and the intended feature — wing recruiting seeing unit public inquiries — has
+never actually worked.
+
+It was also a **tenant-specific value living in `config.gs`**, a file every `clasp push`
+overwrites identically on all three tenants, so it could not have been correct on more than one
+of them regardless.
+
+### Changed (`config.gs` 1.11.0, `SquadronGroups.gs` 1.4.0)
+
+- Value moves to the **`TENANT_RECRUITING_MAILBOX` Script Property**. Added to all five tenant
+  configs and both setup scripts.
+- **Blank disables the behavior, and blank is the default everywhere** — including CAWG.
+  Enabling it adds an address to the membership of every squadron public-contact group in the
+  wing, which should be a deliberate act, not something a bug fix does on the way past. Set the
+  property when the wing decides it wants that fan-in.
+- The consuming site now **validates with `sanitizeEmail()`** rather than checking truthiness. A
+  set-but-invalid value warns and is skipped instead of being handed to the Directory API.
+
 ## [2026-07-25] — Retention addresses corrected; summary only, no per-member BCC
 
 `TENANT_RETENTION_EMAIL` was version-controlled as `recruiting@cawgcap.org` on **both** the

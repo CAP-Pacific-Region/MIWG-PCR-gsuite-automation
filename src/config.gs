@@ -4,9 +4,17 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.10.0
+ * Version: 1.11.0
  * Date: 2026-07-25
- * Changes: Added optional Script Property TENANT_DIRECTOR_RECRUITING_NAME
+ * Changes: SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX is now the
+ *   Script Property TENANT_RECRUITING_MAILBOX instead of a literal. It held the
+ *   placeholder '<recruiting email DL here>', which is truthy, so every squadron
+ *   public-contact group update sent that string to AdminDirectory.Members.insert
+ *   and logged the failure — daily, per unit. It was also a tenant value living
+ *   in a file every push overwrites identically, so it could never have been
+ *   right on more than one tenant. Blank now disables the behavior and blank is
+ *   the default: enabling it changes group membership wing-wide.
+ *   1.10.0: Added optional Script Property TENANT_DIRECTOR_RECRUITING_NAME
  *   (CONFIG-level const DIRECTOR_RECRUITING_NAME), the signature name rendered
  *   into the retention templates as {{directorName}}. Blank renders the office
  *   title alone. Like TENANT_DIRECTOR_RECRUITING_EMAIL it names an individual, so
@@ -133,6 +141,13 @@ function getTenantConfig_() {
     AUTOMATION_SPREADSHEET_ID: get('TENANT_AUTOMATION_SPREADSHEET_ID'),
     RETENTION_LOG_SPREADSHEET_ID: get('TENANT_RETENTION_LOG_SPREADSHEET_ID'),
     RETENTION_EMAIL: get('TENANT_RETENTION_EMAIL'),
+    // Wing recruiting mailbox added as a member to every squadron public-contact
+    // group, so wing recruiting sees squadron-level public inquiries. BLANK
+    // DISABLES the behavior, and blank is the default: switching it on changes
+    // group membership across every unit in the wing, which should be a
+    // deliberate act rather than something a deploy does quietly. Consumed by
+    // squadron-groups/SquadronGroups.gs.
+    RECRUITING_MAILBOX: get('TENANT_RECRUITING_MAILBOX'),
     DIRECTOR_RECRUITING_EMAIL: get('TENANT_DIRECTOR_RECRUITING_EMAIL'),
     // Signature name rendered into the member-facing retention templates
     // ({{directorName}}). Like the address above this is an individual, so it is
@@ -435,6 +450,7 @@ function setupTenantConfig() {
     TENANT_AUTOMATION_SPREADSHEET_ID: '',
     TENANT_RETENTION_LOG_SPREADSHEET_ID: '',
     TENANT_RETENTION_EMAIL: '',
+    TENANT_RECRUITING_MAILBOX: '',         // wing recruiting mailbox added to every squadron public-contact group; '' disables
     TENANT_DIRECTOR_RECRUITING_EMAIL: '',
     TENANT_DIRECTOR_RECRUITING_NAME: '',   // e.g. Maj Jane Doe; '' signs retention mail with the office title only
     TENANT_AUTOMATION_SENDER_EMAIL: '',
@@ -1046,11 +1062,21 @@ const SQUADRON_GROUP_CONFIG = {
     ],
     
     /**
-     * Wing-level recruiting mailbox to include in all public contact groups
-     * This allows the Wing Director of Recruiting & Retention to monitor
-     * squadron public contact inquiries for recruiting opportunities
+     * Wing-level recruiting mailbox to include in all public contact groups,
+     * so wing recruiting sees squadron public contact inquiries.
+     *
+     * Per-tenant, so it comes from the TENANT_RECRUITING_MAILBOX Script
+     * Property — it cannot be a literal here, because a push overwrites
+     * config.gs identically on every tenant.
+     *
+     * BLANK DISABLES IT, and blank is the default. This previously held the
+     * literal placeholder '<recruiting email DL here>', which is truthy, so
+     * every squadron public-contact group update tried to add that string as a
+     * member and logged a failure — daily, per unit, for as long as the
+     * placeholder was in place. Switching it on is a wing-wide group membership
+     * change and should be a deliberate act.
      */
-    RECRUITING_MAILBOX: '<recruiting email DL here>',
+    RECRUITING_MAILBOX: TENANT.RECRUITING_MAILBOX,
     
     /**
      * Description template for public contact groups

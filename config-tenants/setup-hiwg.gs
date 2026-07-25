@@ -49,6 +49,7 @@ function setupHiwgSeniorsScriptProperties() {
     TENANT_AUTOMATION_SPREADSHEET_ID: '',   // FILL_IN
     TENANT_RETENTION_LOG_SPREADSHEET_ID: '',// FILL_IN or leave blank
     TENANT_RETENTION_EMAIL: '',             // FILL_IN
+    TENANT_RECRUITING_MAILBOX: '',          // wing recruiting addr in every squadron public-contact group; '' disables
     TENANT_DIRECTOR_RECRUITING_EMAIL: '',   // FILL_IN
     TENANT_DIRECTOR_RECRUITING_NAME: '',    // FILL_IN or blank; signs member-facing retention mail
     TENANT_AUTOMATION_SENDER_EMAIL: '',     // FILL_IN
@@ -75,6 +76,7 @@ function setupHiwgCadetsScriptProperties() {
     TENANT_AUTOMATION_SPREADSHEET_ID: '',   // FILL_IN
     TENANT_RETENTION_LOG_SPREADSHEET_ID: '',// FILL_IN or leave blank
     TENANT_RETENTION_EMAIL: '',             // FILL_IN
+    TENANT_RECRUITING_MAILBOX: '',          // wing recruiting addr in every squadron public-contact group; '' disables
     TENANT_DIRECTOR_RECRUITING_EMAIL: '',   // FILL_IN
     TENANT_DIRECTOR_RECRUITING_NAME: '',    // FILL_IN or blank; signs member-facing retention mail
     TENANT_AUTOMATION_SENDER_EMAIL: '',     // FILL_IN
