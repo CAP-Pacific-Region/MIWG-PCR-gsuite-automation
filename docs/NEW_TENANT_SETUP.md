@@ -191,7 +191,7 @@ These are exactly the `FILL_IN` fields in the `setup-hiwg.gs` / `hiwg-*.json` te
 | Peer cadet domain | `TENANT_CADETS_TENANT_DOMAIN` | blank derives `<wing>wgcadets.org` |
 | CAPWATCH ORGID | `TENANT_CAPWATCH_ORGID` | the wing's ORGID |
 | Drive folder / spreadsheet IDs | `TENANT_*_FOLDER_ID`, `TENANT_AUTOMATION_SPREADSHEET_ID` | created in Phases 6–7 |
-| Contact / sender addresses | `TENANT_RETENTION_EMAIL`, `TENANT_DIRECTOR_RECRUITING_EMAIL`, `TENANT_AUTOMATION_SENDER_EMAIL`, `TENANT_TEST_EMAIL`, `TENANT_ITSUPPORT_EMAIL` | |
+| Contact / sender addresses | `TENANT_RETENTION_EMAIL`, `TENANT_DIRECTOR_RECRUITING_EMAIL`, `TENANT_DIRECTOR_RECRUITING_NAME`, `TENANT_AUTOMATION_SENDER_EMAIL`, `TENANT_TEST_EMAIL`, `TENANT_ITSUPPORT_EMAIL` | `TENANT_DIRECTOR_RECRUITING_NAME` signs member-facing retention email; blank is valid |
 | Service accounts + keys | `SA_IMPERSONATION_EMAIL`, `SA_PRIVATE_KEY`, `XT_PEER_SA_*` | Phase 4; secrets |
 | CAPWATCH credential | `CAPWATCH_AUTHORIZATION` (User Property) | Phase 8 |
 

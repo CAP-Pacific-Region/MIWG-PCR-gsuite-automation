@@ -30,6 +30,7 @@
       font-size: 28px;
       margin: 0;
       letter-spacing: 1px;
+      text-transform: uppercase;
     }
     .content {
       padding: 30px 20px;
@@ -51,34 +52,6 @@
     }
     .important-box strong {
       color: #001871;
-    }
-    .button-container {
-      text-align: center;
-      margin: 30px 0;
-    }
-    .button {
-      display: inline-block;
-      background-color: #ba0c2f;
-      color: #ffffff;
-      padding: 15px 35px;
-      text-decoration: none;
-      border-radius: 4px;
-      font-weight: 700;
-      font-size: 16px;
-      font-family: "Rajdhani", sans-serif;
-      letter-spacing: 0.5px;
-    }
-    .survey-link {
-      background-color: #ccd1e3;
-      padding: 15px;
-      margin: 20px 0;
-      border-radius: 4px;
-      word-wrap: break-word;
-      font-size: 14px;
-    }
-    .survey-link a {
-      color: #001871;
-      word-break: break-all;
     }
     .signature {
       margin-top: 30px;
@@ -112,39 +85,28 @@
 <body>
   <div class="email-container">
     <div class="header">
-      <h1>CIVIL AIR PATROL<br>CALIFORNIA WING</h1>
+      <h1>CIVIL AIR PATROL<br>{{wingName}}</h1>
     </div>
     <div class="content">
       <p class="greeting">Dear {{rank}} {{lastName}},</p>
-      
-      <p>Thank you for your service to California Wing this past year. We are reaching out to you regarding the renewal of your Civil Air Patrol membership as there is less than a month left for you to do so.</p>
-      
+
+      <p>Thank you for your service to {{wingName}} this past year. We are reaching out to you regarding the renewal of your Civil Air Patrol membership as there is less than a month left for you to do so.</p>
+
       <div class="important-box">
         <strong>Membership Expiration:</strong> {{expiration}}
       </div>
-      
-      <p>If you choose to renew, the command staff of CAWG thanks you for your continued dedication to this organization and wing! Please take a moment of your time to provide us with <strong>feedback</strong> on the past year and anything that would have made your experience better as a volunteer.</p>
-      
-      <div class="button-container">
-        <a href="LINK TO FORM HERE" class="button">PROVIDE FEEDBACK</a>
-      </div>
-      
-      <p>We understand that CAP takes a lot of time and effort. If you choose not to renew, we hope that your time in CAWG was positive. We appreciate your input and hope to hear back. Have a wonderful day!</p>
-      
-      <div class="survey-link">
-        <strong>If you cannot access the survey link, please copy and paste the following into your search browser:</strong><br>
-        <a href="LINK TO FORM HERE">LINK TO FORM HERE</a>
-      </div>
-      
+
+      <p>If you choose to renew, the command staff of {{orgLabel}} thanks you for your continued dedication to this organization and wing!</p>
+
+      <p>We understand that CAP takes a lot of time and effort. If you choose not to renew, we hope that your time in {{orgLabel}} was positive. If there is anything that would have made your experience better as a volunteer, reply to this email and let us know — we read every response. Have a wonderful day!</p>
+
       <div class="signature">
         <p><strong>Sincerely,</strong></p>
-        <p><strong>Maj Adam Staley</strong><br>
-        <p><strong>Director of Recruiting</strong><br>
-        California Wing Civil Air Patrol</p>
+        <p>{{signature}}</p>
       </div>
     </div>
     <div class="footer">
-      Civil Air Patrol • California Wing<br>
+      Civil Air Patrol • {{wingName}}<br>
       Questions? Reply to this email
     </div>
   </div>

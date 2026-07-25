@@ -38,6 +38,7 @@ function setupRegionScriptProperties() {
     // role-holder changes, update the property or mail keeps the old name.
     TENANT_RETENTION_EMAIL: "",
     TENANT_DIRECTOR_RECRUITING_EMAIL: "",
+    TENANT_DIRECTOR_RECRUITING_NAME: "",
     TENANT_AUTOMATION_SENDER_EMAIL: "automation@pcr.cap.gov",
     TENANT_SENDER_NAME: "",
     TENANT_TEST_EMAIL: "",

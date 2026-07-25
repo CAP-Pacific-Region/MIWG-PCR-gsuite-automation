@@ -10,6 +10,180 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-25] — Retention addresses corrected; summary only, no per-member BCC
+
+`TENANT_RETENTION_EMAIL` was version-controlled as `recruiting@cawgcap.org` on **both** the
+seniors and cadets tenants. That address **does not exist as a group** — confirmed by the wing
+DA on 2026-07-25. It is the `To:` of the retention run summary, so the summary had nowhere to
+land, and `sendRetentionSummaryEmail()` catches and logs rather than raising: arming the trigger
+would have produced a monthly run reporting its results into a black hole.
+
+### Changed (`SendRetentionEmail.gs` 1.3.0, `config-tenants/seniors.json`, `config-tenants/cadets.json`)
+
+- **Both addresses now point at the role group `ca.dty.director-recruiting@cawgcap.org`**, created
+  for this purpose and matching the established `ca.dty.*` duty-group convention.
+  `TENANT_RETENTION_EMAIL` addresses the summary; `TENANT_DIRECTOR_RECRUITING_EMAIL` is the
+  `replyTo` on member-facing mail.
+- **Both are now version-controlled** in `config-tenants/`, reversing the deliberate blank. The
+  blank existed because the value was an individual's mailbox; a role group survives a change of
+  incumbent, so the reason no longer applies. `TENANT_DIRECTOR_RECRUITING_NAME` still names an
+  individual and stays blank / Script-Properties-only.
+- **Dropped `bcc: RETENTION_EMAIL` from all three member-facing sends.** At wing scale that was a
+  few hundred messages a month into one mailbox, and it duplicated a record the Log sheet already
+  keeps per send (timestamp, type, CAPID, name, address, commander). The group now gets the
+  monthly summary and nothing else.
+
+> ⚠️ A tenant whose Script Properties still hold `recruiting@cawgcap.org` keeps the broken value —
+> `config-tenants/` is the canonical copy, not the live one. Re-run `setupTenantConfig()` or fix
+> the property by hand, then confirm with a test send.
+
+### Duty-title finding (no code change)
+
+Cross-referencing the CAPWATCH extract for the wing recruiting role turned up a naming trap worth
+recording. The CAPWATCH duty string at CAWG is **`Recruiting Officer`**, held at ORGID 188
+(CALIFORNIA WING HQ = CA-001, scope WING) by the incumbent as a primary and by one other member as
+an assistant. **`Director of Recruiting` is also a real CAPWATCH title, but no CAWG member held it**
+in the January 2026 extract — its holders were at PCR region and two other wings.
+
+Group rules match the duty string exactly, and `dutyPositionIdsWingHQ` deletes a group that comes
+out empty. So a `Groups` sheet row keyed on `Director of Recruiting` would match nobody at CAWG and
+**fail silently** rather than erroring. `SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.DUTY_POSITIONS`
+already uses the correct `Recruiting Officer`.
+
+## [2026-07-25] — Commander CC uses the CAP account, not a personal address
+
+Retention mail CC'd the squadron commander at whatever address sat in their CAPWATCH
+record — normally a personal mailbox. `RecoveryEmailNotify` had already worked out how to
+reach command staff properly; retention was the one module still doing it the naive way.
+
+### Changed (`SendRetentionEmail.gs` 1.2.0)
+
+- **Address order is now org account first, CAPWATCH last:** the real Workspace account read
+  from this tenant's directory → the derived `first.last@<command domain>` → CAPWATCH
+  PRIMARY. This is **`rcResolveRecipientEmail_()` reused from
+  `notifications/RecoveryEmailNotify.gs`**, not a reimplementation, so the two modules cannot
+  drift on what "reach the commander" means. (The dependency already ran the other way: that
+  module calls `createEmailMap()` from this one.)
+  - The directory step catches what derivation cannot see — a `.2` duplicate, a manual
+    creation, a rename.
+  - On the **cadets** tenant, command staff are seniors, so `COMMAND_EMAIL_DOMAIN` points at
+    the senior domain, the cadet directory yields nothing usable, and the derived senior
+    address is correctly preferred over a same-CAPID cadet account.
+  - A commander with no usable name and no directory entry still falls through to their
+    CAPWATCH address; `null` (no route at all) drops the CC and sends to the member alone.
+  - Derived addresses are unverified, so a commander whose account does not follow the
+    default naming will have their **CC** bounce. The member's own send is unaffected —
+    Gmail accepts the message and bounces per recipient.
+- **`getCommanderInfo()` is backed by `retentionCommanderIndex_()`, built once per run.** The
+  previous version re-parsed `Commanders.txt` **and rebuilt the entire CAPWATCH email map on
+  every call** — once per cadet email sent. The index is reset alongside `clearCache()` so it
+  can never outlive the data it was derived from.
+
+### Also changed: cadet-transition email (`CadetTransitionMigrate.gs` 1.1.0)
+
+`getCommanderInfo()` has a second caller — `sendTransitionCompleteEmail_()` CCs the unit
+commander on the "your email has moved" notice. It inherits the new addressing, so that CC
+also moves from a personal address to the commander's CAP account. **Reviewed and kept
+deliberately**, not an incidental side effect: the notice is CAP business either way, and one
+resolver for both callers is the whole point — giving this path its own would reintroduce the
+drift the change exists to prevent. No code in that module changed; its version note records
+the inherited behavior so it is discoverable from the file itself.
+
+Worth knowing: that path runs on the **cadets** tenant, so the address now derives onto
+`COMMAND_EMAIL_DOMAIN` (the senior domain) instead of whatever CAPWATCH held.
+
+It also inherits one `getActiveUsers()` listing per execution. The index is cached
+module-globally, so this is once per run and not once per member — but note the cadets tenant
+pays for a listing whose result `rcBuildCommandDirectoryMap_()` then discards, since command
+staff are not on that tenant. The domain guard is deliberately left in one place rather than
+restated at the call site to avoid the two copies drifting.
+
+### Added (`test/SendRetentionEmail.commander.test.js`)
+
+First tests for this module: the resolution order on seniors and cadets tenants, the
+CAPWATCH last-resort, the null case, build-once caching, graceful degradation when the
+directory read throws, and template rendering across two wings (which fails if a hard-coded
+wing name or role holder reappears, the regression this module has had before). The test
+loads the **real** resolver out of `RecoveryEmailNotify.gs`, so changing the order there
+fails here.
+
+## [2026-07-25] — Retention email templates genericized; dead feedback form removed
+
+The three member-facing retention templates were the last hard-coded wing in the codebase.
+The 1.7.0 pass genericized the *report* footer but not the mail members actually receive,
+which still opened `CIVIL AIR PATROL / CALIFORNIA WING` and closed with a named CAWG role
+holder. A wing adopting this module by Script Property alone would have mailed its members
+under California Wing's masthead and someone else's signature.
+
+Found while verifying the flow ahead of arming the monthly trigger — which is **still not
+armed**. See the pre-arm checklist below.
+
+### Changed (`SendRetentionEmail.gs` 1.1.0, `config.gs` 1.10.0)
+
+- **`{{wingName}}` / `{{orgLabel}}` / `{{signature}}`** in `Turning18Email.html`,
+  `Turning21Email.html` and `ExpiringEmail.html`, filled from `CONFIG.WING_NAME`,
+  `CONFIG.ORG_LABEL` and the new signature builder. Matches the `{{wingName}}` convention
+  already used by `TransitionCompleteEmail.html`.
+- **New optional Script Property `TENANT_DIRECTOR_RECRUITING_NAME`** (`CONFIG`-level const
+  `DIRECTOR_RECRUITING_NAME`) carries the signature name. Like the director's *address* it
+  names an individual, so it is deliberately **not** version-controlled in `config-tenants/`.
+  **Blank is valid** and signs with the office title alone — the right default for a tenant
+  that has not named a role holder, and for one that would rather not put a personal name on
+  automated mail.
+- **`retentionRenderTemplate_()`** replaces the `.replace()` chains that were duplicated
+  across all seven render sites (three send paths, four test paths), so a new placeholder is
+  added in one place. It substitutes via a **replacer function**, not a string, so a value
+  containing `$&` or `` $` `` cannot corrupt the output; unknown placeholders are left intact
+  so a typo is visible in the mail instead of silently blanking.
+
+### Removed
+
+- **The feedback survey from `ExpiringEmail.html`.** It shipped with the literal placeholder
+  `LINK TO FORM HERE` in three places — the button `href`, the fallback `href`, **and** the
+  visible link text — so arming the trigger would have mailed every expiring member (the
+  largest of the three categories) a dead button and a paste-this-URL block reading
+  "LINK TO FORM HERE". The feedback ask now routes to `replyTo`, which is already the
+  Director of Recruiting.
+- **The commented-out MIWG "Phoenix Senior Flight" block** from `Turning21Email.html`,
+  upstream content for a unit this deployment does not have.
+- CSS orphaned by both removals (`.button`, `.button-container`, `.survey-link`,
+  `.highlight-box`).
+
+### Fixed
+
+- **Unbalanced `<p>` tags** in all three signature blocks (a `<p>` opened for the name line
+  was never closed before the next opened).
+
+### Not changed — still required before the monthly trigger is armed
+
+The verification pass turned up operational blockers that are **not** code fixes:
+
+1. **`TENANT_DIRECTOR_RECRUITING_EMAIL` must be set** on whichever project is armed. Every
+   send passes it as `replyTo`; blank makes Gmail reject **every** send, which the per-member
+   catch turns into a silent 100%-failure run.
+2. **The trigger must be created while signed in as the automation account**, for the same
+   Send-As reason that broke both notification digests on 2026-07-16. Retention fails *worse*:
+   `sendRetentionSummaryEmail()` also passes `from`, so a wrong identity means no member mail
+   **and** no failure summary — unlike the notification modules, which deliberately send their
+   IT alarm without a `from` override.
+3. **Arm on one tenant only.** This module hardcodes `'CADET'`/`'SENIOR'` and ignores
+   `PROFILE_.MEMBER_TYPES_ACTIVE`, and both projects pull the same wing-wide extract
+   (ORGID 188, `unitOnly=0`). Armed on both, every member gets two copies.
+4. **`sendRetentionEmails()` does not download CAPWATCH.** `clearCache()` only clears the
+   in-memory `_fileCache`, which is already empty at the start of any fresh execution.
+   Freshness depends entirely on `getCapwatch()` having run that morning.
+5. **No idempotency.** The Log sheet is written but never read back, so a timeout, a re-run,
+   or a double firing re-sends to everyone already mailed.
+
+### Notes
+
+- CAPWATCH carries **no true date of birth** — only month and year, with the day defaulting
+  to the 1st. Selecting on birth *month* is therefore the only thing the data supports, and a
+  1st-of-month run lands on the recorded date. The parser already ignores `dobParts[1]`.
+- Commander CC resolves to the commander's **CAPWATCH personal** address, not their CAP
+  Workspace account. `RecoveryEmailNotify` prefers the org address with a CAPWATCH fallback;
+  retention does not. Unchanged here, but worth a decision.
+
 ## [2026-07-23] — 2SV and never-signed-in checks join the monthly compliance digest
 
 Commanders were told about email records that block a password reset, but not about the

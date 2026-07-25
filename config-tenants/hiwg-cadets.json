@@ -21,6 +21,7 @@
   "TENANT_RETENTION_LOG_SPREADSHEET_ID": "FILL_IN_spreadsheet_id_or_blank",
   "TENANT_RETENTION_EMAIL": "FILL_IN_recruiting_dl",
   "TENANT_DIRECTOR_RECRUITING_EMAIL": "FILL_IN_director_email",
+  "TENANT_DIRECTOR_RECRUITING_NAME": "FILL_IN_director_name_or_blank",
   "TENANT_AUTOMATION_SENDER_EMAIL": "FILL_IN_automation_sender",
   "TENANT_SENDER_NAME": "HIWG Information Technology",
   "TENANT_TEST_EMAIL": "FILL_IN_it_mailbox",

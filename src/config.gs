@@ -4,9 +4,17 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.9.0
- * Date: 2026-07-19
- * Changes: Added PROFILE_.RUN_RECOVERY_EMAIL_NOTIFICATIONS (on for seniors and
+ * Version: 1.10.0
+ * Date: 2026-07-25
+ * Changes: Added optional Script Property TENANT_DIRECTOR_RECRUITING_NAME
+ *   (CONFIG-level const DIRECTOR_RECRUITING_NAME), the signature name rendered
+ *   into the retention templates as {{directorName}}. Blank renders the office
+ *   title alone. Like TENANT_DIRECTOR_RECRUITING_EMAIL it names an individual, so
+ *   it is deliberately not version-controlled in config-tenants/. Completes the
+ *   1.7.0 wing-label genericization for the three member-facing retention
+ *   templates, which still carried a hard-coded wing and role holder. See
+ *   PCR_CHANGELOG.md.
+ *   1.9.0: Added PROFILE_.RUN_RECOVERY_EMAIL_NOTIFICATIONS (on for seniors and
  *   cadets, off for region) and CONFIG.COMMAND_EMAIL_DOMAIN (optional Script
  *   Property TENANT_COMMAND_EMAIL_DOMAIN, blank defaults to EMAIL_DOMAIN), both
  *   consumed by notifications/RecoveryEmailNotify.gs. The command domain exists
@@ -126,6 +134,12 @@ function getTenantConfig_() {
     RETENTION_LOG_SPREADSHEET_ID: get('TENANT_RETENTION_LOG_SPREADSHEET_ID'),
     RETENTION_EMAIL: get('TENANT_RETENTION_EMAIL'),
     DIRECTOR_RECRUITING_EMAIL: get('TENANT_DIRECTOR_RECRUITING_EMAIL'),
+    // Signature name rendered into the member-facing retention templates
+    // ({{directorName}}). Like the address above this is an individual, so it is
+    // NOT version-controlled — set it per project. Blank renders the office line
+    // alone ("Director of Recruiting, <Wing> Civil Air Patrol"), which is correct
+    // copy for a tenant that has not named a role holder.
+    DIRECTOR_RECRUITING_NAME: get('TENANT_DIRECTOR_RECRUITING_NAME'),
     AUTOMATION_SENDER_EMAIL: get('TENANT_AUTOMATION_SENDER_EMAIL'),
     SENDER_NAME: get('TENANT_SENDER_NAME', 'CAP Information Technology'),
     TEST_EMAIL: get('TENANT_TEST_EMAIL'),
@@ -422,6 +436,7 @@ function setupTenantConfig() {
     TENANT_RETENTION_LOG_SPREADSHEET_ID: '',
     TENANT_RETENTION_EMAIL: '',
     TENANT_DIRECTOR_RECRUITING_EMAIL: '',
+    TENANT_DIRECTOR_RECRUITING_NAME: '',   // e.g. Maj Jane Doe; '' signs retention mail with the office title only
     TENANT_AUTOMATION_SENDER_EMAIL: '',
     TENANT_SENDER_NAME: '',
     TENANT_TEST_EMAIL: '',
@@ -739,6 +754,12 @@ const RETENTION_EMAIL = TENANT.RETENTION_EMAIL;
 
 /** Email address for Director of Recruiting and Retention */
 const DIRECTOR_RECRUITING_EMAIL = TENANT.DIRECTOR_RECRUITING_EMAIL;
+
+/**
+ * Signature name for member-facing retention email ({{directorName}}).
+ * Blank is valid and renders the office title alone — see TENANT config.
+ */
+const DIRECTOR_RECRUITING_NAME = TENANT.DIRECTOR_RECRUITING_NAME;
 
 /** Email alias to use as sender for automated emails */
 const AUTOMATION_SENDER_EMAIL = TENANT.AUTOMATION_SENDER_EMAIL;

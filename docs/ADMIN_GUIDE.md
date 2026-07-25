@@ -156,11 +156,23 @@ Open any project in the browser from the repo with e.g. `npm run open:seniors`.
 
 - Automated mail sender: `automation@cawgcap.org` (display name "CAWG Information Technology").
 - IT support mailbox: `it@cawgcap.org`.
-- Recruiting/retention: `recruiting@cawgcap.org`. The Director of Recruiting & Retention is an
-  individual, so their address is **not** version-controlled — it lives in the
-  `TENANT_DIRECTOR_RECRUITING_EMAIL` Script Property on each project. Read it from there
-  (Project Settings → Script Properties) rather than from this repo, and update it there when
-  the role changes.
+- Recruiting/retention: `ca.dty.director-recruiting@cawgcap.org` — a **role group**, so it is
+  version-controlled in `config-tenants/` and survives a change of incumbent. It is both
+  `TENANT_RETENTION_EMAIL` (addressee of the monthly retention run summary) and
+  `TENANT_DIRECTOR_RECRUITING_EMAIL` (the `replyTo` on member-facing retention mail).
+  > ⚠️ These previously read `recruiting@cawgcap.org`, **which does not exist as a group**
+  > (confirmed 2026-07-25). Any tenant still holding the old value in Script Properties will
+  > silently lose its retention summary — `sendRetentionSummaryEmail()` catches and logs rather
+  > than raising. Re-run `setupTenantConfig()` or fix the property by hand.
+- The incumbent's **name** is a different matter: `TENANT_DIRECTOR_RECRUITING_NAME` names an
+  individual, so it is **not** version-controlled — it lives only in Script Properties on each
+  project. It is the signature on member-facing retention email, so a stale value goes out over
+  the wrong person's name; blank is a safe default and signs with the office title alone.
+- CAP duty-title note: the CAPWATCH duty string for this role at CAWG is **`Recruiting Officer`**,
+  not `Director of Recruiting`. Both titles exist in CAPWATCH, but as of the January 2026 extract
+  no CAWG member held the latter. Group rules match the duty string exactly, so a rule keyed on
+  `Director of Recruiting` matches nobody here and — because `dutyPositionIdsWingHQ` deletes empty
+  groups — fails silently rather than erroring.
 - Upstream code authors (historical): Luke Bunge, Jeremy Ginnard (Michigan Wing);
   PCR config by Noel Luneau.
 
@@ -375,7 +387,7 @@ Secrets are **never** committed. They live in each project's **Script Properties
 | `TENANT_PROFILE` | `config.gs` (`PROFILE_`) | **Per-tenant behavior selector:** `seniors` (default if unset) or `cadets`. Picks `MEMBER_TYPES.ACTIVE`, `CADET_LITE`, and the squadron-group set (access/public auto-create + distribution-list types). Set to `cadets` on the cadets project. |
 | `TENANT_DOMAIN`, `TENANT_EMAIL_DOMAIN`, `TENANT_CAPWATCH_ORGID`, `TENANT_WING`, `TENANT_REGION` | `getTenantConfig_()` → `CONFIG` | **Per-tenant identity.** The Workspace domain, email domain, CAPWATCH ORGID, wing code, and region. First seven are required; `validateTenantConfig()` checks them. |
 | `TENANT_CAPWATCH_DATA_FOLDER_ID`, `TENANT_AUTOMATION_FOLDER_ID`, `TENANT_AUTOMATION_SPREADSHEET_ID` | same | **Per-tenant** Drive data folder, automation folder, and automation spreadsheet IDs. Required. |
-| `TENANT_RETENTION_LOG_SPREADSHEET_ID`, `TENANT_RETENTION_EMAIL`, `TENANT_DIRECTOR_RECRUITING_EMAIL`, `TENANT_AUTOMATION_SENDER_EMAIL`, `TENANT_SENDER_NAME`, `TENANT_TEST_EMAIL`, `TENANT_ITSUPPORT_EMAIL` | same | **Per-tenant** retention log + contact/sender addresses. `TENANT_SENDER_NAME` defaults to "CAP Information Technology" if unset. |
+| `TENANT_RETENTION_LOG_SPREADSHEET_ID`, `TENANT_RETENTION_EMAIL`, `TENANT_DIRECTOR_RECRUITING_EMAIL`, `TENANT_DIRECTOR_RECRUITING_NAME`, `TENANT_AUTOMATION_SENDER_EMAIL`, `TENANT_SENDER_NAME`, `TENANT_TEST_EMAIL`, `TENANT_ITSUPPORT_EMAIL` | same | **Per-tenant** retention log + contact/sender addresses. `TENANT_SENDER_NAME` defaults to "CAP Information Technology" if unset. `TENANT_DIRECTOR_RECRUITING_NAME` is the signature name on member-facing retention email; blank signs with the office title alone. |
 | `TENANT_WING_ABBREVIATION`, `TENANT_WING_NAME`, `TENANT_CADETS_TENANT_DOMAIN` | `getTenantConfig_()` → `CONFIG` | **Optional, all blank-derive.** Display forms of the wing used in automation emails and the member-facing transition email: abbreviation (`CA` → `CAWG`, `HI` → `HIWG`) and proper name (`California Wing` / `Hawaii Wing`, via `WING_NAMES_`). `TENANT_CADETS_TENANT_DOMAIN` is the peer cadet domain for `updateCAWGCadetGroups()` (blank derives `<wing>wgcadets.org`). Set any of these only to override the derived default. |
 | `SA_IMPERSONATION_EMAIL` | `getImpersonatedToken_()` in `UpdateMembers.gs` | Dedicated service account's `client_email` for this tenant. |
 | `SA_PRIVATE_KEY` | same | Service account private key (PEM). Literal `\n` sequences are converted to real newlines at runtime, so pasting the one-line form works. |

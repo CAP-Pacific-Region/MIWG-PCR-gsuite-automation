@@ -9,14 +9,14 @@ This module automatically identifies and emails CAP members who are:
 - **Turning 21** - Cadets aging out of the cadet program
 - **Expiring** - Members whose membership expires this month
 
-Emails are personalized with member rank/name and include squadron commanders on cadet emails for awareness and follow-up support.
+Emails are personalized with member rank/name and include squadron commanders on cadet emails for awareness and follow-up support. Commanders are CC'd at their **CAP account**, not the personal address on their CAPWATCH record — see [Commander's CC Bounced](#commanders-cc-bounced) for how that address is chosen.
 
 ## Features
 
 - ✅ Automated member identification based on CAPWATCH data
 - ✅ Personalized email templates with rank and name
 - ✅ Squadron commander CC for cadet emails
-- ✅ BCC to retention team for tracking
+- ✅ Every send recorded in the retention log spreadsheet for tracking
 - ✅ Comprehensive logging to spreadsheet
 - ✅ Summary report emailed to retention team
 - ✅ Error tracking and retry logic
@@ -40,7 +40,7 @@ Emails are personalized with member rank/name and include squadron commanders on
 **Template:** `ExpiringEmail.html`  
 **Recipients:** Active cadets and seniors expiring this month  
 **CC:** Squadron Commander (cadets only)  
-**Purpose:** Remind member to renew membership before expiration and ask for feedback
+**Purpose:** Remind member to renew membership before expiration, and invite feedback by reply
 
 ## Setup Instructions
 
@@ -52,10 +52,22 @@ Create three HTML email templates in your Google Apps Script project:
 2. **Turning21Email.html** - Template for cadets turning 21  
 3. **ExpiringEmail.html** - Template for expiring members
 
-Each template should include the following placeholders:
-- `{{rank}}` - Member's rank
-- `{{lastName}}` - Member's last name
-- `{{expiration}}` - Expiration date (ExpiringEmail only)
+All substitution goes through `retentionRenderTemplate_()`, so these placeholders work in
+any of the three templates:
+
+| Placeholder | Source | Notes |
+|-------------|--------|-------|
+| `{{rank}}` | member | Member's rank |
+| `{{lastName}}` | member | Member's last name |
+| `{{expiration}}` | member | Expiration date (populated for `ExpiringEmail`) |
+| `{{wingName}}` | `CONFIG.WING_NAME` | Proper name — "California Wing", "Hawaii Wing" |
+| `{{orgLabel}}` | `CONFIG.ORG_LABEL` | Abbreviation — "CAWG", "HIWG", "PCR" |
+| `{{signature}}` | `retentionSignatureHtml_()` | Full closing block, name + office + wing |
+
+**Never hard-code a wing name, abbreviation, or role holder in a template.** These are
+member-facing, and the whole point of the placeholders is that another wing can adopt this
+module by setting Script Properties. An unrecognized placeholder is left in the rendered
+output rather than blanked, so a typo shows up in the test email.
 
 **Example template structure:**
 ```html
@@ -65,47 +77,53 @@ Each template should include the following placeholders:
   <style>
     body { font-family: Arial, sans-serif; line-height: 1.6; }
     .header { background-color: #003366; color: white; padding: 20px; }
+    .header h1 { text-transform: uppercase; }
     .content { padding: 20px; }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>Important Membership Update</h1>
+    <h1>Civil Air Patrol<br>{{wingName}}</h1>
   </div>
   <div class="content">
     <p>Dear {{rank}} {{lastName}},</p>
-    
+
     <!-- Email content here -->
-    
-    <p>Semper Vigilans,</p>
-    <p>[Your Name]<br>
-    Director of Recruiting & Retention<br>
-    Michigan Wing, Civil Air Patrol</p>
+
+    <p>Sincerely,</p>
+    <p>{{signature}}</p>
   </div>
 </body>
 </html>
 ```
 
+> **Filenames include the folder.** A file at `src/recruiting-and-retention/ExpiringEmail.html`
+> deploys into Apps Script under the literal name `recruiting-and-retention/ExpiringEmail`.
+> `retentionRenderTemplate_()` adds that prefix for you — pass it `'ExpiringEmail'`.
+
 ### Step 2: Configure Settings
 
-Update the following values in `config.gs`:
+These are **Script Properties**, not `config.gs` constants — `clasp push` overwrites
+`config.gs` with the shared copy, so no tenant value may live there. Set them in
+Project Settings → Script Properties, or via `setupTenantConfig()`.
 
-```javascript
-// Retention tracking spreadsheet
-const RETENTION_LOG_SPREADSHEET_ID = '<your-spreadsheet-id>';
+| Script Property | Purpose |
+|-----------------|---------|
+| `TENANT_RETENTION_LOG_SPREADSHEET_ID` | Retention tracking spreadsheet |
+| `TENANT_RETENTION_EMAIL` | Retention role group — receives the **run summary only** (not a copy of each send; the Log sheet is the per-send record) |
+| `TENANT_DIRECTOR_RECRUITING_EMAIL` | `replyTo` on every send. **Required** — blank makes every send fail |
+| `TENANT_DIRECTOR_RECRUITING_NAME` | Signature name. Blank signs with the office title alone |
+| `TENANT_AUTOMATION_SENDER_EMAIL` | `from` address. Requires a matching verified Send-As alias |
+| `TENANT_SENDER_NAME` | Sender display name |
+| `TENANT_TEST_EMAIL` | Recipient for the test functions |
+| `TENANT_ITSUPPORT_EMAIL` | Contact shown in the summary report footer |
 
-// Email addresses
-const RETENTION_EMAIL = 'retention <at domain>';
-const DIRECTOR_RECRUITING_EMAIL = 'director.rr <at domain>';
-const AUTOMATION_SENDER_EMAIL = 'retention.workflows <at domain>';
-const SENDER_NAME = 'Your Name, Director of Recruiting & Retention';
+The director's **address and name are individuals**, so they are deliberately blank in
+`config-tenants/*.json` and must be set per project. Update them there when the role changes —
+the name goes out on member-facing mail.
 
-// Test email for development
-const TEST_EMAIL = 'test.email <at domain>';
-
-// IT support contact
-const ITSUPPORT_EMAIL = 'it <at domain>';
-```
+The wing labels in the templates come from `TENANT_WING` (or the `TENANT_WING_NAME` /
+`TENANT_WING_ABBREVIATION` overrides) and need no retention-specific setup.
 
 ### Step 3: Create Retention Log Spreadsheet
 
@@ -277,8 +295,22 @@ testRetentionEmail();
 
 **Possible Causes:**
 - Commander not listed in Commanders.txt
-- Commander has no email in MbrContact.txt
+- Commander has no usable name in Commanders.txt **and** no email in MbrContact.txt — with
+  neither, no address can be derived or looked up, and the CC is dropped
 - Wrong orgid assignment
+
+### Commander's CC Bounced
+
+**Symptom:** Member received the email; the commander's copy bounced
+
+**Cause:** The CC resolves to the commander's **CAP account**, preferring the real Workspace
+address, then the derived `first.last@<command domain>`. Derived addresses are never verified,
+so a commander whose account does not follow the default naming — a rename, a manual creation,
+a `.2` duplicate — gets an address that does not exist. The member's own send is unaffected.
+
+**Solution:** Confirm the commander has a Workspace account this tenant can read, and that
+`TENANT_COMMAND_EMAIL_DOMAIN` names the domain their account is actually on (on the cadets
+tenant that is the **senior** domain, since command staff are senior members).
 
 **Solution:**
 ```javascript
@@ -402,6 +434,32 @@ When reporting issues, include:
 5. Relevant log entries
 
 ## Version History
+
+### SendRetentionEmail.gs 1.3.0 (July 2026)
+- ✅ Retention group receives the **run summary only** — dropped `bcc: RETENTION_EMAIL` from all
+  three member-facing sends, which at wing scale meant a few hundred messages a month into one
+  mailbox, duplicating what the Log sheet already records per send
+- ✅ Corrected the retention/reply-to addresses: the previous `recruiting@cawgcap.org` does not
+  exist as a group, so the summary had nowhere to land and the failure was swallowed by a catch
+
+### SendRetentionEmail.gs 1.2.0 (July 2026)
+- ✅ Commander CC goes to the CAP account (real Workspace address → derived
+  `first.last@<command domain>` → CAPWATCH primary as last resort), reusing the resolver
+  from `RecoveryEmailNotify.gs` so the two modules stay in agreement
+- ✅ `getCommanderInfo()` backed by an index built once per run, instead of re-parsing
+  `Commanders.txt` and rebuilding the CAPWATCH email map on every call
+- ✅ First test coverage for the module (`test/SendRetentionEmail.commander.test.js`)
+
+### SendRetentionEmail.gs 1.1.0 (July 2026)
+- ✅ Templates genericized — `{{wingName}}` / `{{orgLabel}}` / `{{signature}}` replace the
+  hard-coded California Wing masthead, footer, and named role holder
+- ✅ New optional Script Property `TENANT_DIRECTOR_RECRUITING_NAME` (blank signs with the
+  office title alone)
+- ✅ `retentionRenderTemplate_()` centralizes substitution across all seven render sites
+- ✅ Removed the feedback survey block from `ExpiringEmail.html`, which shipped with an
+  unfilled `LINK TO FORM HERE` placeholder — feedback now routes to `replyTo`
+- ✅ Removed the commented-out MIWG "Phoenix Senior Flight" block and orphaned CSS
+- ✅ Fixed unbalanced `<p>` tags in all three signature blocks
 
 ### v1.5 (Public Release) (November 2025)
 - ✅ Structured logging with Logger utility

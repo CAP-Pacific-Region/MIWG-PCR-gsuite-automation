@@ -1,10 +1,44 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.0.1
- * Date: 2026-07-17
- * Changes: Retention-report footer uses the programmable CONFIG.ORG_LABEL instead
- *   of literal 'CAWG', so it reads correctly for any wing. See PCR_CHANGELOG.md.
+ * Version: 1.3.0
+ * Date: 2026-07-25
+ * Changes: Dropped `bcc: RETENTION_EMAIL` from all three member-facing sends. The
+ *   retention group now receives the run summary only, not a copy of every
+ *   message — at wing scale that BCC was a few hundred messages a month into one
+ *   mailbox, and it duplicated a record the Log sheet already keeps per send
+ *   (timestamp, type, CAPID, name, address, commander). RETENTION_EMAIL still
+ *   addresses the summary. Note the previous value, recruiting@cawgcap.org, did
+ *   not exist as a group, so the summary had nowhere to land and
+ *   sendRetentionSummaryEmail()'s catch would have swallowed the failure — see
+ *   config-tenants/ for the replacement role group. See PCR_CHANGELOG.md.
+ *   1.2.0: Commander CC now goes to the commander's CAP account rather than the
+ *   personal address on their CAPWATCH record — real Workspace account first,
+ *   then the derived first.last@<command domain>, with CAPWATCH primary kept only
+ *   as a last resort. This reuses rcResolveRecipientEmail_() from
+ *   notifications/RecoveryEmailNotify.gs so the two modules cannot disagree about
+ *   how a commander is reached. getCommanderInfo() is now backed by
+ *   retentionCommanderIndex_(), built once per execution: the previous version
+ *   re-walked Commanders.txt and rebuilt the entire CAPWATCH email map on every
+ *   call, i.e. once per cadet email sent. See PCR_CHANGELOG.md.
+ *   1.1.0: Genericized the three member-facing templates, which still carried a
+ *   hard-coded 'CALIFORNIA WING' masthead/footer and a hard-coded role holder in
+ *   the signature — the last thing blocking another wing from adopting this
+ *   module by Script Property alone. New placeholders {{wingName}}, {{orgLabel}}
+ *   and {{signature}} are filled by retentionRenderTemplate_(), which replaces
+ *   the substitution chains that were duplicated across all seven render sites.
+ *   The signature name comes from the new optional Script Property
+ *   TENANT_DIRECTOR_RECRUITING_NAME (blank signs with the office title alone).
+ *   Also removed the dead feedback-survey block from ExpiringEmail.html, which
+ *   shipped with an unfilled 'LINK TO FORM HERE' placeholder in the button href,
+ *   the fallback href and the visible link text — it would have mailed every
+ *   expiring member a broken link. The feedback ask now routes to replyTo, which
+ *   is already the Director of Recruiting. Dropped the commented-out MIWG
+ *   'Phoenix Senior Flight' block and the CSS orphaned by both removals, and
+ *   closed the unbalanced <p> tags in all three signature blocks.
+ *   See PCR_CHANGELOG.md.
+ *   1.0.1: Retention-report footer uses the programmable CONFIG.ORG_LABEL instead
+ *   of literal 'CAWG', so it reads correctly for any wing.
  *   1.0.0: Reconciled with live tenant code (INDEFINITE senior type; profile-driven
  *   config references).
  *
@@ -16,9 +50,9 @@
  * Email Features:
  * - Personalized with member rank and name
  * - CC to squadron commander for cadet emails
- * - BCC to retention team for tracking
- * - Reply-to set to Director of Recruiting & Retention
- * - Logged to retention tracking spreadsheet
+ * - Reply-to set to the Director of Recruiting role group
+ * - Logged to retention tracking spreadsheet (the per-send record; the retention
+ *   group receives the run summary, not a copy of every message)
  * 
  * RECOMMENDED SCHEDULE: Run monthly on the 1st at 10:00 AM
  * This allows time for CAPWATCH data to be updated after month-end processing.
@@ -26,7 +60,8 @@
  * Setup Instructions:
  * 1. Create email templates: Turning18Email.html, Turning21Email.html, ExpiringEmail.html
  * 2. Set RETENTION_LOG_SPREADSHEET_ID in config.gs
- * 3. Verify RETENTION_EMAIL and DIRECTOR_RECRUITING_EMAIL in config.gs
+ * 3. Verify TENANT_RETENTION_EMAIL and TENANT_DIRECTOR_RECRUITING_EMAIL in
+ *    Script Properties (NOT config.gs — a push overwrites that file)
  * 4. Run testAllRetentionEmails() to verify templates and configuration
  * 5. Set up time-driven trigger for sendRetentionEmails()
  * 
@@ -51,6 +86,7 @@
  */
 function sendRetentionEmails() {
   clearCache(); // Ensure fresh CAPWATCH data
+  _commanderIndex = null; // derived from that data — must not outlive it
   const start = new Date();
   Logger.info('Starting retention email process');
   
@@ -402,40 +438,177 @@ function createEmailMap() {
   return emailMap;
 }
 
+/** ORGID -> commander record, built once per execution. See below. */
+let _commanderIndex = null;
+
+/**
+ * Builds ORGID -> commander record for every unit, resolving each commander's
+ * CC address.
+ *
+ * ADDRESS ORDER — org account first, CAPWATCH last:
+ *   1. their real Workspace account, read from this tenant's directory
+ *   2. the derived CAP account first.last@<command domain>
+ *   3. their CAPWATCH PRIMARY
+ *
+ * This is `rcResolveRecipientEmail_()` from notifications/RecoveryEmailNotify.gs,
+ * reused rather than reimplemented so the two modules cannot drift on what
+ * "reach the commander" means. (The dependency already runs the other way too —
+ * that module calls createEmailMap() from this one.) Step 1 covers the cases
+ * derivation cannot see: a `.2` duplicate, a manual creation, a rename. Step 2
+ * covers a commander whose account exists on a domain this tenant cannot read —
+ * on the CADETS tenant command staff are seniors, so COMMAND_EMAIL_DOMAIN points
+ * at the senior domain, the directory read yields nothing usable, and the
+ * derived senior address is the right answer. CAPWATCH primary is last because
+ * it is a personal address: it reaches the person, but not at the CAP account
+ * this mail belongs in.
+ *
+ * Derived addresses are never verified, so a commander whose account does not
+ * follow the default naming will have their CC bounce. That costs the commander
+ * their copy; the member's own send is unaffected, since Gmail accepts the
+ * message and bounces per-recipient.
+ *
+ * Built once and cached because the send loop asks per member: the previous
+ * per-call implementation re-walked Commanders.txt and rebuilt the whole
+ * CAPWATCH email map for every single cadet email sent.
+ *
+ * @returns {Object} Map of ORGID to commander record
+ */
+function retentionCommanderIndex_() {
+  if (_commanderIndex) return _commanderIndex;
+
+  const emailMap = createEmailMap();
+
+  // One directory listing per run. rcBuildCommandDirectoryMap_ decides whether
+  // this tenant can actually see command staff and returns {} when it cannot,
+  // so the guard stays in one place rather than being restated here.
+  let directoryMap = {};
+  try {
+    directoryMap = rcBuildCommandDirectoryMap_(getActiveUsers());
+  } catch (e) {
+    Logger.warn('Directory unreadable — falling back to derived/CAPWATCH commander addresses', {
+      errorMessage: e.message
+    });
+  }
+
+  // Commanders.txt: ORGID=0, CAPID=4, NameLast=8, NameFirst=9, Rank=12.
+  // Nationwide, so this is only ever read for ORGIDs of this tenant's members.
+  const index = {};
+  parseFile('Commanders').forEach(function (row) {
+    const orgid = String(row[0] || '').trim();
+    if (!orgid || index[orgid]) return; // first row per org wins, as before
+
+    const capid = String(row[4] || '').trim();
+    const info = {
+      firstName: String(row[9] || '').trim(),
+      lastName: String(row[8] || '').trim(),
+      rank: String(row[12] || '').trim()
+    };
+
+    index[orgid] = {
+      capid: capid,
+      firstName: info.firstName,
+      lastName: info.lastName,
+      rank: info.rank,
+      email: rcResolveRecipientEmail_(info, capid, emailMap, directoryMap)
+    };
+  });
+
+  Logger.info('Commander index built', {
+    organizations: Object.keys(index).length,
+    fromDirectory: Object.keys(directoryMap).length
+  });
+
+  _commanderIndex = index;
+  return index;
+}
+
 /**
  * Retrieves commander information for a given organization
- * 
- * Looks up the commander (duty position 'Commander') for the specified
- * organization ID. Returns commander details including email if available.
- * 
+ *
+ * Looks up the unit commander for the specified organization ID and returns
+ * their details, including the address to CC — see retentionCommanderIndex_()
+ * for how that address is chosen.
+ *
  * @param {string} orgid - Organization ID to look up commander for
  * @returns {Object|null} Commander object with properties or null if not found:
  *   - capid: Commander's CAP ID
  *   - firstName: Commander's first name
  *   - lastName: Commander's last name
  *   - rank: Commander's rank
- *   - email: Commander's primary email (or null if not available)
+ *   - email: Commander's CAP account, or CAPWATCH primary, or null
  */
 function getCommanderInfo(orgid) {
-  const commanderData = parseFile('Commanders');
-  const emailMap = createEmailMap();
-  
-  // Find commander for orgid
-  for (let i = 0; i < commanderData.length; i++) {
-    if (commanderData[i][0] === orgid) {
-      const capid = commanderData[i][4];
-      return {
-        capid: capid,
-        firstName: commanderData[i][9],
-        lastName: commanderData[i][8],
-        rank: commanderData[i][12],
-        email: emailMap[capid] || null
-      };
-    }
+  const commander = retentionCommanderIndex_()[String(orgid || '').trim()];
+
+  if (!commander) {
+    Logger.warn('Commander not found for organization', { orgid: orgid });
+    return null;
   }
-  
-  Logger.warn('Commander not found for organization', { orgid: orgid });
-  return null;
+
+  return commander;
+}
+
+// ============================================================================
+// TEMPLATE RENDERING
+// ============================================================================
+
+/**
+ * Builds the closing signature block for member-facing retention email.
+ *
+ * The role holder is an individual, so their name is not version-controlled —
+ * it comes from the TENANT_DIRECTOR_RECRUITING_NAME Script Property. Blank is a
+ * valid state (a tenant that has not named one, or does not want a personal name
+ * on automated mail) and signs with the office title alone.
+ *
+ * @returns {string} HTML fragment for the {{signature}} placeholder
+ */
+function retentionSignatureHtml_() {
+  const wingLine = CONFIG.WING_NAME + ' Civil Air Patrol';
+  const name = String(DIRECTOR_RECRUITING_NAME || '').trim();
+
+  return name
+    ? '<strong>' + name + '</strong><br>Director of Recruiting<br>' + wingLine
+    : '<strong>Director of Recruiting</strong><br>' + wingLine;
+}
+
+/**
+ * Renders a retention email template with member and wing values.
+ *
+ * Every member-facing template shares the wing labels and signature, so all
+ * substitution happens here rather than being repeated at each send site.
+ *
+ * NOTE the template name must be the full slash-prefixed Apps Script filename
+ * minus the folder, which this adds — a file at
+ * src/recruiting-and-retention/ExpiringEmail.html deploys as
+ * 'recruiting-and-retention/ExpiringEmail' and HtmlService needs that exact
+ * name. Pass 'ExpiringEmail'.
+ *
+ * Substitution uses a replacer function, not a string, so a value containing
+ * '$&' or "$'" cannot corrupt the output. Unrecognized placeholders are left
+ * in place so a typo shows up in the rendered mail instead of silently
+ * blanking.
+ *
+ * @param {string} templateName - Template filename without folder or extension
+ * @param {Object} member - Member object (rank, lastName, expiration)
+ * @returns {string} Rendered HTML
+ */
+function retentionRenderTemplate_(templateName, member) {
+  const m = member || {};
+  const fields = {
+    rank: m.rank || '',
+    lastName: m.lastName || '',
+    expiration: m.expiration || '',
+    wingName: CONFIG.WING_NAME,
+    orgLabel: CONFIG.ORG_LABEL,
+    signature: retentionSignatureHtml_()
+  };
+
+  return HtmlService
+    .createHtmlOutputFromFile('recruiting-and-retention/' + templateName)
+    .getContent()
+    .replace(/{{(\w+)}}/g, function (match, key) {
+      return Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : match;
+    });
 }
 
 // ============================================================================
@@ -586,11 +759,8 @@ function sendExpiringEmails(members, failedList) {
 function sendTurning18Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
-      .getContent()
-      .replace(/{{rank}}/g, member.rank)
-      .replace(/{{lastName}}/g, member.lastName);
-    
+    const htmlBody = retentionRenderTemplate_('Turning18Email', member);
+
     executeWithRetry(() =>
       GmailApp.sendEmail(
         member.email,
@@ -599,7 +769,6 @@ function sendTurning18Email(member) {
         {
           htmlBody: htmlBody,
           cc: commander && commander.email ? commander.email : '',
-          bcc: RETENTION_EMAIL,
           replyTo: DIRECTOR_RECRUITING_EMAIL,
           from: AUTOMATION_SENDER_EMAIL,
           name: SENDER_NAME
@@ -642,11 +811,8 @@ function sendTurning18Email(member) {
 function sendTurning21Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning21Email')
-      .getContent()
-      .replace(/{{rank}}/g, member.rank)
-      .replace(/{{lastName}}/g, member.lastName);
-    
+    const htmlBody = retentionRenderTemplate_('Turning21Email', member);
+
     executeWithRetry(() =>
       GmailApp.sendEmail(
         member.email,
@@ -655,7 +821,6 @@ function sendTurning21Email(member) {
         {
           htmlBody: htmlBody,
           cc: commander && commander.email ? commander.email : '',
-          bcc: RETENTION_EMAIL,
           replyTo: DIRECTOR_RECRUITING_EMAIL,
           from: AUTOMATION_SENDER_EMAIL,
           name: SENDER_NAME
@@ -699,15 +864,10 @@ function sendTurning21Email(member) {
 function sendExpiringEmail(member) {
   try {
     let commander = null;
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/ExpiringEmail')
-      .getContent()
-      .replace(/{{rank}}/g, member.rank)
-      .replace(/{{lastName}}/g, member.lastName)
-      .replace(/{{expiration}}/g, member.expiration);
-    
+    const htmlBody = retentionRenderTemplate_('ExpiringEmail', member);
+
     const options = {
       htmlBody: htmlBody,
-      bcc: RETENTION_EMAIL,
       replyTo: DIRECTOR_RECRUITING_EMAIL,
       from: AUTOMATION_SENDER_EMAIL,
       name: SENDER_NAME
@@ -1033,10 +1193,10 @@ function testRetentionEmail() {
 function testSendSingleEmail() {
   Logger.info('Sending single test email', { recipient: TEST_EMAIL });
   
-  const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
-    .getContent()
-    .replace(/{{rank}}/g, 'C/Amn')
-    .replace(/{{lastName}}/g, 'Test Member');
+  const htmlBody = retentionRenderTemplate_('Turning18Email', {
+    rank: 'C/Amn',
+    lastName: 'Test Member'
+  });
 
   GmailApp.sendEmail(
     TEST_EMAIL,
@@ -1090,11 +1250,8 @@ function testAllRetentionEmails() {
     const commander = getCommanderInfo(testMember.orgid);
     console.log('Commander: ' + JSON.stringify(commander, null, 2));
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
-      .getContent()
-      .replace(/{{rank}}/g, testMember.rank)
-      .replace(/{{lastName}}/g, testMember.lastName);
-    
+    const htmlBody = retentionRenderTemplate_('Turning18Email', testMember);
+
     GmailApp.sendEmail(
       TEST_EMAIL,
       'TEST - Turning 18 Email Preview - ' + testMember.rank + ' ' + testMember.lastName,
@@ -1121,11 +1278,8 @@ function testAllRetentionEmails() {
     const commander = getCommanderInfo(testMember.orgid);
     console.log('Commander: ' + JSON.stringify(commander, null, 2));
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning21Email')
-      .getContent()
-      .replace(/{{rank}}/g, testMember.rank)
-      .replace(/{{lastName}}/g, testMember.lastName);
-    
+    const htmlBody = retentionRenderTemplate_('Turning21Email', testMember);
+
     GmailApp.sendEmail(
       TEST_EMAIL,
       'TEST - Turning 21 Email Preview - ' + testMember.rank + ' ' + testMember.lastName,
@@ -1157,12 +1311,8 @@ function testAllRetentionEmails() {
       console.log('Member is SENIOR - no commander CC');
     }
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/ExpiringEmail')
-      .getContent()
-      .replace(/{{rank}}/g, testMember.rank)
-      .replace(/{{lastName}}/g, testMember.lastName)
-      .replace(/{{expiration}}/g, testMember.expiration);
-    
+    const htmlBody = retentionRenderTemplate_('ExpiringEmail', testMember);
+
     GmailApp.sendEmail(
       TEST_EMAIL,
       'TEST - Expiring Email Preview - ' + testMember.rank + ' ' + testMember.lastName,
