@@ -333,12 +333,27 @@ section('13. Nothing expiring means no digests at all');
 // ---------------------------------------------------------------------------
 section('14. Member data is escaped into the table');
 {
+  // Mixed case on purpose. rcEscapeHtml_ replaces angle brackets character by
+  // character, so casing is irrelevant to it — but only a mixed-case payload
+  // actually demonstrates that, and a lower-case-only assertion would pass just
+  // as happily against an escaper that special-cased tag names.
   const m = load(ONLY_CC);
-  m.sendRenewalDigests_([member('600001', '070', 'SENIOR', '<script>x</script>')],
+  m.sendRenewalDigests_([member('600001', '070', 'SENIOR', '<SCRIPT>x</ScRiPt>')],
     { usable: true, keys: {} });
 
-  check('markup neutralized', /&lt;script&gt;/.test(m.sent[0].html), true);
-  check('raw tag absent', /<script>/.test(m.sent[0].html), false);
+  const html = m.sent[0].html;
+
+  check('escaped form present, casing preserved',
+    html.indexOf('&lt;SCRIPT&gt;x&lt;/ScRiPt&gt;') !== -1, true);
+
+  // The real invariant is stronger than "no <script>": escaping is at the
+  // character level, so NO raw angle bracket from member data survives. Matched
+  // case-insensitively and allowing whitespace, so an upper-case or spaced tag
+  // cannot slip past the assertion itself.
+  check('no raw script tag survives, in any case or spacing',
+    /<\s*\/?\s*script/i.test(html), false);
+  check('no raw angle bracket from the payload at all',
+    html.indexOf('<SCRIPT') === -1 && html.indexOf('</ScRiPt') === -1, true);
 }
 
 done();
