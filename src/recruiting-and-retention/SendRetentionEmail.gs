@@ -1,9 +1,26 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.3.0
+ * Version: 1.4.0
  * Date: 2026-07-25
- * Changes: Dropped `bcc: RETENTION_EMAIL` from all three member-facing sends. The
+ * Changes: Two guards that had to exist before this could be put on a trigger.
+ *   ALREADY-SENT: the Log sheet has always been written and never read, so
+ *   nothing knew what a previous run had done — an execution that died partway
+ *   through the expiring batch would restart from the top of the list on the next
+ *   firing, and a manual re-run after a fix re-mailed everyone it had already
+ *   reached. Sends are now filtered against (email type, CAPID) for the current
+ *   calendar month. It FAILS OPEN: an unreadable log leaves the run behaving as
+ *   it did before, but says so in the execution log and in a banner on the
+ *   summary email, so a low send count is never ambiguous.
+ *   TENANT: sendRetentionEmails() is now gated on PROFILE_.RUN_RETENTION_EMAILS
+ *   (config.gs 1.12.0) — true on seniors, false on cadets and region. This module
+ *   hardcodes 'CADET'/'SENIOR' instead of reading MEMBER_TYPES.ACTIVE, and both
+ *   wing tenants pull the same wing-wide extract, so it addresses the entire wing
+ *   from wherever it runs; arming both tenants mailed every member twice rather
+ *   than splitting the work.
+ *   The summary email and testRetentionEmail() both now report skipped counts.
+ *   See PCR_CHANGELOG.md.
+ *   1.3.0: Dropped `bcc: RETENTION_EMAIL` from all three member-facing sends. The
  *   retention group now receives the run summary only, not a copy of every
  *   message — at wing scale that BCC was a few hundred messages a month into one
  *   mailbox, and it duplicated a record the Log sheet already keeps per send
@@ -85,56 +102,89 @@
  * @returns {Object} Summary of email operations with sent counts and errors
  */
 function sendRetentionEmails() {
+  if (!PROFILE_.RUN_RETENTION_EMAILS) {
+    Logger.info('Retention emails disabled for this tenant profile', {
+      profile: TENANT_PROFILE
+    });
+    return { skipped: true };
+  }
+
   clearCache(); // Ensure fresh CAPWATCH data
   _commanderIndex = null; // derived from that data — must not outlive it
   const start = new Date();
   Logger.info('Starting retention email process');
-  
+
   // Initialize summary tracking
   const summary = {
     sent: { turning18: 0, turning21: 0, expiring: 0 },
     failed: { turning18: [], turning21: [], expiring: [] },
+    skipped: { turning18: 0, turning21: 0, expiring: 0 },
     startTime: start.toISOString()
   };
-  
+
   try {
     // Get members for each category
     const turning18 = getMembersTurning18();
     const turning21 = getMembersTurning21();
     const expiring = getExpiringMembers();
-    
+
     Logger.info('Member categories retrieved', {
       turning18Count: turning18.length,
       turning21Count: turning21.length,
       expiringCount: expiring.length,
       totalToProcess: turning18.length + turning21.length + expiring.length
     });
-    
+
+    // Drop anyone already mailed this period. Without this, a run that dies
+    // partway (or a second firing, or a manual re-run after a fix) re-mails
+    // everyone it already reached.
+    const alreadySent = retentionAlreadySentThisPeriod_(start);
+    const due18 = retentionFilterUnsent_('TURNING_18', turning18, alreadySent);
+    const due21 = retentionFilterUnsent_('TURNING_21', turning21, alreadySent);
+    const dueExp = retentionFilterUnsent_('EXPIRING', expiring, alreadySent);
+
+    summary.dedupeAvailable = alreadySent.usable;
+    summary.skipped.turning18 = turning18.length - due18.length;
+    summary.skipped.turning21 = turning21.length - due21.length;
+    summary.skipped.expiring = expiring.length - dueExp.length;
+
+    Logger.info('Already-sent filter applied', {
+      period: alreadySent.period,
+      dedupeAvailable: alreadySent.usable,
+      skipped: summary.skipped,
+      toSend: { turning18: due18.length, turning21: due21.length, expiring: dueExp.length }
+    });
+
     // Send emails for each category with progress tracking
-    summary.sent.turning18 = sendTurning18Emails(turning18, summary.failed.turning18);
-    summary.sent.turning21 = sendTurning21Emails(turning21, summary.failed.turning21);
-    summary.sent.expiring = sendExpiringEmails(expiring, summary.failed.expiring);
-    
+    summary.sent.turning18 = sendTurning18Emails(due18, summary.failed.turning18);
+    summary.sent.turning21 = sendTurning21Emails(due21, summary.failed.turning21);
+    summary.sent.expiring = sendExpiringEmails(dueExp, summary.failed.expiring);
+
   } catch (err) {
     Logger.error('Retention email process failed', err);
     throw err;
   }
-  
+
   summary.endTime = new Date().toISOString();
   summary.duration = new Date() - start;
   summary.totalSent = summary.sent.turning18 + summary.sent.turning21 + summary.sent.expiring;
-  summary.totalFailed = summary.failed.turning18.length + 
-                        summary.failed.turning21.length + 
+  summary.totalFailed = summary.failed.turning18.length +
+                        summary.failed.turning21.length +
                         summary.failed.expiring.length;
-  
+  summary.totalSkipped = summary.skipped.turning18 +
+                         summary.skipped.turning21 +
+                         summary.skipped.expiring;
+
   Logger.info('Retention email process completed', {
     duration: summary.duration + 'ms',
     totalSent: summary.totalSent,
     totalFailed: summary.totalFailed,
+    totalSkipped: summary.totalSkipped,
+    dedupeAvailable: summary.dedupeAvailable,
     breakdown: {
-      turning18: { sent: summary.sent.turning18, failed: summary.failed.turning18.length },
-      turning21: { sent: summary.sent.turning21, failed: summary.failed.turning21.length },
-      expiring: { sent: summary.sent.expiring, failed: summary.failed.expiring.length }
+      turning18: { sent: summary.sent.turning18, failed: summary.failed.turning18.length, skipped: summary.skipped.turning18 },
+      turning21: { sent: summary.sent.turning21, failed: summary.failed.turning21.length, skipped: summary.skipped.turning21 },
+      expiring: { sent: summary.sent.expiring, failed: summary.failed.expiring.length, skipped: summary.skipped.expiring }
     }
   });
   
@@ -918,6 +968,120 @@ function sendExpiringEmail(member) {
 }
 
 // ============================================================================
+// ALREADY-SENT GUARD
+// ============================================================================
+
+/**
+ * Period key for the already-sent guard: 'yyyy-MM'.
+ *
+ * Calendar month is the correct grain because it is exactly what member
+ * selection keys on — turning 18/21 match birth MONTH against the current month,
+ * and expiring matches expiration month and year. Two runs in the same month see
+ * the same population by definition, so "already mailed this month" and "already
+ * mailed for this occurrence" are the same statement.
+ *
+ * @param {Date} when - Run start
+ * @returns {string} 'yyyy-MM'
+ */
+function retentionPeriodKey_(when) {
+  const d = when || new Date();
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
+}
+
+/**
+ * Reads the Log sheet and returns who has already been mailed this period.
+ *
+ * The Log sheet has always been written and never read. That is what made a
+ * re-run dangerous: nothing in the module knew what the previous run had done,
+ * so an execution that hit the 30-minute limit partway through the expiring
+ * batch would, on the next firing, start again from the top of the list.
+ *
+ * FAILS OPEN, LOUDLY. If the sheet is missing or unreadable this returns
+ * usable=false and an empty set, so the run proceeds exactly as it did before
+ * this guard existed rather than silently mailing nobody. The summary email
+ * carries the same flag, so an operator can see that the run had no duplicate
+ * protection instead of assuming it did.
+ *
+ * Only SUCCESSFUL sends reach the Log (logEmailSent is called after the send
+ * returns), so a member whose send failed is correctly retried next run. The
+ * converse gap is real but narrow: if the send succeeds and the Log write then
+ * fails, that member is re-mailed on a re-run.
+ *
+ * @param {Date} when - Run start, for the period key
+ * @returns {Object} { usable: boolean, period: string, keys: Object }
+ */
+function retentionAlreadySentThisPeriod_(when) {
+  const period = retentionPeriodKey_(when);
+  const result = { usable: false, period: period, keys: {} };
+
+  if (!RETENTION_LOG_SPREADSHEET_ID) {
+    Logger.warn('No retention log configured — duplicate protection is OFF for this run', {
+      period: period
+    });
+    return result;
+  }
+
+  try {
+    const sheet = SpreadsheetApp.openById(RETENTION_LOG_SPREADSHEET_ID).getSheetByName('Log');
+
+    // No sheet yet means nothing has ever been sent. That is a usable answer,
+    // not a failure — the first run legitimately has an empty history.
+    if (!sheet || sheet.getLastRow() < 2) {
+      result.usable = true;
+      return result;
+    }
+
+    // Columns A-C only: Timestamp, Email Type, CAPID.
+    const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
+    let matched = 0;
+
+    rows.forEach(function (row) {
+      const stamp = row[0];
+      if (!(stamp instanceof Date)) return; // blank or text row — ignore
+      if (retentionPeriodKey_(stamp) !== period) return;
+
+      const type = String(row[1] || '').trim();
+      const capid = String(row[2] || '').trim();
+      if (!type || !capid) return;
+
+      result.keys[type + '|' + capid] = true;
+      matched++;
+    });
+
+    result.usable = true;
+    Logger.info('Retention log read for duplicate protection', {
+      period: period,
+      rowsScanned: rows.length,
+      alreadySentThisPeriod: matched
+    });
+
+  } catch (e) {
+    Logger.warn('Retention log unreadable — duplicate protection is OFF for this run', {
+      period: period,
+      errorMessage: e.message
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Drops members already mailed for this email type this period.
+ *
+ * @param {string} emailType - TURNING_18 | TURNING_21 | EXPIRING
+ * @param {Array<Object>} members - Candidates from the retrieval functions
+ * @param {Object} alreadySent - retentionAlreadySentThisPeriod_() output
+ * @returns {Array<Object>} Members still due
+ */
+function retentionFilterUnsent_(emailType, members, alreadySent) {
+  if (!alreadySent || !alreadySent.usable) return members;
+
+  return members.filter(function (m) {
+    return !alreadySent.keys[emailType + '|' + String(m.capid || '').trim()];
+  });
+}
+
+// ============================================================================
 // LOGGING AND REPORTING
 // ============================================================================
 
@@ -1025,9 +1189,25 @@ function sendRetentionSummaryEmail(summary) {
             <p><strong>Duration:</strong> ${Math.round(summary.duration / 1000)} seconds</p>
             <p><strong>Total Sent:</strong> ${summary.totalSent}</p>
             <p><strong>Total Failed:</strong> ${summary.totalFailed}</p>
+            <p><strong>Already sent this month (skipped):</strong> ${summary.totalSkipped}</p>
           </div>
     `;
-    
+
+    // An operator reading a low "sent" count needs to know whether the run was
+    // deduping against the log or flying blind, so say so rather than let the
+    // number be ambiguous.
+    if (summary.dedupeAvailable === false) {
+      htmlBody += `
+        <div class="warning">
+          <h2>⚠ Duplicate protection was OFF for this run</h2>
+          <p>The retention log could not be read, so this run could not tell who had
+          already been mailed this month. Anyone reached by an earlier run this month
+          will have received a second copy. Check the execution log for the reason
+          before re-running.</p>
+        </div>
+      `;
+    }
+
     // Breakdown by category
     htmlBody += `
       <h2>Breakdown by Category</h2>
@@ -1036,21 +1216,25 @@ function sendRetentionSummaryEmail(summary) {
           <th>Category</th>
           <th>Sent</th>
           <th>Failed</th>
+          <th>Skipped (already sent)</th>
         </tr>
         <tr>
           <td>Turning 18</td>
           <td>${summary.sent.turning18}</td>
           <td>${summary.failed.turning18.length}</td>
+          <td>${summary.skipped.turning18}</td>
         </tr>
         <tr>
           <td>Turning 21</td>
           <td>${summary.sent.turning21}</td>
           <td>${summary.failed.turning21.length}</td>
+          <td>${summary.skipped.turning21}</td>
         </tr>
         <tr>
           <td>Expiring</td>
           <td>${summary.sent.expiring}</td>
           <td>${summary.failed.expiring.length}</td>
+          <td>${summary.skipped.expiring}</td>
         </tr>
       </table>
     `;
@@ -1153,7 +1337,20 @@ function testRetentionEmail() {
   const expiring = getExpiringMembers();
   
   console.log('\n=== RETENTION EMAIL SYSTEM TEST ===\n');
-  
+
+  // Show what a real run would actually send, not just who matches. Without the
+  // already-sent filter these counts overstate the send by everyone the current
+  // month has already reached.
+  const alreadySent = retentionAlreadySentThisPeriod_(new Date());
+  console.log('Tenant profile: ' + TENANT_PROFILE +
+    '   retention enabled: ' + (PROFILE_.RUN_RETENTION_EMAILS ? 'YES' : 'NO — sendRetentionEmails() is a no-op here'));
+  console.log('Period: ' + alreadySent.period +
+    '   duplicate protection: ' + (alreadySent.usable ? 'on' : 'OFF (log unreadable)'));
+  console.log('Would send now: ' +
+    'turning18=' + retentionFilterUnsent_('TURNING_18', turning18, alreadySent).length + ', ' +
+    'turning21=' + retentionFilterUnsent_('TURNING_21', turning21, alreadySent).length + ', ' +
+    'expiring=' + retentionFilterUnsent_('EXPIRING', expiring, alreadySent).length + '\n');
+
   console.log('Members turning 18: ' + turning18.length);
   if (turning18.length > 0) {
     console.log('Sample:', JSON.stringify(turning18[0], null, 2));

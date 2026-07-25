@@ -170,6 +170,16 @@ Review test emails at `TEST_EMAIL` to verify:
 - ✅ Email formatting looks professional
 - ✅ Reply-to and sender settings are correct
 
+### Step 5a: Confirm this is the right tenant
+
+`sendRetentionEmails()` only runs where `PROFILE_.RUN_RETENTION_EMAILS` is true — the **seniors**
+profile. It is a no-op elsewhere and returns `{ skipped: true }`.
+
+This is deliberate and is not about scope. The module hardcodes `'CADET'`/`'SENIOR'` rather than
+reading `MEMBER_TYPES.ACTIVE`, and both wing tenants download the *same* wing-wide CAPWATCH
+extract, so it addresses the whole wing from wherever it runs. Arming it on both tenants does not
+split the work — it delivers two copies to every member.
+
 ### Step 6: Set Up Trigger
 
 1. Open the Apps Script editor
@@ -434,6 +444,14 @@ When reporting issues, include:
 5. Relevant log entries
 
 ## Version History
+
+### SendRetentionEmail.gs 1.4.0 (July 2026)
+- ✅ **Already-sent guard** — sends filtered against `(email type, CAPID)` for the current
+  calendar month, reading the Log sheet the module previously only wrote. Fails open on an
+  unreadable log, with a warning in the execution log and a banner on the summary
+- ✅ **Tenant guard** — `PROFILE_.RUN_RETENTION_EMAILS`, true on seniors only; arming both wing
+  tenants previously mailed every member twice rather than splitting the work
+- ✅ Summary email and `testRetentionEmail()` report skipped counts
 
 ### SendRetentionEmail.gs 1.3.0 (July 2026)
 - ✅ Retention group receives the **run summary only** — dropped `bcc: RETENTION_EMAIL` from all

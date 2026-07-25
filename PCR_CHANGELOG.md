@@ -10,6 +10,54 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-25] — Retention: duplicate protection, and a one-tenant guard
+
+The two remaining reasons the retention trigger was unsafe to arm. Neither is a bug in what the
+module sends — both are about what happens when it runs more than once.
+
+### Added — already-sent guard (`SendRetentionEmail.gs` 1.4.0)
+
+The Log sheet has always been **written and never read**, so nothing in the module knew what a
+previous run had done. An execution that hit the 30-minute limit partway through the expiring
+batch — the largest category — would, on the next firing, start again from the top of the list.
+A manual re-run after fixing a problem re-mailed everyone already reached.
+
+Sends are now filtered against `(email type, CAPID)` for the current **calendar month**. That
+grain is not arbitrary: it is exactly what member selection already keys on (birth month for
+18/21, expiration month and year for renewals), so "already mailed this month" and "already
+mailed for this occurrence" are the same statement. The key includes the type, so a cadet who
+turns 18 and expires in the same month still gets both.
+
+**It fails open, loudly.** An unreadable or unconfigured log leaves the run behaving exactly as
+it did before the guard existed, rather than refusing to send — a spreadsheet read failure should
+not become a silent outage of the whole feature. But the run says so in the execution log *and*
+in a banner on the summary email, so a low send count is never ambiguous about whether protection
+was in effect. A missing sheet is treated differently from an unreadable one: no sheet yet is a
+legitimate empty history, and proceeds without a warning.
+
+Only successful sends reach the Log (`logEmailSent()` runs after the send returns), so a failed
+send is correctly retried next run. The converse gap is real but narrow: if a send succeeds and
+the Log write then fails, that member is re-mailed on a re-run.
+
+### Added — tenant guard (`config.gs` 1.12.0)
+
+`sendRetentionEmails()` is now gated on `PROFILE_.RUN_RETENTION_EMAILS`: **true on seniors, false
+on cadets and region**. This module hardcodes `'CADET'`/`'SENIOR'` instead of reading
+`MEMBER_TYPES.ACTIVE`, and both wing tenants download the same wing-wide extract, so it addresses
+the entire wing from wherever it runs. Arming both tenants did not split the work between them —
+it mailed every member twice. Off for region because that tenant has no retention log sheet and
+no recruiting role group.
+
+The summary email and `testRetentionEmail()` both report skipped counts, and the preview now
+states the tenant profile and whether duplicate protection is available, so what it shows is what
+a real run would send.
+
+### Added (`test/SendRetentionEmail.dedupe.test.js`)
+
+Period keying, the type-specific key, last-month non-suppression, missing sheet vs unreadable
+sheet, junk rows, numeric-vs-string CAPID cells, and the tenant guard short-circuiting before it
+touches CAPWATCH.
+
 ## [2026-07-25] — Wing recruiting mailbox: placeholder string was being mailed into every unit group
 
 `SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX` held the literal

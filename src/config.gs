@@ -4,9 +4,15 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.11.0
+ * Version: 1.12.0
  * Date: 2026-07-25
- * Changes: SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX is now the
+ * Changes: Added PROFILE_.RUN_RETENTION_EMAILS — true on seniors, false on cadets
+ *   and region. recruiting-and-retention/SendRetentionEmail.gs hardcodes
+ *   'CADET'/'SENIOR' rather than reading MEMBER_TYPES.ACTIVE, and both wing
+ *   tenants download the same wing-wide CAPWATCH extract, so it addresses the
+ *   whole wing from wherever it runs. Arming it on both tenants therefore did not
+ *   split the work between them — it mailed every member twice.
+ *   1.11.0: SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX is now the
  *   Script Property TENANT_RECRUITING_MAILBOX instead of a literal. It held the
  *   placeholder '<recruiting email DL here>', which is truthy, so every squadron
  *   public-contact group update sent that string to AdminDirectory.Members.insert
@@ -214,6 +220,15 @@ const TENANT_PROFILES_ = {
     // record would block a password reset (no CAP address in PRIMARY, and/or no
     // personal address anywhere). On here: every senior member holds an account.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: true,
+    // Monthly member-facing retention mail (turning 18 / turning 21 / expiring).
+    // ON HERE, AND DELIBERATELY ON EXACTLY ONE TENANT. Unlike every other
+    // member-consuming module this one hardcodes 'CADET'/'SENIOR' rather than
+    // reading MEMBER_TYPES.ACTIVE, and both wing tenants download the SAME
+    // wing-wide CAPWATCH extract (same ORGID, unitOnly=0). So it addresses the
+    // whole wing from wherever it runs, and arming it on both tenants does not
+    // split the work — it mails every member twice. Seniors is the right host:
+    // it is where the retention log and role groups live.
+    RUN_RETENTION_EMAILS: true,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: true,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: true,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -280,6 +295,11 @@ const TENANT_PROFILES_ = {
     // REQUIRES TENANT_COMMAND_EMAIL_DOMAIN to be set to the senior domain here:
     // a cadet unit's commander and personnel officer are seniors.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: true,
+    // OFF: not because cadets are out of scope, but because the seniors tenant
+    // already mails them. This module reads the same wing-wide extract from
+    // either tenant, so running it here as well delivers a second copy of every
+    // cadet's birthday and expiration mail. See the seniors profile.
+    RUN_RETENTION_EMAILS: false,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -346,6 +366,10 @@ const TENANT_PROFILES_ = {
     // "unit commander" is the region commander sitting alongside the ~50 members
     // the digest would describe. A spreadsheet serves that better than mail.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: false,
+    // Off: the region tenant has no retention log sheet and no recruiting role
+    // group configured, and its ~50 members sit in one unit alongside the staff
+    // who would be mailing them.
+    RUN_RETENTION_EMAILS: false,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [], // no subordinate squadrons
