@@ -1,9 +1,22 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.5.0
+ * Version: 1.6.0
  * Date: 2026-07-25
- * Changes: The unit CC now carries the staff who actually own the subject, not
+ * Changes: Added previewRetentionCcLists(), which prints the resolved unit CC for
+ *   every unit the next run would touch and then the three things worth fixing
+ *   first: units with no reachable commander (they send with no CC at all), CC'd
+ *   duty positions nobody holds, and every DERIVED address. That last list is the
+ *   point — a derived address reconstructs the DEFAULT account name, so it is
+ *   wrong for a rename, a manual creation or a `.2` duplicate, and Gmail accepts
+ *   it and bounces afterward per recipient. A cadet email now carries up to three
+ *   unit addresses, so that risk grew with 1.5.0. Each resolved address records
+ *   which of the three routes produced it. testRetentionEmail() calls the dump.
+ *   Added installRetentionMonthlyTrigger(): idempotent, 1st of the month at ~10:00,
+ *   and it REFUSES to install where PROFILE_.RUN_RETENTION_EMAILS is false rather
+ *   than creating a trigger that fires into a no-op and looks like the feature is
+ *   running. See PCR_CHANGELOG.md.
+ *   1.5.0: The unit CC now carries the staff who actually own the subject, not
  *   just the commander. Turning 18/21 adds the unit's Deputy Commander for
  *   Cadets; renewal adds the unit's Recruiting Officer. Both come from
  *   RETENTION_CONFIG.CC_DUTY_TITLES and are matched through formatDutyTitle_(),
@@ -583,12 +596,28 @@ function retentionUnitStaffIndex_() {
     return index[orgid];
   };
   const resolve = function (capid, info) {
+    const email = rcResolveRecipientEmail_(info, capid, emailMap, directoryMap);
+
+    // Which of the three routes produced this address. Classification only — the
+    // resolution order itself stays in rcResolveRecipientEmail_(). Worth carrying
+    // because 'derived' is the one that can silently bounce: it reproduces the
+    // DEFAULT account name and is wrong for a rename, a manual creation or a
+    // `.2` duplicate. previewRetentionCcLists() reports these so a bad CC can be
+    // found before a send rather than after.
+    let source = null;
+    if (email) {
+      if (directoryMap && directoryMap[capid] === email) source = 'directory';
+      else if (email === rcDeriveCommandEmail_(info)) source = 'derived';
+      else if (email === emailMap[capid]) source = 'capwatch';
+    }
+
     return {
       capid: capid,
       firstName: info.firstName || '',
       lastName: info.lastName || '',
       rank: info.rank || '',
-      email: rcResolveRecipientEmail_(info, capid, emailMap, directoryMap)
+      email: email,
+      source: source
     };
   };
 
@@ -726,6 +755,147 @@ function getCommanderInfo(orgid) {
   }
 
   return record.commander;
+}
+
+/**
+ * Prints the resolved unit CC for every unit the next run would touch, and the
+ * problems worth fixing before it does. Sends nothing and writes nothing.
+ *
+ * A cadet email now carries up to three unit addresses, two of which may be
+ * DERIVED — reconstructed as first.last@<command domain> rather than read from
+ * the directory. A derived address for someone whose account does not follow that
+ * naming is accepted by Gmail and bounces afterward, per recipient. That is
+ * invisible until it happens, so this lists them up front.
+ *
+ * Reported per unit: the commander, each CC'd duty holder, the exact CC string
+ * each applicable email type would carry, and how each address was arrived at.
+ * Then three summaries: units with no reachable commander (which get no CC at
+ * all), units missing one of the CC'd duty positions, and every derived address
+ * in one list.
+ *
+ * @param {Array<Object>} [turning18] - Reuses an existing retrieval if passed
+ * @param {Array<Object>} [turning21] - Reuses an existing retrieval if passed
+ * @param {Array<Object>} [expiring] - Reuses an existing retrieval if passed
+ * @returns {Object} { units, noCommander, missingDuty, derived }
+ */
+function previewRetentionCcLists(turning18, turning21, expiring) {
+  const t18 = turning18 || getMembersTurning18();
+  const t21 = turning21 || getMembersTurning21();
+  const exp = expiring || getExpiringMembers();
+
+  const AGE = RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE;
+  const RENEW = RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL;
+
+  // ORGID -> which email types this unit has members for. Seniors are counted
+  // separately: their renewal carries no unit CC at all, by design, so a unit
+  // that only has expiring seniors needs no staff resolved.
+  const units = {};
+  const bump = function (orgid, key) {
+    const id = String(orgid || '').trim();
+    if (!id) return;
+    if (!units[id]) units[id] = { turning18: 0, turning21: 0, expiringCadet: 0, expiringSenior: 0 };
+    units[id][key]++;
+  };
+
+  t18.forEach(function (m) { bump(m.orgid, 'turning18'); });
+  t21.forEach(function (m) { bump(m.orgid, 'turning21'); });
+  exp.forEach(function (m) {
+    bump(m.orgid, m.type === 'CADET' ? 'expiringCadet' : 'expiringSenior');
+  });
+
+  const index = retentionUnitStaffIndex_();
+  const orgids = Object.keys(units).sort();
+  const noCommander = [];
+  const missingDuty = [];
+  const derived = [];
+
+  const describe = function (person) {
+    if (!person) return '(unassigned)';
+    if (!person.email) return '(no resolvable address)';
+    return person.email + '  [' + (person.source || 'unknown') +
+      (person.isAssistant ? ', assistant' : '') + ']';
+  };
+
+  console.log('\n' + '='.repeat(78));
+  console.log('RESOLVED UNIT CC — ' + orgids.length + ' unit(s) in scope');
+  console.log('='.repeat(78) + '\n');
+
+  orgids.forEach(function (orgid) {
+    const counts = units[orgid];
+    const rec = index[orgid] || { commander: null, byDuty: {} };
+    const needsAgeCc = counts.turning18 + counts.turning21 > 0;
+    const needsRenewalCc = counts.expiringCadet > 0;
+
+    console.log('ORGID ' + orgid +
+      '   turning18=' + counts.turning18 +
+      ' turning21=' + counts.turning21 +
+      ' expiring(cadet)=' + counts.expiringCadet +
+      ' expiring(senior)=' + counts.expiringSenior);
+    console.log('   commander: ' + describe(rec.commander));
+
+    if (rec.commander && rec.commander.source === 'derived') {
+      derived.push(orgid + ' commander ' + rec.commander.email);
+    }
+
+    // Only report a duty as missing where this unit actually needs it.
+    const relevant = []
+      .concat(needsAgeCc ? AGE : [])
+      .concat(needsRenewalCc ? RENEW : []);
+
+    relevant.forEach(function (title) {
+      const holder = rec.byDuty[title];
+      console.log('   ' + title + ': ' + describe(holder));
+      if (!holder || !holder.email) {
+        missingDuty.push(orgid + ' has no ' + title);
+      } else if (holder.source === 'derived') {
+        derived.push(orgid + ' ' + title + ' ' + holder.email);
+      }
+    });
+
+    if (needsAgeCc) {
+      const cc = retentionCcList_(orgid, AGE);
+      console.log('   -> turning 18/21 CC: ' + (cc || '(NONE — no reachable commander)'));
+    }
+    if (needsRenewalCc) {
+      const cc = retentionCcList_(orgid, RENEW);
+      console.log('   -> renewal CC:       ' + (cc || '(NONE — no reachable commander)'));
+    }
+    if (counts.expiringSenior) {
+      console.log('   -> senior renewals carry no unit CC (by design)');
+    }
+
+    if (!rec.commander || !rec.commander.email) {
+      noCommander.push(orgid);
+    }
+
+    console.log('');
+  });
+
+  console.log('='.repeat(78));
+  console.log('UNITS WITH NO REACHABLE COMMANDER (these send with NO unit CC): ' + noCommander.length);
+  noCommander.forEach(function (o) { console.log('   ORGID ' + o); });
+
+  console.log('\nUNFILLED CC DUTY POSITIONS (commander is CC\'d alone): ' + missingDuty.length);
+  missingDuty.forEach(function (m) { console.log('   ' + m); });
+
+  console.log('\nDERIVED ADDRESSES — NOT verified to exist, these are the bounce risk: ' + derived.length);
+  derived.forEach(function (d) { console.log('   ' + d); });
+  if (derived.length) {
+    console.log('\n   Each was reconstructed as first.last@' +
+      String(CONFIG.COMMAND_EMAIL_DOMAIN || '').replace(/^@/, '') +
+      ' because the directory had no account for that CAPID.');
+    console.log('   Spot-check a few in the Admin console before the first real run.');
+  }
+  console.log('='.repeat(78) + '\n');
+
+  Logger.info('Retention CC preview complete', {
+    units: orgids.length,
+    noCommander: noCommander.length,
+    missingDuty: missingDuty.length,
+    derivedAddresses: derived.length
+  });
+
+  return { units: units, noCommander: noCommander, missingDuty: missingDuty, derived: derived };
 }
 
 // ============================================================================
@@ -1505,12 +1675,76 @@ function testRetentionEmail() {
     console.log('Sample:', JSON.stringify(expiring[0], null, 2));
   }
   
+  // Full resolved CC per unit, plus the derived addresses that could bounce.
+  previewRetentionCcLists(turning18, turning21, expiring);
+
   console.log('\n=== TEST COMPLETE ===\n');
-  
+
   Logger.info('Test completed', {
     turning18: turning18.length,
     turning21: turning21.length,
     expiring: expiring.length
+  });
+}
+
+/**
+ * Installs the monthly time-driven trigger for sendRetentionEmails().
+ *
+ * MUST be run while signed in as the automation account. A time-driven trigger
+ * runs as whoever creates it, and only the automation account owns the
+ * AUTOMATION_SENDER_EMAIL Send-As alias every retention email is sent with —
+ * created under any other identity, every send fails with "Invalid argument".
+ *
+ * This module fails WORSE than the notification digests do when that happens:
+ * sendRetentionSummaryEmail() also sends as AUTOMATION_SENDER_EMAIL, and its
+ * catch only logs, so a wrong identity produces no member mail AND no failure
+ * summary — nothing arrives anywhere. Confirm the owner in the Triggers panel
+ * afterward rather than waiting to be told.
+ *
+ * Refuses to install where PROFILE_.RUN_RETENTION_EMAILS is false. That is not
+ * pedantry: this module addresses the whole wing from either tenant, so a trigger
+ * on the second one mails every member a duplicate. On such a tenant
+ * sendRetentionEmails() is a no-op anyway, and a trigger that exists to do
+ * nothing is worse than no trigger — it looks like the feature is running.
+ *
+ * Idempotent: removes any existing triggers for this handler first, so re-running
+ * never stacks duplicates, and leaves triggers for other functions alone.
+ *
+ * Scheduled for the 1st at ~10:00, after the daily getCapwatch() has refreshed
+ * the extract. The 1st matters: member selection keys on the current month, so
+ * expiring members get most of a month's notice rather than a few days.
+ *
+ * @returns {void}
+ * @throws {Error} If this tenant profile does not run retention emails
+ */
+function installRetentionMonthlyTrigger() {
+  if (!PROFILE_.RUN_RETENTION_EMAILS) {
+    throw new Error(
+      'Retention emails are disabled for the "' + TENANT_PROFILE + '" profile, so this ' +
+      'trigger would fire into a no-op. Retention runs on ONE tenant only — this module ' +
+      'reads the same wing-wide CAPWATCH extract from either, so arming a second tenant ' +
+      'sends every member a duplicate rather than splitting the work. Install this on the ' +
+      'seniors project.'
+    );
+  }
+
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'sendRetentionEmails') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+
+  ScriptApp.newTrigger('sendRetentionEmails')
+    .timeBased()
+    .onMonthDay(1)
+    .atHour(10)
+    .create();
+
+  Logger.info('Installed monthly retention trigger', {
+    handler: 'sendRetentionEmails',
+    profile: TENANT_PROFILE,
+    schedule: '1st of each month ~10:00 America/Los_Angeles',
+    note: 'Confirm in the Triggers panel that the owner is the automation account'
   });
 }
 

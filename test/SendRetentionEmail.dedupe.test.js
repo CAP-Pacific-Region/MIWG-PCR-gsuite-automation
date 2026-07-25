@@ -205,4 +205,75 @@ section('10. Tenant guard: the module is a no-op where the profile disables it')
   check('said why', m.logCalls.info.some(i => /disabled for this tenant profile/.test(i.msg)), true);
 }
 
+// ---------------------------------------------------------------------------
+section('11. Trigger installer: idempotent, on the 1st at 10:00');
+{
+  const deleted = [];
+  const created = [];
+  const triggers = [
+    { getHandlerFunction: () => 'getCapwatch' },
+    { getHandlerFunction: () => 'sendRetentionEmails' },
+    { getHandlerFunction: () => 'sendRetentionEmails' }
+  ];
+  const ScriptApp = {
+    getProjectTriggers: () => triggers,
+    deleteTrigger: t => deleted.push(t.getHandlerFunction()),
+    newTrigger: fn => {
+      const b = {
+        timeBased: () => b,
+        onMonthDay: d => { b._day = d; return b; },
+        atHour: h => { b._hour = h; return b; },
+        create: () => created.push({ fn: fn, day: b._day, hour: b._hour })
+      };
+      return b;
+    }
+  };
+
+  const m = loadModule(MODULE, {
+    Logger: makeLogger().logger,
+    ScriptApp: ScriptApp,
+    TENANT_PROFILE: 'seniors',
+    PROFILE_: { RUN_RETENTION_EMAILS: true }
+  }, ['installRetentionMonthlyTrigger']);
+
+  m.installRetentionMonthlyTrigger();
+
+  check('removes both existing retention triggers', deleted,
+    ['sendRetentionEmails', 'sendRetentionEmails']);
+  check('leaves the CAPWATCH download trigger alone', deleted.indexOf('getCapwatch'), -1);
+  check('creates exactly one', created.length, 1);
+  check('on the 1st, at 10:00', created[0], { fn: 'sendRetentionEmails', day: 1, hour: 10 });
+}
+
+// ---------------------------------------------------------------------------
+section('12. Trigger installer refuses on a tenant that does not run retention');
+{
+  let created = 0;
+  const ScriptApp = {
+    getProjectTriggers: () => [],
+    deleteTrigger: () => {},
+    newTrigger: () => ({
+      timeBased() { return this; },
+      onMonthDay() { return this; },
+      atHour() { return this; },
+      create: () => { created++; }
+    })
+  };
+
+  const m = loadModule(MODULE, {
+    Logger: makeLogger().logger,
+    ScriptApp: ScriptApp,
+    TENANT_PROFILE: 'cadets',
+    PROFILE_: { RUN_RETENTION_EMAILS: false }
+  }, ['installRetentionMonthlyTrigger']);
+
+  let threw = '';
+  try { m.installRetentionMonthlyTrigger(); } catch (e) { threw = e.message; }
+
+  check('throws rather than installing a no-op trigger', threw.length > 0, true);
+  check('says which tenant it belongs on', /seniors project/.test(threw), true);
+  check('explains the duplicate-mail consequence', /duplicate/.test(threw), true);
+  check('created nothing', created, 0);
+}
+
 done();

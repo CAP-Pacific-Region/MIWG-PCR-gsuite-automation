@@ -169,7 +169,7 @@ Ensure the following CAPWATCH files are available in your configured folder:
 Run the test functions to verify everything works:
 
 ```javascript
-// Test 1: Preview member counts without sending emails
+// Test 1: Preview member counts + the resolved unit CC for every unit. Sends nothing.
 testRetentionEmail();
 
 // Test 2: Send a single test email with sample data
@@ -177,7 +177,22 @@ testSendSingleEmail();
 
 // Test 3: Send test emails using real member data (sent to TEST_EMAIL)
 testAllRetentionEmails();
+
+// Just the CC dump, without the member sampling
+previewRetentionCcLists();
 ```
+
+`previewRetentionCcLists()` is the one to read before a first real run. It prints each unit's
+commander and CC'd duty holders, the exact CC string each email type would carry, and then three
+lists worth acting on:
+
+- **Units with no reachable commander** — these send with no unit CC at all.
+- **Unfilled CC duty positions** — the commander is CC'd alone.
+- **Derived addresses** — reconstructed as `first.last@<command domain>` because the directory had
+  no account for that CAPID. These are **not verified to exist**. A member whose account was
+  renamed, created by hand, or is a `.2` duplicate gets an address that Gmail accepts and then
+  bounces, per recipient. Spot-check a few in the Admin console. The member's own send is
+  unaffected either way.
 
 Review test emails at `TEST_EMAIL` to verify:
 - ✅ Templates render correctly
@@ -197,6 +212,28 @@ split the work — it delivers two copies to every member.
 
 ### Step 6: Set Up Trigger
 
+> ⚠️ **Sign in as the automation account first.** A time-driven trigger runs as whoever created
+> it, and only that account owns the `AUTOMATION_SENDER_EMAIL` Send-As alias every retention email
+> is sent with. Created under any other identity, every send fails with "Invalid argument" — and
+> this module fails *worse* than the notification digests do, because the summary is sent the same
+> way and its catch only logs. A wrong identity produces **no member mail and no failure summary**.
+
+Signed in as the automation account, run:
+
+```javascript
+installRetentionMonthlyTrigger();
+```
+
+It removes any existing `sendRetentionEmails` triggers first, so re-running never stacks
+duplicates, and leaves other functions' triggers alone. It **refuses to install** on a tenant
+whose profile does not run retention, rather than creating a trigger that fires into a no-op and
+looks like the feature is running.
+
+Then confirm in the Triggers panel that the listed owner is the automation account.
+
+<details>
+<summary>Equivalent manual setup</summary>
+
 1. Open the Apps Script editor
 2. Click on the clock icon (Triggers) in the left sidebar
 3. Click "+ Add Trigger" in the bottom right
@@ -208,6 +245,8 @@ split the work — it delivers two copies to every member.
    - **Day of month:** 1
    - **Time of day:** 10am to 11am
 5. Click "Save"
+
+</details>
 
 **Why 10am?** Emails arrive mid-morning when members are likely to check email, maximizing engagement and response rates.
 
@@ -459,6 +498,12 @@ When reporting issues, include:
 5. Relevant log entries
 
 ## Version History
+
+### SendRetentionEmail.gs 1.6.0 (July 2026)
+- ✅ `previewRetentionCcLists()` — resolved unit CC per unit, plus units with no reachable
+  commander, unfilled CC duty positions, and every derived (unverified, bounce-prone) address
+- ✅ `installRetentionMonthlyTrigger()` — idempotent, 1st at ~10:00, refuses to install on a
+  tenant that does not run retention
 
 ### SendRetentionEmail.gs 1.5.0 (July 2026)
 - ✅ Turning 18/21 also CC the unit's **Deputy Commander for Cadets**; renewals also CC the unit's

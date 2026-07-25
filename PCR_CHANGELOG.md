@@ -10,6 +10,39 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-25] — Retention CC preview, and a trigger installer
+
+### Added — `previewRetentionCcLists()` (`SendRetentionEmail.gs` 1.6.0)
+
+Prints the resolved unit CC for every unit the next run would touch, then the three things worth
+fixing before it runs. Sends nothing, writes nothing.
+
+The reason it exists: a cadet email now carries up to **three** unit addresses, and two of them
+may be **derived** — reconstructed as `first.last@<command domain>` because the directory had no
+account for that CAPID. A derived address reproduces the DEFAULT account name, so it is wrong for
+a rename, a manual creation, or a `.2` duplicate. Gmail accepts it and bounces afterward, per
+recipient. That is invisible until it happens, so the preview lists them up front.
+
+Each resolved address now records which of the three routes produced it (`directory` / `derived` /
+`capwatch`) — classification only; the resolution order itself stays in
+`rcResolveRecipientEmail_()`. The summaries are: units with no reachable commander (which send
+with no CC at all), CC'd duty positions nobody holds, and every derived address in one list.
+`testRetentionEmail()` calls the dump, and it can be run on its own.
+
+### Added — `installRetentionMonthlyTrigger()`
+
+Mirrors `installRecoveryComplianceMonthlyTrigger()`: idempotent (drops existing
+`sendRetentionEmails` triggers first, leaves others alone), 1st of the month at ~10:00, after the
+daily `getCapwatch()`.
+
+It **refuses to install** where `PROFILE_.RUN_RETENTION_EMAILS` is false, throwing with the reason
+rather than creating a trigger that fires into a no-op — a trigger that exists to do nothing is
+worse than no trigger, because it looks like the feature is running.
+
+It does not and cannot solve the identity problem: a time-driven trigger runs as whoever creates
+it, so this must be run **signed in as the automation account**, and the Triggers panel confirmed
+afterward.
+
 ## [2026-07-25] — Retention unit CC carries the staff who own the subject
 
 The commander was the only unit recipient on retention mail, which put the notice in the command

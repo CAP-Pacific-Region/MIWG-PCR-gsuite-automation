@@ -166,7 +166,8 @@ function load(opts) {
     rcBuildCommandDirectoryMap_: notify.rcBuildCommandDirectoryMap_,
     rcResolveRecipientEmail_: notify.rcResolveRecipientEmail_,
     rcDeriveCommandEmail_: notify.rcDeriveCommandEmail_
-  }, ['getCommanderInfo', 'retentionUnitStaffIndex_', 'retentionCcList_', 'retentionRenderTemplate_', 'retentionSignatureHtml_']);
+  }, ['getCommanderInfo', 'retentionUnitStaffIndex_', 'retentionCcList_', 'previewRetentionCcLists',
+    'retentionRenderTemplate_', 'retentionSignatureHtml_']);
 
   return Object.assign({}, mod, { counts, logCalls: calls });
 }
@@ -524,6 +525,64 @@ section('20. DutyPosition.txt is only read when some email type wants staff');
   check('no duty file read', m.counts.parseFile.DutyPosition, undefined);
   check('no Member.txt name pass either', m.counts.parseFile.Member, undefined);
   check('commander still resolved', m.retentionCcList_('070', []), 'rosa.alvarez@cawgcap.org');
+}
+
+// ---------------------------------------------------------------------------
+section('21. Address source is classified, so the preview can flag bounce risk');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600006', 'Cole', 'Sam'), memberRow('600008', '', '')],
+    duties: [
+      dutyRow('600006', 'Recruiting Officer', '070'),
+      dutyRow('600008', 'Deputy Commander for Cadets', '070')
+    ],
+    contacts: [contactRow('600008', 'pat.personal@example.com')],
+    accounts: [{ capid: '600006', email: 's.cole2@cawgcap.org' }]
+  });
+
+  const rec = m.retentionUnitStaffIndex_()['070'];
+  check('directory hit labelled', rec.byDuty['Recruiting Officer'].source, 'directory');
+  check('reconstructed address labelled derived', rec.commander.source, 'derived');
+  check('CAPWATCH fallback labelled',
+    rec.byDuty['Deputy Commander for Cadets'].source, 'capwatch');
+}
+
+// ---------------------------------------------------------------------------
+section('22. Preview reports no-commander units, unfilled duties, derived addresses');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [
+      commanderRow('070', '600001', 'Alvarez', 'Rosa'),  // derived address
+      commanderRow('072', '600003', '', '')              // unresolvable: no name, no contact
+    ],
+    members: [memberRow('600006', 'Cole', 'Sam')],
+    duties: [dutyRow('600006', 'Recruiting Officer', '070')],
+    accounts: []
+  });
+
+  const out = m.previewRetentionCcLists(
+    [{ capid: '1', orgid: '070' }],                       // turning 18 at 070
+    [],
+    [
+      { capid: '2', orgid: '070', type: 'CADET' },        // renewal at 070
+      { capid: '3', orgid: '072', type: 'CADET' },        // renewal at 072, no commander
+      { capid: '4', orgid: '073', type: 'SENIOR' }        // senior: no unit CC at all
+    ]
+  );
+
+  check('every in-scope unit listed', Object.keys(out.units).sort(), ['070', '072', '073']);
+  check('unreachable commander flagged', out.noCommander, ['072', '073']);
+  check('070 needs a DCC for its turning-18 member',
+    out.missingDuty.some(x => /^070 has no Deputy Commander for Cadets/.test(x)), true);
+  check('070 is NOT reported as missing a recruiting officer',
+    out.missingDuty.some(x => /^070 has no Recruiting Officer/.test(x)), false);
+  check('a senior-only unit is not asked for duty holders',
+    out.missingDuty.some(x => /^073/.test(x)), false);
+  check('derived addresses collected', out.derived.length, 2);
+  check('and named', out.derived.every(d => /rosa\.alvarez@cawgcap\.org|sam\.cole@cawgcap\.org/.test(d)), true);
 }
 
 done();
