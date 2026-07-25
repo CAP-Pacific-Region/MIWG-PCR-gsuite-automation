@@ -27,20 +27,35 @@ Emails are personalized with member rank/name and include squadron commanders on
 ### Turning 18 Email
 **Template:** `Turning18Email.html`  
 **Recipients:** Active cadets turning 18 this month  
-**CC:** Squadron Commander  
+**CC:** Squadron Commander + **Deputy Commander for Cadets**  
 **Purpose:** Inform cadet about transition to senior member opportunities
 
 ### Turning 21 Email
 **Template:** `Turning21Email.html`  
 **Recipients:** Active cadets turning 21 this month  
-**CC:** Squadron Commander  
+**CC:** Squadron Commander + **Deputy Commander for Cadets**  
 **Purpose:** Inform cadet about aging out of cadet program and senior membership
 
 ### Expiring Membership Email
 **Template:** `ExpiringEmail.html`  
 **Recipients:** Active cadets and seniors expiring this month  
-**CC:** Squadron Commander (cadets only)  
+**CC:** Squadron Commander + **Recruiting Officer** (cadets only)  
 **Purpose:** Remind member to renew membership before expiration, and invite feedback by reply
+
+### How the unit CC is built
+
+Duty titles come from `RETENTION_CONFIG.CC_DUTY_TITLES` and are matched through
+`formatDutyTitle_()`, so legacy `Recruiting & Retention Officer` rows match the current title and
+the trailing whitespace the CAPWATCH feed ships on duty values is irrelevant.
+
+- **A duty nobody holds is simply absent** — the commander is CC'd alone.
+- **The extra staff ride on the commander CC.** With no resolvable commander there is no CC at
+  all, rather than the mail redirecting to someone else. This is also why renewals stay
+  cadets-only: seniors get no commander CC, so they get no unit CC.
+- **Primary beats assistant**, so "the unit's recruiting officer" resolves to one person rather
+  than a unit's entire staff.
+- Addresses resolve through the same chain as the commander's, and the list is **deduplicated** —
+  in a small unit one person often holds several of these.
 
 ## Setup Instructions
 
@@ -444,6 +459,13 @@ When reporting issues, include:
 5. Relevant log entries
 
 ## Version History
+
+### SendRetentionEmail.gs 1.5.0 (July 2026)
+- ✅ Turning 18/21 also CC the unit's **Deputy Commander for Cadets**; renewals also CC the unit's
+  **Recruiting Officer**, where one is assigned
+- ✅ Extra staff ride on the commander CC and never replace it; primary beats assistant; list
+  deduplicated
+- ✅ Legacy `Recruiting & Retention Officer` rows match via `formatDutyTitle_()`
 
 ### SendRetentionEmail.gs 1.4.0 (July 2026)
 - ✅ **Already-sent guard** — sends filtered against `(email type, CAPID)` for the current

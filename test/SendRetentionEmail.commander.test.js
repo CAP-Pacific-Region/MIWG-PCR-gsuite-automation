@@ -65,6 +65,45 @@ function commanderRow(orgid, capid, last, first, rank) {
 // MbrContact.txt row: CAPID=0, Type=1, Priority=2, Contact=3.
 const contactRow = (capid, email) => [capid, 'EMAIL', 'PRIMARY', email];
 
+// DutyPosition.txt row: CAPID=0, Duty=1, Asst=4, ORGID=7. The trailing space on
+// the duty value is not decoration — the live feed ships duty titles padded, so
+// matching has to normalize. See formatDutyTitle_ in UpdateMembers.gs.
+function dutyRow(capid, duty, orgid, isAssistant) {
+  const row = new Array(8).fill('');
+  row[0] = capid;
+  row[1] = duty + ' ';
+  row[4] = isAssistant ? '1' : '0';
+  row[7] = orgid;
+  return row;
+}
+
+// Member.txt row, only the columns the duty-holder name lookup reads:
+// CAPID=0, NameLast=2, NameFirst=3, Rank=14.
+function memberRow(capid, last, first, rank) {
+  const row = new Array(25).fill('');
+  row[0] = capid;
+  row[2] = last;
+  row[3] = first;
+  row[14] = rank || 'Capt';
+  return row;
+}
+
+const CC_DUTY_TITLES = {
+  AGE_MILESTONE: ['Deputy Commander for Cadets'],
+  RENEWAL: ['Recruiting Officer']
+};
+
+// The real normalizer's behavior: trim, collapse whitespace, apply the CAPR 30-1
+// renames. Kept in step with DUTY_TITLE_OVERRIDES in UpdateMembers.gs.
+const DUTY_TITLE_OVERRIDES = {
+  'RECRUITING & RETENTION OFFICER': 'Recruiting Officer',
+  'RECRUITING AND RETENTION OFFICER': 'Recruiting Officer'
+};
+function formatDutyTitle_(dutyId) {
+  const title = String(dutyId || '').trim().replace(/\s+/g, ' ');
+  return DUTY_TITLE_OVERRIDES[title.toUpperCase()] || title;
+}
+
 /** Reads the real template files, so the slash-prefixed name is exercised too. */
 const HtmlService = {
   createHtmlOutputFromFile: name => ({
@@ -97,7 +136,8 @@ function load(opts) {
   const files = {
     Commanders: o.commanders || [],
     MbrContact: o.contacts || [],
-    Member: o.members || []
+    Member: o.members || [],
+    DutyPosition: o.duties || []
   };
 
   const { logger, calls } = makeLogger();
@@ -107,6 +147,8 @@ function load(opts) {
     Utilities: Utilities,
     HtmlService: HtmlService,
     CONFIG: config,
+    RETENTION_CONFIG: { CC_DUTY_TITLES: o.ccDutyTitles || CC_DUTY_TITLES },
+    formatDutyTitle_: formatDutyTitle_,
     DIRECTOR_RECRUITING_NAME: o.directorName || '',
     sanitizeEmail: e => {
       const v = String(e || '').trim().toLowerCase();
@@ -124,7 +166,7 @@ function load(opts) {
     rcBuildCommandDirectoryMap_: notify.rcBuildCommandDirectoryMap_,
     rcResolveRecipientEmail_: notify.rcResolveRecipientEmail_,
     rcDeriveCommandEmail_: notify.rcDeriveCommandEmail_
-  }, ['getCommanderInfo', 'retentionCommanderIndex_', 'retentionRenderTemplate_', 'retentionSignatureHtml_']);
+  }, ['getCommanderInfo', 'retentionUnitStaffIndex_', 'retentionCcList_', 'retentionRenderTemplate_', 'retentionSignatureHtml_']);
 
   return Object.assign({}, mod, { counts, logCalls: calls });
 }
@@ -311,6 +353,177 @@ section('12. A value containing $-patterns cannot corrupt the output');
   });
 
   check('literal name survives substitution', /O'\$&Brien\$`/.test(out), true);
+}
+
+// ---------------------------------------------------------------------------
+section('13. Age-milestone CC adds the DCC; renewal CC adds the recruiting officer');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [
+      memberRow('600005', 'Bright', 'Dana'),
+      memberRow('600006', 'Cole', 'Sam')
+    ],
+    duties: [
+      dutyRow('600005', 'Deputy Commander for Cadets', '070'),
+      dutyRow('600006', 'Recruiting Officer', '070')
+    ],
+    accounts: []
+  });
+
+  check('turning 18/21 goes to commander + DCC',
+    m.retentionCcList_('070', CC_DUTY_TITLES.AGE_MILESTONE),
+    'rosa.alvarez@cawgcap.org,dana.bright@cawgcap.org');
+
+  check('renewal goes to commander + recruiting officer',
+    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
+}
+
+// ---------------------------------------------------------------------------
+section('14. "if one is assigned" — an unfilled duty just leaves the commander');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600005', 'Bright', 'Dana')],
+    duties: [dutyRow('600005', 'Deputy Commander for Cadets', '070')],
+    accounts: []
+  });
+
+  check('no recruiting officer at this unit', m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    'rosa.alvarez@cawgcap.org');
+  check('a duty held at ANOTHER unit does not leak in',
+    m.retentionCcList_('071', CC_DUTY_TITLES.AGE_MILESTONE), '');
+}
+
+// ---------------------------------------------------------------------------
+section('15. The extra CC rides on the commander CC, never replaces it');
+{
+  // No commander resolvable for this org, but a DCC exists. The requirement is
+  // that these staff join the commander — so with no commander there is no CC,
+  // rather than the mail quietly going to a different person.
+  const m = load({
+    config: SENIORS,
+    commanders: [],
+    members: [memberRow('600005', 'Bright', 'Dana')],
+    duties: [dutyRow('600005', 'Deputy Commander for Cadets', '070')],
+    accounts: []
+  });
+
+  check('no commander means no CC at all',
+    m.retentionCcList_('070', CC_DUTY_TITLES.AGE_MILESTONE), '');
+}
+
+// ---------------------------------------------------------------------------
+section('16. Primary beats assistant, whatever order the rows arrive in');
+{
+  const assistantFirst = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600007', 'Asst', 'Andy'), memberRow('600006', 'Cole', 'Sam')],
+    duties: [
+      dutyRow('600007', 'Recruiting Officer', '070', true),
+      dutyRow('600006', 'Recruiting Officer', '070', false)
+    ],
+    accounts: []
+  });
+  check('primary wins when listed second',
+    assistantFirst.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
+
+  const primaryFirst = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600006', 'Cole', 'Sam'), memberRow('600007', 'Asst', 'Andy')],
+    duties: [
+      dutyRow('600006', 'Recruiting Officer', '070', false),
+      dutyRow('600007', 'Recruiting Officer', '070', true)
+    ],
+    accounts: []
+  });
+  check('primary still wins when listed first',
+    primaryFirst.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
+
+  const assistantOnly = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600007', 'Asst', 'Andy')],
+    duties: [dutyRow('600007', 'Recruiting Officer', '070', true)],
+    accounts: []
+  });
+  check('an assistant is used when nobody holds it primary',
+    assistantOnly.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    'rosa.alvarez@cawgcap.org,andy.asst@cawgcap.org');
+}
+
+// ---------------------------------------------------------------------------
+section('17. One person wearing two hats appears once');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600001', 'Alvarez', 'Rosa')],
+    // The commander is also the unit's recruiting officer — common in a small unit.
+    duties: [dutyRow('600001', 'Recruiting Officer', '070')],
+    accounts: []
+  });
+
+  check('deduplicated', m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    'rosa.alvarez@cawgcap.org');
+}
+
+// ---------------------------------------------------------------------------
+section('18. The legacy CAPR 30-1 duty title still matches');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600006', 'Cole', 'Sam')],
+    // Rows predating the ICL rename still read "Recruiting & Retention Officer".
+    duties: [dutyRow('600006', 'Recruiting & Retention Officer', '070')],
+    accounts: []
+  });
+
+  check('normalized to Recruiting Officer and matched',
+    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
+}
+
+// ---------------------------------------------------------------------------
+section('19. Duty holders resolve through the same address chain as commanders');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600006', 'Cole', 'Sam')],
+    duties: [dutyRow('600006', 'Recruiting Officer', '070')],
+    contacts: [contactRow('600006', 'sam.personal@example.com')],
+    // Real account is not first.last, so only the directory can find it.
+    accounts: [{ capid: '600006', email: 's.cole2@cawgcap.org' }]
+  });
+
+  check('directory account preferred for a duty holder too',
+    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    'rosa.alvarez@cawgcap.org,s.cole2@cawgcap.org');
+}
+
+// ---------------------------------------------------------------------------
+section('20. DutyPosition.txt is only read when some email type wants staff');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    ccDutyTitles: { AGE_MILESTONE: [], RENEWAL: [] },
+    accounts: []
+  });
+
+  m.retentionCcList_('070', []);
+  check('no duty file read', m.counts.parseFile.DutyPosition, undefined);
+  check('no Member.txt name pass either', m.counts.parseFile.Member, undefined);
+  check('commander still resolved', m.retentionCcList_('070', []), 'rosa.alvarez@cawgcap.org');
 }
 
 done();

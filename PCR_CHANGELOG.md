@@ -10,6 +10,44 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-25] — Retention unit CC carries the staff who own the subject
+
+The commander was the only unit recipient on retention mail, which put the notice in the command
+channel but not in front of the person whose job it actually is.
+
+### Changed (`SendRetentionEmail.gs` 1.5.0, `config.gs` 1.13.0)
+
+- **Turning 18 / 21 now also CC the unit's Deputy Commander for Cadets** — the person who walks a
+  cadet through the decision the mail describes.
+- **Renewals now also CC the unit's Recruiting Officer** — retention is that officer's job.
+- Titles live in `RETENTION_CONFIG.CC_DUTY_TITLES` and are matched through `formatDutyTitle_()`,
+  reused rather than reimplemented, so the legacy `Recruiting & Retention Officer` rows the ICL to
+  CAPR 30-1 renamed still match and the trailing whitespace the feed ships on every duty value is
+  handled in one place.
+
+Four behaviors worth stating, because they are decisions rather than fallout:
+
+1. **A duty nobody holds is simply absent** — "if one is assigned" — and the commander is CC'd
+   alone.
+2. **The extra staff ride on the commander CC, never replace it.** With no resolvable commander
+   there is no CC at all, so the mail cannot quietly redirect to a different person. This is also
+   what keeps renewals cadets-only without a second condition: seniors have never had a commander
+   CC, so they gain no unit CC.
+3. **Primary beats assistant**, so "the unit's recruiting officer" is one person rather than a
+   unit's whole staff. An assistant is used only when nobody holds the duty primary.
+4. **Deduplicated by address** — in a small unit the commander is frequently also the recruiting
+   officer, and should appear once.
+
+`retentionCommanderIndex_()` becomes `retentionUnitStaffIndex_()`, now also walking
+`DutyPosition.txt` plus a `Member.txt` name pass (duty rows carry only a CAPID). Both are skipped
+entirely when no email type asks for staff. Duty holders resolve through the same
+directory → derived → CAPWATCH chain as commanders. `getCommanderInfo()` is unchanged for callers,
+including `CadetTransitionMigrate.gs`.
+
+Reading `Member.txt` raw is deliberate, matching `RecoveryEmailNotify.gs`: on the cadets tenant
+`getMembers()` returns cadets only, but a cadet unit's DCC and Recruiting Officer are seniors —
+present in the extract under the cadet ORGID, filtered out of the member set.
+
 ## [2026-07-25] — Retention: duplicate protection, and a one-tenant guard
 
 The two remaining reasons the retention trigger was unsafe to arm. Neither is a bug in what the

@@ -1,9 +1,28 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.4.0
+ * Version: 1.5.0
  * Date: 2026-07-25
- * Changes: Two guards that had to exist before this could be put on a trigger.
+ * Changes: The unit CC now carries the staff who actually own the subject, not
+ *   just the commander. Turning 18/21 adds the unit's Deputy Commander for
+ *   Cadets; renewal adds the unit's Recruiting Officer. Both come from
+ *   RETENTION_CONFIG.CC_DUTY_TITLES and are matched through formatDutyTitle_(),
+ *   so the legacy 'Recruiting & Retention Officer' rows the ICL to CAPR 30-1
+ *   renamed still match, and the trailing whitespace the feed ships on duty
+ *   values does not matter. A duty nobody holds simply leaves the commander
+ *   alone on the CC.
+ *   Each rides on the commander CC rather than being added independently: with no
+ *   resolvable commander there is no CC at all, so the mail cannot quietly
+ *   redirect to a different person, and renewals stay cadets-only as before.
+ *   Primary holders beat assistants, so "the unit's recruiting officer" is one
+ *   person rather than a unit's whole staff. Addresses resolve through the same
+ *   chain as commanders and are deduplicated, since one person commonly wears
+ *   several of these hats in a small unit.
+ *   retentionCommanderIndex_() becomes retentionUnitStaffIndex_(), now also
+ *   walking DutyPosition.txt (and Member.txt for the names duty rows lack) —
+ *   skipped entirely when no email type asks for staff. getCommanderInfo() is
+ *   unchanged for callers.
+ *   1.4.0: Two guards that had to exist before this could be put on a trigger.
  *   ALREADY-SENT: the Log sheet has always been written and never read, so
  *   nothing knew what a previous run had done — an execution that died partway
  *   through the expiring batch would restart from the top of the list on the next
@@ -66,7 +85,9 @@
  * 
  * Email Features:
  * - Personalized with member rank and name
- * - CC to squadron commander for cadet emails
+ * - CC to the unit command channel on cadet emails: the squadron commander, plus
+ *   the Deputy Commander for Cadets (turning 18/21) or the Recruiting Officer
+ *   (renewals), where the unit has one assigned
  * - Reply-to set to the Director of Recruiting role group
  * - Logged to retention tracking spreadsheet (the per-send record; the retention
  *   group receives the run summary, not a copy of every message)
@@ -110,7 +131,7 @@ function sendRetentionEmails() {
   }
 
   clearCache(); // Ensure fresh CAPWATCH data
-  _commanderIndex = null; // derived from that data — must not outlive it
+  _unitStaffIndex = null; // derived from that data — must not outlive it
   const start = new Date();
   Logger.info('Starting retention email process');
 
@@ -488,12 +509,28 @@ function createEmailMap() {
   return emailMap;
 }
 
-/** ORGID -> commander record, built once per execution. See below. */
-let _commanderIndex = null;
+/** ORGID -> { commander, byDuty } record, built once per execution. See below. */
+let _unitStaffIndex = null;
 
 /**
- * Builds ORGID -> commander record for every unit, resolving each commander's
- * CC address.
+ * Builds ORGID -> unit staff for every unit, resolving each person's CC address.
+ *
+ * Each record is { commander, byDuty: { '<duty title>': person } }, where a
+ * person is { capid, firstName, lastName, rank, email }. Commanders come from
+ * Commanders.txt, which carries its own name columns; the duty holders in
+ * RETENTION_CONFIG.CC_DUTY_TITLES come from DutyPosition.txt, which carries only
+ * a CAPID, so their names are read from raw Member.txt.
+ *
+ * Reading Member.txt RAW rather than through getMembers() is deliberate, for the
+ * same reason RecoveryEmailNotify.gs does it: on the cadets tenant getMembers()
+ * returns cadets only, but a cadet unit's Deputy Commander for Cadets and
+ * Recruiting Officer are senior members. They are present in the extract, being
+ * assigned to the cadet ORGID, but filtered out of the member set.
+ *
+ * PRIMARY BEFORE ASSISTANT. A duty can be held by a primary (Asst=0) and any
+ * number of assistants. The primary wins; an assistant is used only when no
+ * primary holds the duty, so "the unit's recruiting officer" resolves to one
+ * person rather than fanning the CC out across a unit's whole staff.
  *
  * ADDRESS ORDER — org account first, CAPWATCH last:
  *   1. their real Workspace account, read from this tenant's directory
@@ -521,10 +558,10 @@ let _commanderIndex = null;
  * per-call implementation re-walked Commanders.txt and rebuilt the whole
  * CAPWATCH email map for every single cadet email sent.
  *
- * @returns {Object} Map of ORGID to commander record
+ * @returns {Object} Map of ORGID to { commander, byDuty }
  */
-function retentionCommanderIndex_() {
-  if (_commanderIndex) return _commanderIndex;
+function retentionUnitStaffIndex_() {
+  if (_unitStaffIndex) return _unitStaffIndex;
 
   const emailMap = createEmailMap();
 
@@ -535,48 +572,141 @@ function retentionCommanderIndex_() {
   try {
     directoryMap = rcBuildCommandDirectoryMap_(getActiveUsers());
   } catch (e) {
-    Logger.warn('Directory unreadable — falling back to derived/CAPWATCH commander addresses', {
+    Logger.warn('Directory unreadable — falling back to derived/CAPWATCH staff addresses', {
       errorMessage: e.message
     });
   }
 
+  const index = {};
+  const orgRecord = function (orgid) {
+    if (!index[orgid]) index[orgid] = { commander: null, byDuty: {} };
+    return index[orgid];
+  };
+  const resolve = function (capid, info) {
+    return {
+      capid: capid,
+      firstName: info.firstName || '',
+      lastName: info.lastName || '',
+      rank: info.rank || '',
+      email: rcResolveRecipientEmail_(info, capid, emailMap, directoryMap)
+    };
+  };
+
   // Commanders.txt: ORGID=0, CAPID=4, NameLast=8, NameFirst=9, Rank=12.
   // Nationwide, so this is only ever read for ORGIDs of this tenant's members.
-  const index = {};
   parseFile('Commanders').forEach(function (row) {
     const orgid = String(row[0] || '').trim();
-    if (!orgid || index[orgid]) return; // first row per org wins, as before
+    if (!orgid) return;
 
-    const capid = String(row[4] || '').trim();
-    const info = {
+    const rec = orgRecord(orgid);
+    if (rec.commander) return; // first row per org wins, as before
+
+    rec.commander = resolve(String(row[4] || '').trim(), {
       firstName: String(row[9] || '').trim(),
       lastName: String(row[8] || '').trim(),
       rank: String(row[12] || '').trim()
-    };
-
-    index[orgid] = {
-      capid: capid,
-      firstName: info.firstName,
-      lastName: info.lastName,
-      rank: info.rank,
-      email: rcResolveRecipientEmail_(info, capid, emailMap, directoryMap)
-    };
+    });
   });
 
-  Logger.info('Commander index built', {
+  // Which duty titles are worth carrying: the union of every CC_DUTY_TITLES
+  // list, so DutyPosition.txt is walked once regardless of how many email types
+  // want staff.
+  const wanted = {};
+  Object.keys(RETENTION_CONFIG.CC_DUTY_TITLES).forEach(function (key) {
+    RETENTION_CONFIG.CC_DUTY_TITLES[key].forEach(function (t) { wanted[t] = true; });
+  });
+
+  if (Object.keys(wanted).length) {
+    // Names for duty holders, who carry only a CAPID. Raw extract on purpose —
+    // see the note above about cadet units' senior staff.
+    const nameByCapid = {};
+    parseFile('Member').forEach(function (row) {
+      const capid = String(row[0] || '').trim();
+      if (!capid) return;
+      nameByCapid[capid] = {
+        lastName: String(row[2] || '').trim(),
+        firstName: String(row[3] || '').trim(),
+        rank: String(row[14] || '').trim()
+      };
+    });
+
+    // DutyPosition.txt: CAPID=0, Duty=1, Asst=4, ORGID=7. The ORGID is the org
+    // the duty is HELD at, which is the unit whose members we are mailing about.
+    parseFile('DutyPosition').forEach(function (row) {
+      const title = formatDutyTitle_(row[1]);
+      if (!wanted[title]) return;
+
+      const orgid = String(row[7] || '').trim();
+      const capid = String(row[0] || '').trim();
+      if (!orgid || !capid) return;
+
+      const rec = orgRecord(orgid);
+      const isAssistant = String(row[4] || '').trim() === '1';
+      const held = rec.byDuty[title];
+
+      // Primary beats assistant; otherwise first row wins.
+      if (held && !(held.isAssistant && !isAssistant)) return;
+
+      const person = resolve(capid, nameByCapid[capid] || {});
+      person.isAssistant = isAssistant;
+      rec.byDuty[title] = person;
+    });
+  }
+
+  Logger.info('Unit staff index built', {
     organizations: Object.keys(index).length,
-    fromDirectory: Object.keys(directoryMap).length
+    fromDirectory: Object.keys(directoryMap).length,
+    dutyTitlesCarried: Object.keys(wanted)
   });
 
-  _commanderIndex = index;
+  _unitStaffIndex = index;
   return index;
+}
+
+/**
+ * The addresses to CC for a member's unit: the commander, plus the duty holders
+ * named for this email type.
+ *
+ * Returns '' when the commander has no resolvable address. That is deliberate
+ * rather than incidental — the requirement is that these staff join the
+ * commander on the mail, so a member whose unit has no reachable commander gains
+ * no other unit staff either, and the CC stays a command-channel copy rather
+ * than becoming a different distribution.
+ *
+ * Deduplicates by address: one person commonly holds several of these duties,
+ * and a unit commander who is also the recruiting officer should appear once.
+ *
+ * @param {string} orgid - Member's ORGID
+ * @param {Array<string>} dutyTitles - From RETENTION_CONFIG.CC_DUTY_TITLES
+ * @returns {string} Comma-separated CC list, or '' if there is no commander
+ */
+function retentionCcList_(orgid, dutyTitles) {
+  const commander = getCommanderInfo(orgid);
+  if (!commander || !commander.email) return '';
+
+  const record = retentionUnitStaffIndex_()[String(orgid || '').trim()] || { byDuty: {} };
+  const seen = {};
+  const out = [];
+
+  const push = function (person) {
+    if (!person || !person.email) return;
+    const key = person.email.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(person.email);
+  };
+
+  push(commander);
+  (dutyTitles || []).forEach(function (title) { push(record.byDuty[title]); });
+
+  return out.join(',');
 }
 
 /**
  * Retrieves commander information for a given organization
  *
  * Looks up the unit commander for the specified organization ID and returns
- * their details, including the address to CC — see retentionCommanderIndex_()
+ * their details, including the address to CC — see retentionUnitStaffIndex_()
  * for how that address is chosen.
  *
  * @param {string} orgid - Organization ID to look up commander for
@@ -588,14 +718,14 @@ function retentionCommanderIndex_() {
  *   - email: Commander's CAP account, or CAPWATCH primary, or null
  */
 function getCommanderInfo(orgid) {
-  const commander = retentionCommanderIndex_()[String(orgid || '').trim()];
+  const record = retentionUnitStaffIndex_()[String(orgid || '').trim()];
 
-  if (!commander) {
+  if (!record || !record.commander) {
     Logger.warn('Commander not found for organization', { orgid: orgid });
     return null;
   }
 
-  return commander;
+  return record.commander;
 }
 
 // ============================================================================
@@ -809,6 +939,7 @@ function sendExpiringEmails(members, failedList) {
 function sendTurning18Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
+    const cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE);
     const htmlBody = retentionRenderTemplate_('Turning18Email', member);
 
     executeWithRetry(() =>
@@ -818,7 +949,7 @@ function sendTurning18Email(member) {
         htmlBody,
         {
           htmlBody: htmlBody,
-          cc: commander && commander.email ? commander.email : '',
+          cc: cc,
           replyTo: DIRECTOR_RECRUITING_EMAIL,
           from: AUTOMATION_SENDER_EMAIL,
           name: SENDER_NAME
@@ -832,7 +963,7 @@ function sendTurning18Email(member) {
     Logger.info('Turning 18 email sent', {
       email: member.email,
       capsn: member.capid,
-      commanderCc: commander && commander.email ? commander.email : 'none'
+      cc: cc || 'none'
     });
     
     return true;
@@ -861,6 +992,7 @@ function sendTurning18Email(member) {
 function sendTurning21Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
+    const cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE);
     const htmlBody = retentionRenderTemplate_('Turning21Email', member);
 
     executeWithRetry(() =>
@@ -870,7 +1002,7 @@ function sendTurning21Email(member) {
         htmlBody,
         {
           htmlBody: htmlBody,
-          cc: commander && commander.email ? commander.email : '',
+          cc: cc,
           replyTo: DIRECTOR_RECRUITING_EMAIL,
           from: AUTOMATION_SENDER_EMAIL,
           name: SENDER_NAME
@@ -884,7 +1016,7 @@ function sendTurning21Email(member) {
     Logger.info('Turning 21 email sent', {
       email: member.email,
       capsn: member.capid,
-      commanderCc: commander && commander.email ? commander.email : 'none'
+      cc: cc || 'none'
     });
     
     return true;
@@ -914,6 +1046,7 @@ function sendTurning21Email(member) {
 function sendExpiringEmail(member) {
   try {
     let commander = null;
+    let cc = '';
     const htmlBody = retentionRenderTemplate_('ExpiringEmail', member);
 
     const options = {
@@ -922,15 +1055,19 @@ function sendExpiringEmail(member) {
       from: AUTOMATION_SENDER_EMAIL,
       name: SENDER_NAME
     };
-    
-    // Add commander CC for cadets only
+
+    // Command-channel CC for cadets only: commander plus the unit's recruiting
+    // officer, who owns retention at the unit. Seniors get no unit CC at all,
+    // which is the pre-existing rule and is why the recruiting officer rides on
+    // the commander condition rather than being added independently.
     if (member.type === 'CADET') {
       commander = getCommanderInfo(member.orgid);
-      if (commander && commander.email) {
-        options.cc = commander.email;
+      cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL);
+      if (cc) {
+        options.cc = cc;
       }
     }
-    
+
     executeWithRetry(() =>
       GmailApp.sendEmail(
         member.email,
@@ -948,7 +1085,7 @@ function sendExpiringEmail(member) {
       capsn: member.capid,
       type: member.type,
       expiration: member.expiration,
-      commanderCc: commander && commander.email ? commander.email : 'none'
+      cc: cc || 'none'
     });
     
     return true;

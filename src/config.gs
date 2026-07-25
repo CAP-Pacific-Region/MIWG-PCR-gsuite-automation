@@ -4,9 +4,12 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.12.0
+ * Version: 1.13.0
  * Date: 2026-07-25
- * Changes: Added PROFILE_.RUN_RETENTION_EMAILS — true on seniors, false on cadets
+ * Changes: Added RETENTION_CONFIG.CC_DUTY_TITLES — the unit duty positions CC'd
+ *   alongside the commander on retention mail, per email type. Turning 18/21 adds
+ *   the Deputy Commander for Cadets; renewals add the Recruiting Officer.
+ *   1.12.0: Added PROFILE_.RUN_RETENTION_EMAILS — true on seniors, false on cadets
  *   and region. recruiting-and-retention/SendRetentionEmail.gs hardcodes
  *   'CADET'/'SENIOR' rather than reading MEMBER_TYPES.ACTIVE, and both wing
  *   tenants download the same wing-wide CAPWATCH extract, so it addresses the
@@ -833,6 +836,28 @@ const RETENTION_CONFIG = {
   AGE_THRESHOLDS: {
     TRANSITION_TO_SENIOR: 18,
     CADET_AGE_OUT: 21
+  },
+
+  /**
+   * Unit duty positions CC'd alongside the commander, by email type.
+   *
+   * These are CAPWATCH `Duty` values, matched after normalization through
+   * formatDutyTitle_() — so the legacy 'Recruiting & Retention Officer' rows the
+   * ICL to CAPR 30-1 renamed are matched by the current title, and the trailing
+   * whitespace the feed ships on duty values does not matter.
+   *
+   * Each is CC'd only where the commander is already being CC'd, so a member
+   * whose mail carries no commander gains no other unit staff either.
+   *   AGE_MILESTONE  — turning 18 / 21. The DCC owns the cadet program at the
+   *                    unit and is the person who actually walks a cadet through
+   *                    the decision the mail describes.
+   *   RENEWAL        — expiring. Retention is the recruiting officer's job, and
+   *                    the commander CC on renewals is cadets-only, so this
+   *                    follows the same condition.
+   */
+  CC_DUTY_TITLES: {
+    AGE_MILESTONE: ['Deputy Commander for Cadets'],
+    RENEWAL: ['Recruiting Officer']
   },
 
   /**
