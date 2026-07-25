@@ -3,20 +3,26 @@
  *
  * Version: 1.7.0
  * Date: 2026-07-25
- * Changes: SENIOR renewals now CC the unit's Recruiting Officer too. Retention is
- *   that officer's job regardless of who is renewing, so the recruiting CC is no
- *   longer conditional on member type — only the COMMANDER copy is, which is the
- *   pre-existing cadets-only rule and unchanged. A senior renewal therefore
- *   reaches the recruiting officer and nobody else at the unit; previously it
- *   carried no unit CC at all.
- *   This required decoupling duty holders from the commander. 1.5.0 had them ride
- *   on the commander CC, so a unit with no reachable commander reached no unit
- *   staff at all; that could not survive a senior renewal, which never has a
- *   commander to ride on. retentionCcList_() takes an explicit includeCommander
- *   flag and adds each recipient independently, so the only empty CC is one where
- *   nobody resolved. Side effect worth knowing: an age-milestone mail at a unit
- *   with no reachable commander now still reaches the DCC, where before it
- *   reached nobody. See PCR_CHANGELOG.md.
+ * Changes: A SENIOR's renewal notice now carries NO unit CC, and each unit
+ *   instead receives a per-unit DIGEST listing everyone under its command whose
+ *   membership expires this month. The distinction is the point: a senior's
+ *   renewal is between them and the wing, so their unit gets a worklist addressed
+ *   to it rather than a blind copy of somebody else's mail. CADET renewals are
+ *   unchanged and still CC the commander and recruiting officer — that is a cadet
+ *   protection matter, not a retention one — and cadets appear in the digest too,
+ *   so the unit sees one complete list.
+ *   sendRenewalDigests_() addresses the commander and copies the recruiting
+ *   officer, falling back to whichever exists; a unit with neither is reported
+ *   rather than silently skipped. Deduplicated per unit per month on the same Log
+ *   sheet, keyed RENEWAL_DIGEST|<orgid>, so a re-run does not re-mail a unit. It
+ *   lists EVERY expiring member, including those whose own notice was skipped as
+ *   already-sent — the unit wants the full picture, not a record of this run.
+ *   retentionCcList_() takes an explicit includeCommander flag and adds each
+ *   recipient independently (1.5.0 had duty holders ride on the commander CC), so
+ *   an age-milestone mail at a unit with no reachable commander now still reaches
+ *   the DCC. logEmailSent()'s sheet handling is extracted to
+ *   retentionLogAppend_() so the digest shares one Log sheet.
+ *   See PCR_CHANGELOG.md.
  *   1.6.0: Added previewRetentionCcLists(), which prints the resolved unit CC for
  *   every unit the next run would touch and then the three things worth fixing
  *   first: units with no reachable commander (they send with no CC at all), CC'd
@@ -112,9 +118,11 @@
  * 
  * Email Features:
  * - Personalized with member rank and name
- * - Unit CC: the Recruiting Officer on every renewal (senior and cadet), the
- *   Deputy Commander for Cadets on turning 18/21, and the squadron commander on
- *   CADET mail only — each where the unit has one assigned and reachable
+ * - Unit CC on CADET mail only: the squadron commander, plus the Deputy Commander
+ *   for Cadets (turning 18/21) or the Recruiting Officer (renewals)
+ * - Per-unit renewal DIGEST to the commander and recruiting officer, listing every
+ *   member under their command expiring this month, cadet and senior alike. This
+ *   is how a unit hears about its SENIORS, whose own notices carry no CC
  * - Reply-to set to the Director of Recruiting role group
  * - Logged to retention tracking spreadsheet (the per-send record; the retention
  *   group receives the run summary, not a copy of every message)
@@ -208,6 +216,11 @@ function sendRetentionEmails() {
     summary.sent.turning21 = sendTurning21Emails(due21, summary.failed.turning21);
     summary.sent.expiring = sendExpiringEmails(dueExp, summary.failed.expiring);
 
+    // Per-unit worklist to the command channel. Deliberately built from the FULL
+    // expiring list rather than the deduped one: a unit wants the complete
+    // picture of who is lapsing, not a record of what this particular run mailed.
+    summary.digests = sendRenewalDigests_(expiring, alreadySent);
+
   } catch (err) {
     Logger.error('Retention email process failed', err);
     throw err;
@@ -229,6 +242,7 @@ function sendRetentionEmails() {
     totalFailed: summary.totalFailed,
     totalSkipped: summary.totalSkipped,
     dedupeAvailable: summary.dedupeAvailable,
+    digests: summary.digests || null,
     breakdown: {
       turning18: { sent: summary.sent.turning18, failed: summary.failed.turning18.length, skipped: summary.skipped.turning18 },
       turning21: { sent: summary.sent.turning21, failed: summary.failed.turning21.length, skipped: summary.skipped.turning21 },
@@ -873,9 +887,19 @@ function previewRetentionCcLists(turning18, turning21, expiring) {
       console.log('   -> cadet renewal CC:    ' + (cc || '(NONE — nobody resolvable)'));
     }
     if (counts.expiringSenior) {
-      // Seniors differ only in that the commander is not CC'd.
-      const cc = retentionCcList_(orgid, RENEW, false);
-      console.log('   -> senior renewal CC:   ' + (cc || '(NONE — no recruiting officer)'));
+      console.log('   -> senior renewal CC:   (none by design — digest instead)');
+    }
+    if (needsRenewalCc) {
+      // Digest addressing: commander is the addressee, recruiting officer is
+      // copied; with no commander it goes to the recruiting officer alone.
+      const ro = rec.byDuty[RENEW[0]];
+      const to = (rec.commander && rec.commander.email) ? rec.commander.email :
+        ((ro && ro.email) ? ro.email : '');
+      const dcc = (to && ro && ro.email && ro.email.toLowerCase() !== to.toLowerCase())
+        ? '  cc ' + ro.email : '';
+      console.log('   -> renewal digest to:   ' +
+        (to ? to + dcc : '(NONE — unit hears nothing; ' +
+          (counts.expiringCadet + counts.expiringSenior) + ' expiring)'));
     }
 
     if (!rec.commander || !rec.commander.email) {
@@ -891,7 +915,8 @@ function previewRetentionCcLists(turning18, turning21, expiring) {
   noCommander.forEach(function (o) { console.log('   ORGID ' + o); });
 
   console.log('\nUNFILLED CC DUTY POSITIONS: ' + missingDuty.length);
-  console.log('   (a senior renewal at a unit with no recruiting officer gets NO unit CC at all)');
+  console.log('   (the renewal digest still reaches the commander; only a unit with');
+  console.log('    NEITHER a commander nor a recruiting officer hears nothing at all)');
   missingDuty.forEach(function (m) { console.log('   ' + m); });
 
   console.log('\nDERIVED ADDRESSES — NOT verified to exist, these are the bounce risk: ' + derived.length);
@@ -1242,18 +1267,18 @@ function sendExpiringEmail(member) {
       name: SENDER_NAME
     };
 
-    // The unit's recruiting officer is CC'd on EVERY renewal — retention is that
-    // officer's job whether the member renewing is a cadet or a senior. The
-    // COMMANDER is cadets-only, which is the pre-existing rule and the only part
-    // that varies by member type. So a senior renewal reaches the recruiting
-    // officer and nobody else at the unit.
-    const isCadet = member.type === 'CADET';
-    if (isCadet) {
+    // CADETS ONLY get a unit CC on their own renewal notice, and that is a cadet
+    // protection matter rather than a retention one: a cadet's command channel is
+    // entitled to see mail sent to the cadet. A SENIOR's renewal is between them
+    // and the wing, so it carries no CC at all — their unit hears about it
+    // through the per-unit digest instead (see sendRenewalDigests_), which is a
+    // worklist rather than a copy of someone's mail.
+    if (member.type === 'CADET') {
       commander = getCommanderInfo(member.orgid);
-    }
-    cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL, isCadet);
-    if (cc) {
-      options.cc = cc;
+      cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL, true);
+      if (cc) {
+        options.cc = cc;
+      }
     }
 
     executeWithRetry(() =>
@@ -1290,6 +1315,192 @@ function sendExpiringEmail(member) {
     });
     return false;
   }
+}
+
+// ============================================================================
+// PER-UNIT RENEWAL DIGEST
+// ============================================================================
+
+/**
+ * Log/dedupe type for the per-unit digest. Rows of this type carry the ORGID in
+ * the CAPID column — the unit is what was mailed, not a member — so the
+ * already-sent guard keys them as 'RENEWAL_DIGEST|<orgid>' and a re-run in the
+ * same month does not re-send a unit's digest.
+ */
+const RENEWAL_DIGEST_TYPE_ = 'RENEWAL_DIGEST';
+
+/**
+ * Mails each unit's command channel a worklist of everyone under their command
+ * whose membership expires this month.
+ *
+ * WHY THIS EXISTS RATHER THAN A CC. A senior's renewal notice is between them
+ * and the wing and carries no unit CC. But the unit still needs to know who is
+ * lapsing, so the information reaches them as a digest instead — a worklist
+ * addressed to them, rather than a blind copy of somebody else's mail. Cadets
+ * appear in the digest too, and separately keep the CC on their own notice,
+ * which is a cadet protection matter rather than a retention one.
+ *
+ * Addressed to the commander with the recruiting officer copied; where a unit has
+ * no reachable commander it is addressed to the recruiting officer alone. A unit
+ * with neither is skipped and reported.
+ *
+ * Deduplicated per unit per month on the same Log sheet as individual sends, so a
+ * re-run does not re-mail a unit. Lists EVERY expiring member, including those
+ * whose own notice was skipped as already-sent — the point is a complete picture
+ * of the unit, not a record of what this run did.
+ *
+ * @param {Array<Object>} expiring - All expiring members, cadet and senior
+ * @param {Object} alreadySent - retentionAlreadySentThisPeriod_() output
+ * @returns {Object} { sent, skipped, failed: [], noRecipients: [] }
+ */
+function sendRenewalDigests_(expiring, alreadySent) {
+  const result = { sent: 0, skipped: 0, failed: [], noRecipients: [] };
+
+  const byOrg = {};
+  (expiring || []).forEach(function (m) {
+    const orgid = String(m.orgid || '').trim();
+    if (!orgid) return;
+    if (!byOrg[orgid]) byOrg[orgid] = [];
+    byOrg[orgid].push(m);
+  });
+
+  const orgids = Object.keys(byOrg).sort();
+  if (!orgids.length) return result;
+
+  const squadrons = getSquadrons();
+  Logger.info('Starting renewal digests', { units: orgids.length });
+
+  orgids.forEach(function (orgid, i) {
+    if (alreadySent && alreadySent.usable &&
+        alreadySent.keys[RENEWAL_DIGEST_TYPE_ + '|' + orgid]) {
+      result.skipped++;
+      return;
+    }
+
+    const squadron = squadrons[orgid] || {};
+    const orgName = squadron.name || ('ORGID ' + orgid);
+    const charter = squadron.charter || orgid;
+
+    // Commander first, recruiting officer copied. Same resolution as the CC.
+    const commander = getCommanderInfo(orgid);
+    const staff = retentionUnitStaffIndex_()[orgid] || { byDuty: {} };
+    const recruiting = staff.byDuty[RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL[0]];
+
+    const to = (commander && commander.email) ? commander.email :
+      ((recruiting && recruiting.email) ? recruiting.email : '');
+    const cc = (commander && commander.email && recruiting && recruiting.email &&
+      recruiting.email.toLowerCase() !== commander.email.toLowerCase())
+      ? recruiting.email : '';
+
+    if (!to) {
+      result.noRecipients.push({ orgid: orgid, orgName: orgName, members: byOrg[orgid].length });
+      Logger.warn('No renewal-digest recipient for unit', {
+        orgid: orgid, orgName: orgName, members: byOrg[orgid].length
+      });
+      return;
+    }
+
+    const members = byOrg[orgid].slice().sort(function (a, b) {
+      return String(a.lastName || '').localeCompare(String(b.lastName || ''));
+    });
+
+    try {
+      const htmlBody = buildRenewalDigestHtml_(orgName, charter, members);
+      const options = {
+        htmlBody: htmlBody,
+        replyTo: DIRECTOR_RECRUITING_EMAIL,
+        from: AUTOMATION_SENDER_EMAIL,
+        name: SENDER_NAME
+      };
+      if (cc) options.cc = cc;
+
+      executeWithRetry(() =>
+        GmailApp.sendEmail(
+          to,
+          RETENTION_CONFIG.SUBJECTS.RENEWAL_DIGEST + ' — ' + charter,
+          'See the HTML version of this message.',
+          options
+        )
+      );
+
+      try {
+        retentionLogAppend_([
+          new Date(), RENEWAL_DIGEST_TYPE_, orgid, orgName,
+          to, (commander && commander.capid) || '', '', cc
+        ]);
+      } catch (e) {
+        Logger.error('Failed to log renewal digest', {
+          orgid: orgid, errorMessage: e.message
+        });
+      }
+
+      result.sent++;
+      Logger.info('Renewal digest sent', {
+        orgid: orgid, orgName: orgName, to: to, cc: cc || 'none', members: members.length
+      });
+
+    } catch (e) {
+      result.failed.push({ orgid: orgid, orgName: orgName, to: to });
+      Logger.error('Failed to send renewal digest', {
+        orgid: orgid, orgName: orgName, to: to,
+        errorMessage: e.message, errorCode: e.details?.code
+      });
+    }
+
+    if (i < orgids.length - 1) {
+      Utilities.sleep(RETENTION_CONFIG.EMAIL_DELAY_MS);
+    }
+  });
+
+  Logger.info('Renewal digests completed', {
+    sent: result.sent, skipped: result.skipped,
+    failed: result.failed.length, noRecipients: result.noRecipients.length
+  });
+
+  return result;
+}
+
+/**
+ * Builds one unit's renewal digest.
+ *
+ * @param {string} orgName - Unit name
+ * @param {string} charter - Unit charter (e.g. PCR-CA-070)
+ * @param {Array<Object>} members - Expiring members, pre-sorted
+ * @returns {string} HTML body
+ */
+function buildRenewalDigestHtml_(orgName, charter, members) {
+  const rows = members.map(function (m) {
+    return '<tr>' +
+      '<td>' + rcEscapeHtml_((m.rank || '') + ' ' + (m.firstName || '') + ' ' + (m.lastName || '')) + '</td>' +
+      '<td>' + rcEscapeHtml_(m.capid || '') + '</td>' +
+      '<td>' + rcEscapeHtml_(m.type || '') + '</td>' +
+      '<td>' + rcEscapeHtml_(m.expiration || '') + '</td>' +
+      '</tr>';
+  }).join('');
+
+  return '' +
+    '<html><head><style>' +
+    'body { font-family: Arial, sans-serif; color: #000; }' +
+    'h2 { color: #001871; }' +
+    'table { border-collapse: collapse; width: 100%; margin: 15px 0; }' +
+    'th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 14px; }' +
+    'th { background-color: #001871; color: #fff; }' +
+    '.note { background-color: #fff5cc; border-left: 4px solid #ffcd00; padding: 12px; margin: 15px 0; }' +
+    '.footer { font-size: 12px; color: #666; border-top: 1px solid #ddd; margin-top: 25px; padding-top: 12px; }' +
+    '</style></head><body>' +
+    '<h2>Memberships expiring this month — ' + rcEscapeHtml_(orgName) + '</h2>' +
+    '<p>' + members.length + ' member' + (members.length === 1 ? '' : 's') +
+    ' under your command (' + rcEscapeHtml_(charter) + ') ' +
+    (members.length === 1 ? 'has a membership that expires' : 'have memberships that expire') +
+    ' this month.</p>' +
+    '<table><tr><th>Member</th><th>CAPID</th><th>Type</th><th>Expires</th></tr>' +
+    rows + '</table>' +
+    '<div class="note"><strong>Each member has been emailed directly about renewing.</strong> ' +
+    'This list is for your awareness so the unit can follow up with anyone at risk of lapsing. ' +
+    'Cadets also had their own notice copied to you.</div>' +
+    '<div class="footer">Automated monthly message from the ' + rcEscapeHtml_(CONFIG.ORG_LABEL) +
+    ' retention system. Reply to this email to reach the Director of Recruiting.</div>' +
+    '</body></html>';
 }
 
 // ============================================================================
@@ -1426,32 +1637,46 @@ function retentionFilterUnsent_(emailType, members, alreadySent) {
  * @param {Object|null} commander - Commander object or null
  * @returns {void}
  */
+/**
+ * Appends one row to the Log sheet, creating it if absent.
+ *
+ * Shared by the per-member log and the per-unit digest log, so both land in the
+ * one sheet the already-sent guard reads. Columns A-C (timestamp, type, key) are
+ * what that guard keys on — see retentionAlreadySentThisPeriod_().
+ *
+ * @param {Array} row - Eight cells matching the header below
+ * @returns {void}
+ */
+function retentionLogAppend_(row) {
+  const spreadsheet = SpreadsheetApp.openById(RETENTION_LOG_SPREADSHEET_ID);
+  let sheet = spreadsheet.getSheetByName('Log');
+
+  // Create sheet if it doesn't exist
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet('Log');
+    sheet.appendRow([
+      'Timestamp',
+      'Email Type',
+      'CAPID',
+      'Name',
+      'Email',
+      'Commander CAPID',
+      'Commander Name',
+      'Commander Email'
+    ]);
+
+    // Format header row
+    const headerRange = sheet.getRange(1, 1, 1, 8);
+    headerRange.setFontWeight('bold')
+               .setBackground('#4285f4')
+               .setFontColor('#ffffff');
+  }
+
+  sheet.appendRow(row);
+}
+
 function logEmailSent(emailType, member, commander) {
   try {
-    const spreadsheet = SpreadsheetApp.openById(RETENTION_LOG_SPREADSHEET_ID);
-    let sheet = spreadsheet.getSheetByName('Log');
-    
-    // Create sheet if it doesn't exist
-    if (!sheet) {
-      sheet = spreadsheet.insertSheet('Log');
-      sheet.appendRow([
-        'Timestamp', 
-        'Email Type', 
-        'CAPID', 
-        'Name', 
-        'Email', 
-        'Commander CAPID', 
-        'Commander Name', 
-        'Commander Email'
-      ]);
-      
-      // Format header row
-      const headerRange = sheet.getRange(1, 1, 1, 8);
-      headerRange.setFontWeight('bold')
-                 .setBackground('#4285f4')
-                 .setFontColor('#ffffff');
-    }
-    
     const commanderName = commander ? 
       (commander.rank + ' ' + commander.firstName + ' ' + commander.lastName) : '';
     const commanderEmail = commander ? commander.email : '';
@@ -1563,6 +1788,46 @@ function sendRetentionSummaryEmail(summary) {
         </tr>
       </table>
     `;
+
+    // Per-unit digests, and the units nobody could be found for — that last
+    // number is the one worth acting on, because those units heard nothing.
+    const d = summary.digests;
+    if (d) {
+      htmlBody += `
+        <h2>Unit Renewal Digests</h2>
+        <table>
+          <tr><th>Sent</th><th>Skipped (already sent)</th><th>Failed</th><th>No recipient</th></tr>
+          <tr>
+            <td>${d.sent}</td>
+            <td>${d.skipped}</td>
+            <td>${d.failed.length}</td>
+            <td>${d.noRecipients.length}</td>
+          </tr>
+        </table>
+      `;
+
+      if (d.noRecipients.length) {
+        htmlBody += `
+          <div class="warning">
+            <h3>⚠ Units with no reachable commander or recruiting officer (${d.noRecipients.length})</h3>
+            <p>These units received no renewal digest. Their expiring members were still
+            emailed directly.</p>
+            <ul>
+        `;
+        d.noRecipients.forEach(m => {
+          htmlBody += `<li>${m.orgName} (ORGID ${m.orgid}) — ${m.members} expiring</li>`;
+        });
+        htmlBody += '</ul></div>';
+      }
+
+      if (d.failed.length) {
+        htmlBody += `<h3>Digest send failures (${d.failed.length})</h3><ul>`;
+        d.failed.forEach(m => {
+          htmlBody += `<li>${m.orgName} (ORGID ${m.orgid}) — ${m.to}</li>`;
+        });
+        htmlBody += '</ul>';
+      }
+    }
     
     // Failed sends if any
     if (summary.totalFailed > 0) {

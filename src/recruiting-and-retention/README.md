@@ -39,8 +39,25 @@ Emails are personalized with member rank/name and include squadron commanders on
 ### Expiring Membership Email
 **Template:** `ExpiringEmail.html`  
 **Recipients:** Active cadets and seniors expiring this month  
-**CC:** **Recruiting Officer** (cadets *and* seniors) + Squadron Commander (cadets only)  
+**CC:** Squadron Commander + Recruiting Officer — **cadets only**. A senior's renewal carries no
+unit CC at all.  
 **Purpose:** Remind member to renew membership before expiration, and invite feedback by reply
+
+### Unit Renewal Digest
+
+**Recipients:** Squadron Commander (addressee) + Recruiting Officer (copied)  
+**Content:** Every member under their command expiring this month — **cadets and seniors**  
+**Purpose:** Give the unit a worklist for follow-up
+
+This is how a unit hears about its **seniors**. A senior's renewal notice is between them and the
+wing, so it is not copied to anyone; the unit gets an addressed worklist instead of a blind copy of
+someone else's mail. Cadets appear in the digest as well, so the unit sees one complete list — and
+separately keep the CC on their own notice, which is a cadet protection matter rather than a
+retention one.
+
+Addressed to the commander with the recruiting officer copied. A unit with only one of the two gets
+it addressed to whichever exists; a unit with **neither** is reported in the run summary, since
+those units hear nothing.
 
 ### How the unit CC is built
 
@@ -48,11 +65,7 @@ Emails are personalized with member rank/name and include squadron commanders on
 |---|---|
 | Squadron Commander | **Cadet** mail only — turning 18/21, and cadet renewals |
 | Deputy Commander for Cadets | Turning 18/21 |
-| Recruiting Officer | **Every** renewal, senior and cadet alike |
-
-A senior renewal therefore reaches the Recruiting Officer and nobody else at the unit — retention
-is that officer's job regardless of who is renewing, and the commander CC has always been
-cadets-only.
+| Recruiting Officer | Cadet renewals (CC), and every unit digest |
 
 Duty titles come from `RETENTION_CONFIG.CC_DUTY_TITLES` and are matched through
 `formatDutyTitle_()`, so legacy `Recruiting & Retention Officer` rows match the current title and
@@ -510,8 +523,10 @@ When reporting issues, include:
 ## Version History
 
 ### SendRetentionEmail.gs 1.7.0 (July 2026)
-- ✅ **Senior renewals now CC the unit's Recruiting Officer.** The recruiting CC is no longer
-  conditional on member type; only the commander copy is (cadets only, unchanged)
+- ✅ **Per-unit renewal digest** to the commander and recruiting officer, listing every expiring
+  member under their command — cadets and seniors. Deduplicated per unit per month
+- ✅ **Senior renewals carry no unit CC**; the digest is how their unit hears. Cadet renewals
+  unchanged (commander + recruiting officer, for cadet protection)
 - ✅ Duty holders decoupled from the commander — a unit with no reachable commander still reaches
   its DCC / Recruiting Officer
 

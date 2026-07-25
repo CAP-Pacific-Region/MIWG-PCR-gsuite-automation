@@ -10,35 +10,48 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
-## [2026-07-25] — Senior renewals reach the unit Recruiting Officer
+## [2026-07-25] — Per-unit renewal digest; senior notices carry no CC
 
-### Changed (`SendRetentionEmail.gs` 1.7.0, `config.gs`)
+### Added — the unit renewal digest (`SendRetentionEmail.gs` 1.7.0, `config.gs`)
 
-**A senior renewal now CCs the unit's Recruiting Officer.** Previously it carried no unit CC at
-all. Retention is that officer's job regardless of who is renewing, so the recruiting CC is no
-longer conditional on member type — only the **commander** copy is, which stays cadets-only and is
-unchanged. A senior renewal therefore reaches the Recruiting Officer and nobody else at the unit.
+Each unit now receives one message listing **every member under its command expiring this month**,
+cadets and seniors alike. Addressed to the commander with the recruiting officer copied; where a
+unit has only one of the two it goes to whichever exists, and a unit with **neither** is reported
+in the run summary rather than silently skipped.
 
-| Recipient | On which mail |
+**A senior's renewal notice carries no unit CC at all.** That is the reason the digest exists: a
+senior's renewal is between them and the wing, so their unit gets a worklist addressed to it rather
+than a blind copy of somebody else's mail. **Cadet renewals are unchanged** and still CC the
+commander and recruiting officer — that is a cadet protection matter, not a retention one — and
+cadets also appear in the digest, so the unit sees one complete list.
+
+| | |
 |---|---|
-| Squadron Commander | Cadet mail only — turning 18/21, and cadet renewals |
+| Squadron Commander | Cadet mail only (turning 18/21, cadet renewals) + digest addressee |
 | Deputy Commander for Cadets | Turning 18/21 |
-| Recruiting Officer | Every renewal, senior and cadet alike |
+| Recruiting Officer | Cadet renewals (CC) + digest copy |
 
-**This required undoing the ride-along coupling introduced in 1.5.0.** That version had duty
-holders included only where the commander was already being CC'd, so a unit with no reachable
-commander reached no unit staff at all. That rule cannot survive a senior renewal, which never has
-a commander to ride on. `retentionCcList_()` now takes an explicit `includeCommander` flag and adds
-each recipient independently, so the only empty CC is one where nobody resolved.
+Deduplicated per unit per month on the same Log sheet as individual sends, keyed
+`RENEWAL_DIGEST|<orgid>` — the ORGID sits in the CAPID column because the unit is what was mailed.
+It lists every expiring member **including those whose own notice was skipped as already-sent**:
+the unit wants the full picture, not a record of what one run happened to do.
+
+`logEmailSent()`'s sheet handling is extracted to `retentionLogAppend_()` so both writers share one
+sheet and one header.
+
+### Changed — duty holders decoupled from the commander
+
+1.5.0 had duty holders included only where the commander was already being CC'd. That could not
+survive the digest, which must reach a recruiting officer at a unit whose commander is unreachable.
+`retentionCcList_()` now takes an explicit `includeCommander` flag and adds each recipient
+independently.
 
 **Side effect worth knowing:** an age-milestone mail at a unit with no reachable commander now
-still reaches the Deputy Commander for Cadets, where under 1.5.0 it reached nobody. That follows
-from the same decoupling and is the more useful behavior, but it is a change 1.5.0's notes
-explicitly argued against — recorded here so the reversal is not mistaken for drift.
+still reaches the Deputy Commander for Cadets, where under 1.5.0 it reached nobody. Recorded so the
+reversal is not mistaken for drift.
 
-`previewRetentionCcLists()` now prints cadet and senior renewal CCs as separate lines, and reports
-a unit with expiring seniors but no Recruiting Officer — that combination is the one that yields
-no unit CC at all.
+`previewRetentionCcLists()` now prints the digest addressee and copy per unit, and flags units that
+would hear nothing.
 
 ## [2026-07-25] — Retention CC preview, and a trigger installer
 

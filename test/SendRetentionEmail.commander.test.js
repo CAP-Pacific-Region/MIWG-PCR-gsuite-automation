@@ -423,7 +423,7 @@ section('15. Commander and duty holders are independent');
 }
 
 // ---------------------------------------------------------------------------
-section('15a. Senior renewals reach the recruiting officer, not the commander');
+section('15a. Cadet renewals CC the command channel; seniors carry no CC');
 {
   const m = load({
     config: SENIORS,
@@ -433,25 +433,12 @@ section('15a. Senior renewals reach the recruiting officer, not the commander');
     accounts: []
   });
 
-  check('senior renewal: recruiting officer alone',
-    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, false),
-    'sam.cole@cawgcap.org');
-  check('cadet renewal: commander joins them',
+  // A cadet's own notice is copied to their command channel — cadet protection,
+  // not retention. A senior's is not copied to anyone; their unit hears about it
+  // through the digest instead.
+  check('cadet renewal: commander + recruiting officer',
     m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
-
-  // A unit with no recruiting officer gives a senior renewal no unit CC at all,
-  // since the commander is never on senior mail.
-  const noRo = load({
-    config: SENIORS,
-    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
-    accounts: []
-  });
-  check('no recruiting officer: senior renewal has no unit CC',
-    noRo.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, false), '');
-  check('...while the cadet renewal still reaches the commander',
-    noRo.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
-    'rosa.alvarez@cawgcap.org');
 }
 
 // ---------------------------------------------------------------------------

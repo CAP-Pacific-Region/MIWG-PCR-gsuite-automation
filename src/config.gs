@@ -827,7 +827,10 @@ const RETENTION_CONFIG = {
   SUBJECTS: {
     TURNING_18: 'Important Membership Update - Turning 18',
     TURNING_21: 'Important Membership Update - Turning 21',
-    EXPIRING: 'Your CAP Membership Expires Soon'
+    EXPIRING: 'Your CAP Membership Expires Soon',
+    // Per-unit worklist to the commander and recruiting officer. The unit
+    // charter is appended at send time.
+    RENEWAL_DIGEST: 'Memberships expiring this month in your unit'
   },
 
   /**
