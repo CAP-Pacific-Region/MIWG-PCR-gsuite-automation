@@ -1,9 +1,23 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.6.0
+ * Version: 1.7.0
  * Date: 2026-07-25
- * Changes: Added previewRetentionCcLists(), which prints the resolved unit CC for
+ * Changes: SENIOR renewals now CC the unit's Recruiting Officer too. Retention is
+ *   that officer's job regardless of who is renewing, so the recruiting CC is no
+ *   longer conditional on member type — only the COMMANDER copy is, which is the
+ *   pre-existing cadets-only rule and unchanged. A senior renewal therefore
+ *   reaches the recruiting officer and nobody else at the unit; previously it
+ *   carried no unit CC at all.
+ *   This required decoupling duty holders from the commander. 1.5.0 had them ride
+ *   on the commander CC, so a unit with no reachable commander reached no unit
+ *   staff at all; that could not survive a senior renewal, which never has a
+ *   commander to ride on. retentionCcList_() takes an explicit includeCommander
+ *   flag and adds each recipient independently, so the only empty CC is one where
+ *   nobody resolved. Side effect worth knowing: an age-milestone mail at a unit
+ *   with no reachable commander now still reaches the DCC, where before it
+ *   reached nobody. See PCR_CHANGELOG.md.
+ *   1.6.0: Added previewRetentionCcLists(), which prints the resolved unit CC for
  *   every unit the next run would touch and then the three things worth fixing
  *   first: units with no reachable commander (they send with no CC at all), CC'd
  *   duty positions nobody holds, and every DERIVED address. That last list is the
@@ -98,9 +112,9 @@
  * 
  * Email Features:
  * - Personalized with member rank and name
- * - CC to the unit command channel on cadet emails: the squadron commander, plus
- *   the Deputy Commander for Cadets (turning 18/21) or the Recruiting Officer
- *   (renewals), where the unit has one assigned
+ * - Unit CC: the Recruiting Officer on every renewal (senior and cadet), the
+ *   Deputy Commander for Cadets on turning 18/21, and the squadron commander on
+ *   CADET mail only — each where the unit has one assigned and reachable
  * - Reply-to set to the Director of Recruiting role group
  * - Logged to retention tracking spreadsheet (the per-send record; the retention
  *   group receives the run summary, not a copy of every message)
@@ -693,26 +707,24 @@ function retentionUnitStaffIndex_() {
 }
 
 /**
- * The addresses to CC for a member's unit: the commander, plus the duty holders
- * named for this email type.
+ * The addresses to CC for a member's unit: optionally the commander, plus the
+ * duty holders named for this email type. Each is included independently — a
+ * unit with no reachable commander still reaches its duty holders.
  *
- * Returns '' when the commander has no resolvable address. That is deliberate
- * rather than incidental — the requirement is that these staff join the
- * commander on the mail, so a member whose unit has no reachable commander gains
- * no other unit staff either, and the CC stays a command-channel copy rather
- * than becoming a different distribution.
+ * The commander is conditional because the commander CC is CADET-ONLY, and
+ * always has been. The duty holders are not: the recruiting officer is CC'd on
+ * every renewal, senior and cadet alike, because retention is that officer's job
+ * regardless of who is renewing.
  *
  * Deduplicates by address: one person commonly holds several of these duties,
  * and a unit commander who is also the recruiting officer should appear once.
  *
  * @param {string} orgid - Member's ORGID
  * @param {Array<string>} dutyTitles - From RETENTION_CONFIG.CC_DUTY_TITLES
- * @returns {string} Comma-separated CC list, or '' if there is no commander
+ * @param {boolean} includeCommander - Whether this email type CCs the commander
+ * @returns {string} Comma-separated CC list, or '' if nobody resolved
  */
-function retentionCcList_(orgid, dutyTitles) {
-  const commander = getCommanderInfo(orgid);
-  if (!commander || !commander.email) return '';
-
+function retentionCcList_(orgid, dutyTitles, includeCommander) {
   const record = retentionUnitStaffIndex_()[String(orgid || '').trim()] || { byDuty: {} };
   const seen = {};
   const out = [];
@@ -725,7 +737,7 @@ function retentionCcList_(orgid, dutyTitles) {
     out.push(person.email);
   };
 
-  push(commander);
+  if (includeCommander) push(getCommanderInfo(orgid));
   (dutyTitles || []).forEach(function (title) { push(record.byDuty[title]); });
 
   return out.join(',');
@@ -786,9 +798,9 @@ function previewRetentionCcLists(turning18, turning21, expiring) {
   const AGE = RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE;
   const RENEW = RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL;
 
-  // ORGID -> which email types this unit has members for. Seniors are counted
-  // separately: their renewal carries no unit CC at all, by design, so a unit
-  // that only has expiring seniors needs no staff resolved.
+  // ORGID -> which email types this unit has members for. Cadet and senior
+  // renewals are counted separately because they differ in ONE way: the
+  // commander is CC'd for cadets only. Both reach the recruiting officer.
   const units = {};
   const bump = function (orgid, key) {
     const id = String(orgid || '').trim();
@@ -824,7 +836,7 @@ function previewRetentionCcLists(turning18, turning21, expiring) {
     const counts = units[orgid];
     const rec = index[orgid] || { commander: null, byDuty: {} };
     const needsAgeCc = counts.turning18 + counts.turning21 > 0;
-    const needsRenewalCc = counts.expiringCadet > 0;
+    const needsRenewalCc = counts.expiringCadet + counts.expiringSenior > 0;
 
     console.log('ORGID ' + orgid +
       '   turning18=' + counts.turning18 +
@@ -853,15 +865,17 @@ function previewRetentionCcLists(turning18, turning21, expiring) {
     });
 
     if (needsAgeCc) {
-      const cc = retentionCcList_(orgid, AGE);
-      console.log('   -> turning 18/21 CC: ' + (cc || '(NONE — no reachable commander)'));
+      const cc = retentionCcList_(orgid, AGE, true);
+      console.log('   -> turning 18/21 CC:    ' + (cc || '(NONE — nobody resolvable)'));
     }
-    if (needsRenewalCc) {
-      const cc = retentionCcList_(orgid, RENEW);
-      console.log('   -> renewal CC:       ' + (cc || '(NONE — no reachable commander)'));
+    if (counts.expiringCadet) {
+      const cc = retentionCcList_(orgid, RENEW, true);
+      console.log('   -> cadet renewal CC:    ' + (cc || '(NONE — nobody resolvable)'));
     }
     if (counts.expiringSenior) {
-      console.log('   -> senior renewals carry no unit CC (by design)');
+      // Seniors differ only in that the commander is not CC'd.
+      const cc = retentionCcList_(orgid, RENEW, false);
+      console.log('   -> senior renewal CC:   ' + (cc || '(NONE — no recruiting officer)'));
     }
 
     if (!rec.commander || !rec.commander.email) {
@@ -872,10 +886,12 @@ function previewRetentionCcLists(turning18, turning21, expiring) {
   });
 
   console.log('='.repeat(78));
-  console.log('UNITS WITH NO REACHABLE COMMANDER (these send with NO unit CC): ' + noCommander.length);
+  console.log('UNITS WITH NO REACHABLE COMMANDER: ' + noCommander.length);
+  console.log('   (cadet mail loses its commander copy; duty holders are still CC\'d)');
   noCommander.forEach(function (o) { console.log('   ORGID ' + o); });
 
-  console.log('\nUNFILLED CC DUTY POSITIONS (commander is CC\'d alone): ' + missingDuty.length);
+  console.log('\nUNFILLED CC DUTY POSITIONS: ' + missingDuty.length);
+  console.log('   (a senior renewal at a unit with no recruiting officer gets NO unit CC at all)');
   missingDuty.forEach(function (m) { console.log('   ' + m); });
 
   console.log('\nDERIVED ADDRESSES — NOT verified to exist, these are the bounce risk: ' + derived.length);
@@ -1109,7 +1125,7 @@ function sendExpiringEmails(members, failedList) {
 function sendTurning18Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
-    const cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE);
+    const cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE, true);
     const htmlBody = retentionRenderTemplate_('Turning18Email', member);
 
     executeWithRetry(() =>
@@ -1162,7 +1178,7 @@ function sendTurning18Email(member) {
 function sendTurning21Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
-    const cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE);
+    const cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE, true);
     const htmlBody = retentionRenderTemplate_('Turning21Email', member);
 
     executeWithRetry(() =>
@@ -1226,16 +1242,18 @@ function sendExpiringEmail(member) {
       name: SENDER_NAME
     };
 
-    // Command-channel CC for cadets only: commander plus the unit's recruiting
-    // officer, who owns retention at the unit. Seniors get no unit CC at all,
-    // which is the pre-existing rule and is why the recruiting officer rides on
-    // the commander condition rather than being added independently.
-    if (member.type === 'CADET') {
+    // The unit's recruiting officer is CC'd on EVERY renewal — retention is that
+    // officer's job whether the member renewing is a cadet or a senior. The
+    // COMMANDER is cadets-only, which is the pre-existing rule and the only part
+    // that varies by member type. So a senior renewal reaches the recruiting
+    // officer and nobody else at the unit.
+    const isCadet = member.type === 'CADET';
+    if (isCadet) {
       commander = getCommanderInfo(member.orgid);
-      cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL);
-      if (cc) {
-        options.cc = cc;
-      }
+    }
+    cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL, isCadet);
+    if (cc) {
+      options.cc = cc;
     }
 
     executeWithRetry(() =>

@@ -846,14 +846,15 @@ const RETENTION_CONFIG = {
    * ICL to CAPR 30-1 renamed are matched by the current title, and the trailing
    * whitespace the feed ships on duty values does not matter.
    *
-   * Each is CC'd only where the commander is already being CC'd, so a member
-   * whose mail carries no commander gains no other unit staff either.
+   * These are CC'd independently of the commander, who is CADET-ONLY. A unit
+   * with no reachable commander still reaches its duty holders, and a SENIOR
+   * renewal reaches the recruiting officer and nobody else at the unit.
    *   AGE_MILESTONE  — turning 18 / 21. The DCC owns the cadet program at the
    *                    unit and is the person who actually walks a cadet through
-   *                    the decision the mail describes.
-   *   RENEWAL        — expiring. Retention is the recruiting officer's job, and
-   *                    the commander CC on renewals is cadets-only, so this
-   *                    follows the same condition.
+   *                    the decision the mail describes. Cadets by definition.
+   *   RENEWAL        — expiring, SENIOR AND CADET ALIKE. Retention is the
+   *                    recruiting officer's job regardless of who is renewing;
+   *                    only the commander copy varies by member type.
    */
   CC_DUTY_TITLES: {
     AGE_MILESTONE: ['Deputy Commander for Cadets'],

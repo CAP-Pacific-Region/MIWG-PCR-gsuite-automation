@@ -374,11 +374,11 @@ section('13. Age-milestone CC adds the DCC; renewal CC adds the recruiting offic
   });
 
   check('turning 18/21 goes to commander + DCC',
-    m.retentionCcList_('070', CC_DUTY_TITLES.AGE_MILESTONE),
+    m.retentionCcList_('070', CC_DUTY_TITLES.AGE_MILESTONE, true),
     'rosa.alvarez@cawgcap.org,dana.bright@cawgcap.org');
 
   check('renewal goes to commander + recruiting officer',
-    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
 }
 
@@ -393,19 +393,18 @@ section('14. "if one is assigned" — an unfilled duty just leaves the commander
     accounts: []
   });
 
-  check('no recruiting officer at this unit', m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+  check('no recruiting officer at this unit', m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org');
   check('a duty held at ANOTHER unit does not leak in',
-    m.retentionCcList_('071', CC_DUTY_TITLES.AGE_MILESTONE), '');
+    m.retentionCcList_('071', CC_DUTY_TITLES.AGE_MILESTONE, true), '');
 }
 
 // ---------------------------------------------------------------------------
-section('15. The extra CC rides on the commander CC, never replaces it');
+section('15. Commander and duty holders are independent');
 {
-  // No commander resolvable for this org, but a DCC exists. The requirement is
-  // that these staff join the commander — so with no commander there is no CC,
-  // rather than the mail quietly going to a different person.
-  const m = load({
+  // Duty holders are not gated on the commander: a unit with no reachable
+  // commander still reaches its DCC / recruiting officer.
+  const noCc = load({
     config: SENIORS,
     commanders: [],
     members: [memberRow('600005', 'Bright', 'Dana')],
@@ -413,8 +412,46 @@ section('15. The extra CC rides on the commander CC, never replaces it');
     accounts: []
   });
 
-  check('no commander means no CC at all',
-    m.retentionCcList_('070', CC_DUTY_TITLES.AGE_MILESTONE), '');
+  check('DCC still CC\'d with no commander',
+    noCc.retentionCcList_('070', CC_DUTY_TITLES.AGE_MILESTONE, true),
+    'dana.bright@cawgcap.org');
+
+  // Nobody at all resolvable is the only case that yields an empty CC.
+  const empty = load({ config: SENIORS, commanders: [], accounts: [] });
+  check('nothing resolvable yields no CC',
+    empty.retentionCcList_('070', CC_DUTY_TITLES.AGE_MILESTONE, true), '');
+}
+
+// ---------------------------------------------------------------------------
+section('15a. Senior renewals reach the recruiting officer, not the commander');
+{
+  const m = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    members: [memberRow('600006', 'Cole', 'Sam')],
+    duties: [dutyRow('600006', 'Recruiting Officer', '070')],
+    accounts: []
+  });
+
+  check('senior renewal: recruiting officer alone',
+    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, false),
+    'sam.cole@cawgcap.org');
+  check('cadet renewal: commander joins them',
+    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
+    'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
+
+  // A unit with no recruiting officer gives a senior renewal no unit CC at all,
+  // since the commander is never on senior mail.
+  const noRo = load({
+    config: SENIORS,
+    commanders: [commanderRow('070', '600001', 'Alvarez', 'Rosa')],
+    accounts: []
+  });
+  check('no recruiting officer: senior renewal has no unit CC',
+    noRo.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, false), '');
+  check('...while the cadet renewal still reaches the commander',
+    noRo.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
+    'rosa.alvarez@cawgcap.org');
 }
 
 // ---------------------------------------------------------------------------
@@ -431,7 +468,7 @@ section('16. Primary beats assistant, whatever order the rows arrive in');
     accounts: []
   });
   check('primary wins when listed second',
-    assistantFirst.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    assistantFirst.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
 
   const primaryFirst = load({
@@ -445,7 +482,7 @@ section('16. Primary beats assistant, whatever order the rows arrive in');
     accounts: []
   });
   check('primary still wins when listed first',
-    primaryFirst.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    primaryFirst.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
 
   const assistantOnly = load({
@@ -456,7 +493,7 @@ section('16. Primary beats assistant, whatever order the rows arrive in');
     accounts: []
   });
   check('an assistant is used when nobody holds it primary',
-    assistantOnly.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    assistantOnly.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org,andy.asst@cawgcap.org');
 }
 
@@ -472,7 +509,7 @@ section('17. One person wearing two hats appears once');
     accounts: []
   });
 
-  check('deduplicated', m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+  check('deduplicated', m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org');
 }
 
@@ -489,7 +526,7 @@ section('18. The legacy CAPR 30-1 duty title still matches');
   });
 
   check('normalized to Recruiting Officer and matched',
-    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org,sam.cole@cawgcap.org');
 }
 
@@ -507,7 +544,7 @@ section('19. Duty holders resolve through the same address chain as commanders')
   });
 
   check('directory account preferred for a duty holder too',
-    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL),
+    m.retentionCcList_('070', CC_DUTY_TITLES.RENEWAL, true),
     'rosa.alvarez@cawgcap.org,s.cole2@cawgcap.org');
 }
 
@@ -521,10 +558,10 @@ section('20. DutyPosition.txt is only read when some email type wants staff');
     accounts: []
   });
 
-  m.retentionCcList_('070', []);
+  m.retentionCcList_('070', [], true);
   check('no duty file read', m.counts.parseFile.DutyPosition, undefined);
   check('no Member.txt name pass either', m.counts.parseFile.Member, undefined);
-  check('commander still resolved', m.retentionCcList_('070', []), 'rosa.alvarez@cawgcap.org');
+  check('commander still resolved', m.retentionCcList_('070', [], true), 'rosa.alvarez@cawgcap.org');
 }
 
 // ---------------------------------------------------------------------------
@@ -579,8 +616,10 @@ section('22. Preview reports no-commander units, unfilled duties, derived addres
     out.missingDuty.some(x => /^070 has no Deputy Commander for Cadets/.test(x)), true);
   check('070 is NOT reported as missing a recruiting officer',
     out.missingDuty.some(x => /^070 has no Recruiting Officer/.test(x)), false);
-  check('a senior-only unit is not asked for duty holders',
-    out.missingDuty.some(x => /^073/.test(x)), false);
+  check('a senior-only unit IS asked for a recruiting officer',
+    out.missingDuty.some(x => /^073 has no Recruiting Officer/.test(x)), true);
+  check('...but not for a DCC, having no age-milestone members',
+    out.missingDuty.some(x => /^073 has no Deputy Commander for Cadets/.test(x)), false);
   check('derived addresses collected', out.derived.length, 2);
   check('and named', out.derived.every(d => /rosa\.alvarez@cawgcap\.org|sam\.cole@cawgcap\.org/.test(d)), true);
 }

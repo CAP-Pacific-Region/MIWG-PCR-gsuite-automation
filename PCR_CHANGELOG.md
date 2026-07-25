@@ -10,6 +10,36 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-25] — Senior renewals reach the unit Recruiting Officer
+
+### Changed (`SendRetentionEmail.gs` 1.7.0, `config.gs`)
+
+**A senior renewal now CCs the unit's Recruiting Officer.** Previously it carried no unit CC at
+all. Retention is that officer's job regardless of who is renewing, so the recruiting CC is no
+longer conditional on member type — only the **commander** copy is, which stays cadets-only and is
+unchanged. A senior renewal therefore reaches the Recruiting Officer and nobody else at the unit.
+
+| Recipient | On which mail |
+|---|---|
+| Squadron Commander | Cadet mail only — turning 18/21, and cadet renewals |
+| Deputy Commander for Cadets | Turning 18/21 |
+| Recruiting Officer | Every renewal, senior and cadet alike |
+
+**This required undoing the ride-along coupling introduced in 1.5.0.** That version had duty
+holders included only where the commander was already being CC'd, so a unit with no reachable
+commander reached no unit staff at all. That rule cannot survive a senior renewal, which never has
+a commander to ride on. `retentionCcList_()` now takes an explicit `includeCommander` flag and adds
+each recipient independently, so the only empty CC is one where nobody resolved.
+
+**Side effect worth knowing:** an age-milestone mail at a unit with no reachable commander now
+still reaches the Deputy Commander for Cadets, where under 1.5.0 it reached nobody. That follows
+from the same decoupling and is the more useful behavior, but it is a change 1.5.0's notes
+explicitly argued against — recorded here so the reversal is not mistaken for drift.
+
+`previewRetentionCcLists()` now prints cadet and senior renewal CCs as separate lines, and reports
+a unit with expiring seniors but no Recruiting Officer — that combination is the one that yields
+no unit CC at all.
+
 ## [2026-07-25] — Retention CC preview, and a trigger installer
 
 ### Added — `previewRetentionCcLists()` (`SendRetentionEmail.gs` 1.6.0)

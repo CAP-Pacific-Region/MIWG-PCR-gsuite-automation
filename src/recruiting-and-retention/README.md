@@ -39,19 +39,29 @@ Emails are personalized with member rank/name and include squadron commanders on
 ### Expiring Membership Email
 **Template:** `ExpiringEmail.html`  
 **Recipients:** Active cadets and seniors expiring this month  
-**CC:** Squadron Commander + **Recruiting Officer** (cadets only)  
+**CC:** **Recruiting Officer** (cadets *and* seniors) + Squadron Commander (cadets only)  
 **Purpose:** Remind member to renew membership before expiration, and invite feedback by reply
 
 ### How the unit CC is built
+
+| Recipient | On which mail |
+|---|---|
+| Squadron Commander | **Cadet** mail only — turning 18/21, and cadet renewals |
+| Deputy Commander for Cadets | Turning 18/21 |
+| Recruiting Officer | **Every** renewal, senior and cadet alike |
+
+A senior renewal therefore reaches the Recruiting Officer and nobody else at the unit — retention
+is that officer's job regardless of who is renewing, and the commander CC has always been
+cadets-only.
 
 Duty titles come from `RETENTION_CONFIG.CC_DUTY_TITLES` and are matched through
 `formatDutyTitle_()`, so legacy `Recruiting & Retention Officer` rows match the current title and
 the trailing whitespace the CAPWATCH feed ships on duty values is irrelevant.
 
-- **A duty nobody holds is simply absent** — the commander is CC'd alone.
-- **The extra staff ride on the commander CC.** With no resolvable commander there is no CC at
-  all, rather than the mail redirecting to someone else. This is also why renewals stay
-  cadets-only: seniors get no commander CC, so they get no unit CC.
+- **Each recipient is independent.** A unit with no reachable commander still reaches its duty
+  holders. The only empty CC is one where nobody resolved — which for a senior renewal means the
+  unit has no Recruiting Officer.
+- **A duty nobody holds is simply absent** from the CC.
 - **Primary beats assistant**, so "the unit's recruiting officer" resolves to one person rather
   than a unit's entire staff.
 - Addresses resolve through the same chain as the commander's, and the list is **deduplicated** —
@@ -498,6 +508,12 @@ When reporting issues, include:
 5. Relevant log entries
 
 ## Version History
+
+### SendRetentionEmail.gs 1.7.0 (July 2026)
+- ✅ **Senior renewals now CC the unit's Recruiting Officer.** The recruiting CC is no longer
+  conditional on member type; only the commander copy is (cadets only, unchanged)
+- ✅ Duty holders decoupled from the commander — a unit with no reachable commander still reaches
+  its DCC / Recruiting Officer
 
 ### SendRetentionEmail.gs 1.6.0 (July 2026)
 - ✅ `previewRetentionCcLists()` — resolved unit CC per unit, plus units with no reachable
