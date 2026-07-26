@@ -556,7 +556,8 @@ inserting and updates the existing account in place instead (see `UpdateMembers.
   finish inside the execution limit (a rule change that moves thousands of memberships). Parks
   its position in Drive; run it again until it says complete. `checkEmailGroupsBatchStatus()`
   reports progress, `resetEmailGroupsBatchProgress()` discards a parked run. Default budget is
-  5 minutes; pass `25` on a Workspace tier that allows 30-minute executions.
+  25 minutes, sized for these tenants’ 30-minute execution limit; pass a smaller number
+  for a shorter slice.
 - `updateAdditionalGroupMembers()` — apply manual `User Additions`.
 - `previewEmailGroupRows(filter, showMembers)` — **read-only**: what each `Groups` row resolves
   to, member counts included, flagging any group that would be empty. Creates nothing.

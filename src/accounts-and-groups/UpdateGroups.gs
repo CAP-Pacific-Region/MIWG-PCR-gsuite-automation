@@ -435,7 +435,16 @@ function updateEmailGroups(options) {
 }
 
 const EMAIL_GROUPS_BATCH_STATE_FILE_ = 'EmailGroupsBatchState.json';
-const EMAIL_GROUPS_BATCH_DEFAULT_BUDGET_MIN_ = 5;
+
+/**
+ * Wall-clock budget for one slice, in minutes.
+ *
+ * These tenants allow a 30-minute execution, so 25 leaves five minutes of headroom
+ * for the final state save — which writes the whole delta set to Drive and is the
+ * one step that must not be interrupted. A tenant on the 6-minute tier should pass
+ * 5 explicitly.
+ */
+const EMAIL_GROUPS_BATCH_DEFAULT_BUDGET_MIN_ = 25;
 const EMAIL_GROUPS_BATCH_STALE_HOURS_ = 12;
 
 /**
@@ -453,12 +462,12 @@ const EMAIL_GROUPS_BATCH_STALE_HOURS_ = 12;
  * it reports complete. Re-applying a slice is harmless anyway: an add that already
  * happened comes back 409 and a removal 404, both of which are caught.
  *
- *   updateEmailGroupsBatch()        // 5-minute budget, safe on any Apps Script tier
- *   updateEmailGroupsBatch(25)      // Workspace tiers allow a 30-minute execution
+ *   updateEmailGroupsBatch()        // 25 minutes, sized for this tenant's 30-minute limit
+ *   updateEmailGroupsBatch(5)       // a shorter slice, e.g. on the 6-minute tier
  *   checkEmailGroupsBatchStatus()   // how far along, without touching anything
  *   resetEmailGroupsBatchProgress() // discard the parked run and start fresh
  *
- * @param {number} [budgetMinutes=5] - Wall-clock budget for THIS execution
+ * @param {number} [budgetMinutes=25] - Wall-clock budget for THIS execution
  * @returns {{complete: boolean, groupIndex: number, totalGroups: number}}
  */
 function updateEmailGroupsBatch(budgetMinutes) {

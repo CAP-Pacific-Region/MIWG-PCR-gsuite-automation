@@ -21,8 +21,8 @@ the run was killed partway with no record of where it got to, and the next run s
 ### Added — `updateEmailGroupsBatch(budgetMinutes)` (`UpdateGroups.gs` 1.8.0)
 
 ```
-updateEmailGroupsBatch()        // 5-minute budget, safe on any Apps Script tier
-updateEmailGroupsBatch(25)      // Workspace tiers allow a 30-minute execution
+updateEmailGroupsBatch()        // 25 minutes, sized for the 30-minute execution limit
+updateEmailGroupsBatch(5)       // a shorter slice, e.g. on the 6-minute tier
 checkEmailGroupsBatchStatus()   // how far along, changes nothing
 resetEmailGroupsBatchProgress() // discard the parked run, recompute next time
 ```
