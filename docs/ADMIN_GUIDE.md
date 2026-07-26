@@ -449,6 +449,7 @@ the data runs after the download. Apps Script schedules within a 1-hour window, 
 | 12 | `manageLicenseLifecycle()` | Monthly | Reactivate renewed, delete long-ineligible accounts to free seats. |
 | 13 | `notifyLSCodeChanges()` | Weekly (Mon) | Mail unit CCs when a member's FBI background check is granted or lapses. **Seniors only.** The cadence *is* the reported detection window. |
 | 14 | `notifyRecoveryEmailCompliance()` | Monthly (1st) | Mail unit CCs + personnel officers + deputies about members whose email record blocks a password reset, whose account lacks 2-Step Verification, or whose account was never signed into (60+ days). **Seniors + cadets.** |
+| 15 | `notifyUnwelcomedAccounts()` | Monthly (1st) | Mail **IT only** about accounts created since the ledger baseline with no welcome email recorded — i.e. created in the Admin console or by GAM, which never sends one. Silent when there is nothing to report. Requires `seedWelcomeLedger(false)` to have been run once first, or it no-ops. |
 
 > ⚠️ **Both notification triggers must be created while signed in as the automation
 > account.** A time-driven trigger runs as whoever created it, and the digests send as
@@ -521,6 +522,42 @@ detects this.
   A member with **no account at all** is not a resend case. Run `updateAllMembers()`; if they
   are a senior, check they have completed Level I (`REQUIRE_LEVEL_I_FOR_SENIORS` gates new
   senior accounts, and an account that appears *before* Level I was made by hand).
+
+### Finding unwelcomed accounts (`WelcomeEmailAudit.gs`)
+Nothing on a Workspace account records whether a welcome email was ever sent to it, so
+`sendWelcomeEmail()` writes each send to a ledger in the CAPWATCH data folder
+(`WelcomeEmailLedger.txt`). Accounts with no entry are then reportable.
+- `seedWelcomeLedger()` — **one-time, dry run by default.** Establishes the baseline. Records
+  every member whose account **has login history** as welcomed (they demonstrably received
+  working credentials at some point); leaves never-signed-in accounts **unjudged**. Run
+  `seedWelcomeLedger(false)` to write it.
+  > **Do this once, before anything else here.** Until it runs, every member reports UNKNOWN
+  > and the audit reports nothing — deliberately, so a missing ledger can never produce a
+  > wing-wide list of false accusations.
+
+  > **Re-seeding is refused** once a baseline exists. Moving it forward turns every confirmed
+  > MISSED account back into an UNKNOWN one and discards real findings.
+  > `seedWelcomeLedger(false, {force: true})` overrides, for a deliberately rebuilt ledger.
+- `scanUnwelcomedAccounts()` — **read-only.** The full picture, to the Execution log.
+- `notifyUnwelcomedAccounts()` — mails IT the **MISSED** list only. Silent when there is
+  nothing to report, so it is safe on a trigger.
+- `installWelcomeAuditMonthlyTrigger()` — 1st of each month, ~08:00. **Run it as the
+  automation account** (triggers are owned by, and visible only to, their creator).
+
+**The three verdicts are not equally strong:**
+
+| Verdict | Meaning | Action |
+|---|---|---|
+| **MISSED** | created after the baseline, no send recorded | near-certain — `resendWelcomeEmail(capid)` |
+| **UNKNOWN** | predates the baseline, never signed into | a genuine maybe; review, do not bulk-act |
+| **WELCOMED** | a recorded send, or seeded from login history | none |
+
+> **Do not treat UNKNOWN as a to-do list.** A member who was welcomed and simply never logged
+> in looks identical to one who was never welcomed. That population is already reported to unit
+> command staff by the monthly recovery-compliance digest — this module does not mail units.
+
+A MISSED row marked *has since signed in* obtained credentials some other way. The resend will
+refuse it, which is correct: resetting a working account locks the member out.
 
 ### Duplicate accounts (`DuplicateAccountScan.gs`, `DuplicateAccountGuard.gs`)
 Provisioning used to create a **second** account for a member when their real account
@@ -753,6 +790,11 @@ src/
 │   ├── UpdateCalendars.gs         # Share unit calendars with members; writer groups.
 │   ├── ManageLicenses.gs          # Lifecycle: reactivate/suspend/delete to manage seats.
 │   ├── groupAdministration.gs     # Ad-hoc group reporting & cleanup utilities.
+│   ├── WelcomeEmailResend.gs      # Password reset + welcome email for an account created
+│   │                              # out-of-band (Admin console/GAM), which never passes
+│   │                              # through the one call site in UpdateMembers.gs.
+│   ├── WelcomeEmailAudit.gs       # Ledger of every welcome email sent, so accounts that
+│   │                              # never got one are detectable. Seed once, then monthly.
 │   └── CadetTransition*.gs         # Cadet→senior cross-tenant transition (cadets tenant only):
 │                                  #   CadetTransition.gs (detect/state/triggers),
 │                                  #   ...Migrate.gs (Gmail), ...Drive.gs, ...Contacts.gs,

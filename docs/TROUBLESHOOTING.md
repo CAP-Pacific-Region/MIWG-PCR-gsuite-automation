@@ -203,6 +203,16 @@ credentials are the only thing that can be delivered. See
 [Admin Guide §9](ADMIN_GUIDE.md#9-entry-point-function-reference) for the guards; the refusals
 that cannot be forced are described there.
 
+**Stop it recurring:** `sendWelcomeEmail()` records every send in `WelcomeEmailLedger.txt`, so
+accounts with no entry are reportable. Run `seedWelcomeLedger(false)` **once** to establish the
+baseline, then `scanUnwelcomedAccounts()` (read-only) or arm
+`installWelcomeAuditMonthlyTrigger()` to have IT mailed about it monthly. Until the seed runs,
+the audit reports nothing — by design, so a missing ledger cannot accuse the whole wing.
+
+> A member who *was* welcomed and simply never logged in is indistinguishable from one who was
+> never welcomed. The audit reports those as **UNKNOWN** rather than pretending otherwise —
+> review that list, don't bulk-resend against it.
+
 ### Members Not Being Updated
 
 **Symptom:** Changes in CAPWATCH not reflected in Google Workspace
