@@ -17,13 +17,14 @@ This module handles the core automation for synchronizing CAPWATCH member data w
 
 ## Overview
 
-This module consists of five main components:
+This module consists of six main components:
 
 1. **UpdateMembers.gs** - User account lifecycle management
 2. **UpdateGroups.gs** - Email group membership synchronization
 3. **ManageLicenses.gs** - License optimization and account archival
 4. **CadetTransition*.gs** - Cadet → senior cross-tenant account transition (PCR only; cadets tenant)
 5. **WelcomeEmailResend.gs** - Welcome email for an account created outside provisioning
+6. **WelcomeEmailAudit.gs** - Detecting accounts that never received one
 
 Together, these scripts ensure that your Google Workspace environment stays synchronized with CAPWATCH membership data automatically.
 
@@ -326,8 +327,55 @@ The un-forceable recipient rule is the one that matters in practice: it is the f
 **Account resolution goes through the duplicate guard** (`findExistingAccountsByCapid_` +
 `chooseAuthoritativeAccount_`), never a derived `first.last` address — an out-of-band
 account is frequently not at the derived address, which is how it got missed to begin with.
-`UpdateMembers.gs` is untouched; `sendWelcomeEmail()` and `generateTempPassword_()` are
-reused as-is.
+`sendWelcomeEmail()` and `generateTempPassword_()` are reused as-is.
+
+### 6. WelcomeEmailAudit.gs - Finding Unwelcomed Accounts
+
+**Purpose**: Detection for the gap component 5 repairs. Component 5 fixes a member you
+already know about; this is how you find out.
+
+**Why a ledger**: nothing on a Workspace account records whether a welcome email was ever
+sent to it, so the question is unanswerable from the directory. `sendWelcomeEmail()` now
+writes each send to `WelcomeEmailLedger.txt` in the CAPWATCH data folder — one line, at the
+send site, so provisioning, the resend, and any future sender are all covered by it. A ledger
+write that fails is caught and logged, never rethrown: the email has already gone out.
+
+**Key Functions**:
+- `seedWelcomeLedger(dryRun, opts)` — **one-time baseline, dry run by default.**
+- `scanUnwelcomedAccounts()` — **read-only** full report.
+- `notifyUnwelcomedAccounts()` — mails IT the MISSED list; silent when empty.
+- `installWelcomeAuditMonthlyTrigger()` — 1st of each month, ~08:00, **as the automation
+  account**.
+
+**The seeding problem is the whole design.** On day one nobody has a ledger entry, so the
+entire wing looks unwelcomed. The seed sets the baseline on the one honest piece of hindsight
+evidence there is: an account that **has been signed into** plainly received working
+credentials at some point, whatever the route. Those are recorded as welcomed. Accounts that
+have **never** been signed into cannot be judged either way, so the seed deliberately does not
+vouch for them — marking them welcomed on no evidence would permanently bury the exact
+members this exists to find.
+
+| Verdict | Meaning | Mailed to IT |
+|---|---|---|
+| **MISSED** | created after the baseline, no send recorded | yes |
+| **UNKNOWN** | predates the baseline, never signed into | no |
+| **PENDING** | account younger than `NEW_ACCOUNT_GRACE_DAYS` (2) | no |
+| **WELCOMED** | a recorded send, or seeded from login history | — |
+
+Only MISSED is mailed. UNKNOWN is a review list, not a to-do list: a member who was welcomed
+and never logged in is indistinguishable from one who was never welcomed at all. That
+population is already reported to unit command staff by `notifications/RecoveryEmailNotify.gs`
+(its LOGIN condition) — this module is not a second copy of it and does not mail units.
+
+**Guards** (both in `classifyWelcomeAudit_`, tested in `test/WelcomeEmailAudit.test.js`):
+- An **unseeded or lost ledger yields UNKNOWN, never MISSED.** A wing-wide list of false
+  accusations on first run would discredit the report permanently.
+- **Re-seeding is refused** once a baseline exists (`{force: true}` overrides). Moving the
+  baseline forward reclassifies every confirmed MISSED account as merely UNKNOWN.
+
+**Side effect worth knowing**: a welcome email that *fails to send* during normal provisioning
+now surfaces here too. That failure is caught and logged at the call site and nothing revisits
+it, so it used to be exactly as invisible as an out-of-band account.
 
 ## How It Works
 

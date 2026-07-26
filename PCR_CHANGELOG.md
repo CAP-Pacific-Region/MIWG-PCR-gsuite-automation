@@ -10,6 +10,69 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-26] — a missing welcome email is now detected, not stumbled over
+
+The resend below repairs a member you already know about. This is how you find out.
+
+**"Was this member ever welcomed?" is not answerable from the directory** — nothing on an
+account records whether mail was sent to it. So it gets written down.
+
+### Added — `WelcomeEmailAudit.gs` 1.0.0
+
+```
+seedWelcomeLedger()                    // DRY RUN by default — one-time baseline
+seedWelcomeLedger(false)               // write it
+scanUnwelcomedAccounts()               // read-only report
+notifyUnwelcomedAccounts()             // mails IT the MISSED list; silent when empty
+installWelcomeAuditMonthlyTrigger()    // 1st of each month, ~08:00
+```
+
+`sendWelcomeEmail()` now records each send in a Drive ledger
+(`WelcomeEmailLedger.txt`, alongside the other state files). One line, at the send site, so
+provisioning **and** the resend **and** any future sender are covered by it. A ledger write
+that fails is caught and logged, never rethrown — the email is already gone, and bookkeeping
+must not turn a successful send into a reported failure (`UpdateMembers.gs` 1.20.0; nothing
+about who is mailed or when is changed).
+
+**The seeding problem is the whole design.** On day one nobody has an entry, so the entire
+wing looks unwelcomed. `seedWelcomeLedger()` sets the baseline on the one honest piece of
+hindsight evidence available: an account that **has been signed into** plainly received
+working credentials at some point, whatever the route. Those are recorded as welcomed.
+Accounts that have **never** been signed into cannot be judged either way — so the seed
+deliberately does *not* vouch for them. Marking them welcomed on no evidence would
+permanently bury the very members this exists to find, including the one that started this.
+
+Three verdicts, and they are worth different amounts:
+
+| | Meaning | Mailed to IT |
+|---|---|---|
+| **MISSED** | created after the baseline, no send ever recorded | yes |
+| **UNKNOWN** | predates the baseline, never signed into — a genuine maybe | no |
+| **WELCOMED** | a recorded send, or seeded from login history | — |
+
+Only MISSED is mailed. UNKNOWN cannot be acted on without judgement — a member who was
+welcomed and never logged in is indistinguishable from one who was never welcomed — and a
+monthly message that is mostly noise stops being read. That population is *already* surfaced
+to unit command staff by `RecoveryEmailNotify.gs`'s LOGIN condition; this is not a second copy
+of it, and it does not mail units.
+
+**Guards, both tested:**
+
+- An **unseeded or lost ledger produces UNKNOWN, never MISSED.** The failure mode that would
+  discredit the report on its first run is a wing-wide list of false accusations, so the
+  no-baseline case cannot accuse anyone.
+- **Re-seeding is refused** once a baseline exists (`{force: true}` overrides). Moving the
+  baseline forward silently reclassifies every confirmed MISSED account as merely UNKNOWN.
+- Accounts younger than `NEW_ACCOUNT_GRACE_DAYS` (2) report PENDING, not MISSED — provisioning
+  creates the account and sends the mail as separate steps, and a resend may be in flight.
+
+**A useful side effect:** a welcome email that *fails* to send during normal provisioning now
+shows up too. That failure is caught and logged at the call site and nothing revisits it, so
+it was previously as invisible as an out-of-band account.
+
+**Still manual by design.** The audit reports; it never resets a password on its own.
+`resendWelcomeEmail()` stays the fix, with its own guards.
+
 ## [2026-07-26] — a welcome email can be sent to an account created out-of-band
 
 A new senior never received a welcome email. They joined in June, cleared Level I in July, and

@@ -1,10 +1,18 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.19.1
+ * Version: 1.20.0
  * Date: 2026-07-26
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.19.1)
- * Changes: 1.19.1 — COMMENT ONLY, no behavior change. sendWelcomeEmail() now
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.20.0)
+ * Changes: 1.20.0 — sendWelcomeEmail() now records each send in the audit
+ *   ledger (WelcomeEmailAudit.gs, welcomeLedgerRecordSent_), which is what makes
+ *   an account that never received a welcome email detectable instead of
+ *   invisible. Recorded here, after the send, so provisioning and the resend are
+ *   both covered by one call. A ledger failure is caught and logged, never
+ *   rethrown: the email has already gone out, and bookkeeping must not turn a
+ *   successful send into a reported failure. No other behavior change — nothing
+ *   about who is mailed, or when, is affected.
+ *   1.19.1 — COMMENT ONLY, no behavior change. sendWelcomeEmail() now
  *   records that its single call site is the insert branch below, so an account
  *   created out-of-band silently never gets one, and points at the new
  *   WelcomeEmailResend.gs that repairs that case.
@@ -3149,6 +3157,25 @@ function sendWelcomeEmail(member, email, tempPassword) {
     user: email,
     support: ITSUPPORT_EMAIL
   });
+
+  // Record the send so an account that never got one can be DETECTED rather
+  // than stumbled over (WelcomeEmailAudit.gs). Recorded here rather than at the
+  // call sites so provisioning, the resend, and any future sender are all
+  // covered by this one line.
+  //
+  // Swallowed on failure BY DESIGN: the email is already gone. Throwing here
+  // would turn a successful send into a failed one at the call site and, in the
+  // insert path, log "failed to send welcome email" about a message the member
+  // has in hand. A lost entry costs one false MISSED row in the next audit.
+  try {
+    welcomeLedgerRecordSent_(member.capsn);
+  } catch (e) {
+    Logger.warn('Welcome email SENT, but the audit ledger could not be updated', {
+      capsn: member.capsn,
+      email: email,
+      errorMessage: e.message
+    });
+  }
 }
 
 function queueForDelayedGmailSetup(email, displayName, member) {
