@@ -1,10 +1,14 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.19.0
- * Date: 2026-07-23
+ * Version: 1.19.1
+ * Date: 2026-07-26
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.19.0)
- * Changes: 1.19.0 — getActiveUsers() now also returns isEnrolledIn2Sv,
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.19.1)
+ * Changes: 1.19.1 — COMMENT ONLY, no behavior change. sendWelcomeEmail() now
+ *   records that its single call site is the insert branch below, so an account
+ *   created out-of-band silently never gets one, and points at the new
+ *   WelcomeEmailResend.gs that repairs that case.
+ *   1.19.0 — getActiveUsers() now also returns isEnrolledIn2Sv,
  *   lastLoginTime and creationTime on each account (consumed by
  *   notifications/RecoveryEmailNotify.gs for the 2SV and never-logged-in
  *   checks). Purely additive: the active-only contract and every existing field
@@ -3110,6 +3114,13 @@ function generateTempPassword_() {
 // -----------------------------------------
 // NEW — Welcome Email Sender
 // -----------------------------------------
+/**
+ * ONLY CALLED FROM THE INSERT BRANCH of addOrUpdateUser(). An account created
+ * out-of-band (Admin console / GAM) never passes through that branch, so its
+ * member never receives credentials and no later sync notices — see
+ * WelcomeEmailResend.gs, which resets the password and sends this same template
+ * for exactly that case. `tempPassword` is unrecoverable once this returns.
+ */
 function sendWelcomeEmail(member, email, tempPassword) {
   const html = HtmlService
     .createTemplateFromFile('recruiting-and-retention/WelcomeEmail')
