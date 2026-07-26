@@ -1151,6 +1151,12 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
  * an undetermined unit gets. Creating all three deputy flavors "to be safe"
  * guarantees at least two of them are wrong.
  *
+ * Cadet units get Deputy Commander for Seniors as well as for Cadets: it is a
+ * valid billet at both cadet and composite units (confirmed by the wing DA,
+ * 2026-07-26). An earlier comment here read the absence of any DCS assignment in
+ * the CAPWATCH extract as proof the billet does not exist at cadet units; it is a
+ * vacancy, and the DL should exist for the day it is filled.
+ *
  * @type {Object<string, string[]>}
  */
 const COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_ = {

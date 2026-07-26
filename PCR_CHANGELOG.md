@@ -116,9 +116,10 @@ created: `.deputy-commander` at a cadet or composite unit, `.deputy-commander-ca
 a senior one. Flights are left alone. **Deleting a group takes its manual "User Additions"
 members with it** — read the preview.
 
-> Cadet units get `deputy-commander-seniors` under this rule. A prior code comment held that
-> CAPWATCH shows no DCS on cadet units; if that is a doctrine fact rather than a vacancy, drop
-> the suffix from the `CADET_OR_COMPOSITE` entry — it is one line.
+> Cadet units get `deputy-commander-seniors`, same as composite: **Deputy Commander for Seniors
+> is a valid billet at both** (confirmed by the wing DA, 2026-07-26). The prior code comment
+> claiming CAPWATCH shows no DCS on cadet units was reading a vacancy as a rule — an unfilled
+> billet is still a billet, and its DL should exist for the day it is filled.
 
 ### Added (`test/UpdateGroups.dutyGroups.test.js`, `test/UpdateGroups.achievements.test.js`, `test/SquadronGroups.commandStaff.test.js`)
 
