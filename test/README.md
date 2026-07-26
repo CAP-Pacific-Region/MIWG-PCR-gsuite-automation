@@ -36,6 +36,7 @@ dry run the *second* check rather than the first.
 | `LSCodeNotify.diff.test.js` | The diff, state rollback, and window rendering in isolation |
 | `UpdateGroups.dutyGroups.test.js` | Which duty holder lands in a duty DL (home unit vs the duty's own org) |
 | `UpdateGroups.achievements.test.js` | Achievement DLs: names vs AchvIDs, status filtering, empty-group refusal |
+| `UpdateGroups.batch.test.js` | Pausing on a deadline and resuming: position, no double-apply, no half-written error sheet |
 | `UpdateGroups.professionalLevel.test.js` | PD level DLs off the `PL_*` tables: highest-rung-only, both Level 2 parts, in-progress, approval status |
 | `SquadronGroups.commandStaff.test.js` | Which command-staff DLs each unit type gets, and what cleanup will delete |
 

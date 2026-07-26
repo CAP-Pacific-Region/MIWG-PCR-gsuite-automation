@@ -438,7 +438,7 @@ the data runs after the download. Apps Script schedules within a 1-hour window, 
 | 1 | `getCapwatch()` | Daily, 4–5 AM | Download CAPWATCH ZIP → Drive; also calls `syncOrgPaths()`. |
 | 2 | `updateAllMembers()` | Daily, 5–6 AM | Create/update Workspace accounts from member data. |
 | 3 | `suspendExpiredMembers()` | Daily, 5–6 AM | Suspend members expired past the 7-day grace window. |
-| 4 | `updateEmailGroups()` | Daily, 5–6 AM | Sync wing/duty/specialty distribution groups. |
+| 4 | `updateEmailGroups()` | Daily, 5–6 AM | Sync wing/duty/specialty distribution groups. A day with unusually many membership changes can outrun the execution limit — see `updateEmailGroupsBatch()` below. |
 | 5 | `updateAllSquadronGroups()` | Daily, 6–7 AM | Squadron all-hands/cadets/seniors/parents + public-contact + access groups. Batches via `SQUADRON_BATCH_INDEX`. |
 | 6 | `updateAdditionalGroupMembers()` | Daily, 6–7 AM | Merge manual additions from the `User Additions` sheet. |
 | 7 | `addSecondaryDomainAliases()` | Daily, 7–8 AM | Give accounts on the `Secondary Aliases` tab a matching address on the tenant's secondary domain. **Seniors only** (`TENANT_SECONDARY_EMAIL_DOMAIN`). Must run *after* `updateAllMembers()` so a same-morning account already exists. |
@@ -552,7 +552,16 @@ inserting and updates the existing account in place instead (see `UpdateMembers.
 
 ### Email groups (`UpdateGroups.gs`)
 - `updateEmailGroups()` — sync configured groups from the `Groups` sheet.
+- `updateEmailGroupsBatch(budgetMinutes)` — the same sync **in slices**, for a run too big to
+  finish inside the execution limit (a rule change that moves thousands of memberships). Parks
+  its position in Drive; run it again until it says complete. `checkEmailGroupsBatchStatus()`
+  reports progress, `resetEmailGroupsBatchProgress()` discards a parked run. Default budget is
+  5 minutes; pass `25` on a Workspace tier that allows 30-minute executions.
 - `updateAdditionalGroupMembers()` — apply manual `User Additions`.
+- `previewEmailGroupRows(filter, showMembers)` — **read-only**: what each `Groups` row resolves
+  to, member counts included, flagging any group that would be empty. Creates nothing.
+- `listAchievementNames(filter)` / `listProfessionalLevelPaths(filter)` — the real CAPWATCH
+  strings to write in the `Values` column.
 - `getEmailGroupDeltas()` — **preview** adds/removes without applying (inspect before running).
 
 ### Squadron groups (`SquadronGroups.gs`)
