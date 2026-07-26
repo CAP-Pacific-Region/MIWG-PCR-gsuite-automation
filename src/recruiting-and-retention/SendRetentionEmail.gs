@@ -1,10 +1,113 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.0.1
- * Date: 2026-07-17
- * Changes: Retention-report footer uses the programmable CONFIG.ORG_LABEL instead
- *   of literal 'CAWG', so it reads correctly for any wing. See PCR_CHANGELOG.md.
+ * Version: 1.7.0
+ * Date: 2026-07-25
+ * Changes: A SENIOR's renewal notice now carries NO unit CC, and each unit
+ *   instead receives a per-unit DIGEST listing everyone under its command whose
+ *   membership expires this month. The distinction is the point: a senior's
+ *   renewal is between them and the wing, so their unit gets a worklist addressed
+ *   to it rather than a blind copy of somebody else's mail. CADET renewals are
+ *   unchanged and still CC the commander and recruiting officer — that is a cadet
+ *   protection matter, not a retention one — and cadets appear in the digest too,
+ *   so the unit sees one complete list.
+ *   sendRenewalDigests_() addresses the commander and copies the recruiting
+ *   officer, falling back to whichever exists; a unit with neither is reported
+ *   rather than silently skipped. Deduplicated per unit per month on the same Log
+ *   sheet, keyed RENEWAL_DIGEST|<orgid>, so a re-run does not re-mail a unit. It
+ *   lists EVERY expiring member, including those whose own notice was skipped as
+ *   already-sent — the unit wants the full picture, not a record of this run.
+ *   retentionCcList_() takes an explicit includeCommander flag and adds each
+ *   recipient independently (1.5.0 had duty holders ride on the commander CC), so
+ *   an age-milestone mail at a unit with no reachable commander now still reaches
+ *   the DCC. logEmailSent()'s sheet handling is extracted to
+ *   retentionLogAppend_() so the digest shares one Log sheet.
+ *   See PCR_CHANGELOG.md.
+ *   1.6.0: Added previewRetentionCcLists(), which prints the resolved unit CC for
+ *   every unit the next run would touch and then the three things worth fixing
+ *   first: units with no reachable commander (they send with no CC at all), CC'd
+ *   duty positions nobody holds, and every DERIVED address. That last list is the
+ *   point — a derived address reconstructs the DEFAULT account name, so it is
+ *   wrong for a rename, a manual creation or a `.2` duplicate, and Gmail accepts
+ *   it and bounces afterward per recipient. A cadet email now carries up to three
+ *   unit addresses, so that risk grew with 1.5.0. Each resolved address records
+ *   which of the three routes produced it. testRetentionEmail() calls the dump.
+ *   Added installRetentionMonthlyTrigger(): idempotent, 1st of the month at ~10:00,
+ *   and it REFUSES to install where PROFILE_.RUN_RETENTION_EMAILS is false rather
+ *   than creating a trigger that fires into a no-op and looks like the feature is
+ *   running. See PCR_CHANGELOG.md.
+ *   1.5.0: The unit CC now carries the staff who actually own the subject, not
+ *   just the commander. Turning 18/21 adds the unit's Deputy Commander for
+ *   Cadets; renewal adds the unit's Recruiting Officer. Both come from
+ *   RETENTION_CONFIG.CC_DUTY_TITLES and are matched through formatDutyTitle_(),
+ *   so the legacy 'Recruiting & Retention Officer' rows the ICL to CAPR 30-1
+ *   renamed still match, and the trailing whitespace the feed ships on duty
+ *   values does not matter. A duty nobody holds simply leaves the commander
+ *   alone on the CC.
+ *   Each rides on the commander CC rather than being added independently: with no
+ *   resolvable commander there is no CC at all, so the mail cannot quietly
+ *   redirect to a different person, and renewals stay cadets-only as before.
+ *   Primary holders beat assistants, so "the unit's recruiting officer" is one
+ *   person rather than a unit's whole staff. Addresses resolve through the same
+ *   chain as commanders and are deduplicated, since one person commonly wears
+ *   several of these hats in a small unit.
+ *   retentionCommanderIndex_() becomes retentionUnitStaffIndex_(), now also
+ *   walking DutyPosition.txt (and Member.txt for the names duty rows lack) —
+ *   skipped entirely when no email type asks for staff. getCommanderInfo() is
+ *   unchanged for callers.
+ *   1.4.0: Two guards that had to exist before this could be put on a trigger.
+ *   ALREADY-SENT: the Log sheet has always been written and never read, so
+ *   nothing knew what a previous run had done — an execution that died partway
+ *   through the expiring batch would restart from the top of the list on the next
+ *   firing, and a manual re-run after a fix re-mailed everyone it had already
+ *   reached. Sends are now filtered against (email type, CAPID) for the current
+ *   calendar month. It FAILS OPEN: an unreadable log leaves the run behaving as
+ *   it did before, but says so in the execution log and in a banner on the
+ *   summary email, so a low send count is never ambiguous.
+ *   TENANT: sendRetentionEmails() is now gated on PROFILE_.RUN_RETENTION_EMAILS
+ *   (config.gs 1.12.0) — true on seniors, false on cadets and region. This module
+ *   hardcodes 'CADET'/'SENIOR' instead of reading MEMBER_TYPES.ACTIVE, and both
+ *   wing tenants pull the same wing-wide extract, so it addresses the entire wing
+ *   from wherever it runs; arming both tenants mailed every member twice rather
+ *   than splitting the work.
+ *   The summary email and testRetentionEmail() both now report skipped counts.
+ *   See PCR_CHANGELOG.md.
+ *   1.3.0: Dropped `bcc: RETENTION_EMAIL` from all three member-facing sends. The
+ *   retention group now receives the run summary only, not a copy of every
+ *   message — at wing scale that BCC was a few hundred messages a month into one
+ *   mailbox, and it duplicated a record the Log sheet already keeps per send
+ *   (timestamp, type, CAPID, name, address, commander). RETENTION_EMAIL still
+ *   addresses the summary. Note the previous value, recruiting@cawgcap.org, did
+ *   not exist as a group, so the summary had nowhere to land and
+ *   sendRetentionSummaryEmail()'s catch would have swallowed the failure — see
+ *   config-tenants/ for the replacement role group. See PCR_CHANGELOG.md.
+ *   1.2.0: Commander CC now goes to the commander's CAP account rather than the
+ *   personal address on their CAPWATCH record — real Workspace account first,
+ *   then the derived first.last@<command domain>, with CAPWATCH primary kept only
+ *   as a last resort. This reuses rcResolveRecipientEmail_() from
+ *   notifications/RecoveryEmailNotify.gs so the two modules cannot disagree about
+ *   how a commander is reached. getCommanderInfo() is now backed by
+ *   retentionCommanderIndex_(), built once per execution: the previous version
+ *   re-walked Commanders.txt and rebuilt the entire CAPWATCH email map on every
+ *   call, i.e. once per cadet email sent. See PCR_CHANGELOG.md.
+ *   1.1.0: Genericized the three member-facing templates, which still carried a
+ *   hard-coded 'CALIFORNIA WING' masthead/footer and a hard-coded role holder in
+ *   the signature — the last thing blocking another wing from adopting this
+ *   module by Script Property alone. New placeholders {{wingName}}, {{orgLabel}}
+ *   and {{signature}} are filled by retentionRenderTemplate_(), which replaces
+ *   the substitution chains that were duplicated across all seven render sites.
+ *   The signature name comes from the new optional Script Property
+ *   TENANT_DIRECTOR_RECRUITING_NAME (blank signs with the office title alone).
+ *   Also removed the dead feedback-survey block from ExpiringEmail.html, which
+ *   shipped with an unfilled 'LINK TO FORM HERE' placeholder in the button href,
+ *   the fallback href and the visible link text — it would have mailed every
+ *   expiring member a broken link. The feedback ask now routes to replyTo, which
+ *   is already the Director of Recruiting. Dropped the commented-out MIWG
+ *   'Phoenix Senior Flight' block and the CSS orphaned by both removals, and
+ *   closed the unbalanced <p> tags in all three signature blocks.
+ *   See PCR_CHANGELOG.md.
+ *   1.0.1: Retention-report footer uses the programmable CONFIG.ORG_LABEL instead
+ *   of literal 'CAWG', so it reads correctly for any wing.
  *   1.0.0: Reconciled with live tenant code (INDEFINITE senior type; profile-driven
  *   config references).
  *
@@ -15,10 +118,14 @@
  * 
  * Email Features:
  * - Personalized with member rank and name
- * - CC to squadron commander for cadet emails
- * - BCC to retention team for tracking
- * - Reply-to set to Director of Recruiting & Retention
- * - Logged to retention tracking spreadsheet
+ * - Unit CC on CADET mail only: the squadron commander, plus the Deputy Commander
+ *   for Cadets (turning 18/21) or the Recruiting Officer (renewals)
+ * - Per-unit renewal DIGEST to the commander and recruiting officer, listing every
+ *   member under their command expiring this month, cadet and senior alike. This
+ *   is how a unit hears about its SENIORS, whose own notices carry no CC
+ * - Reply-to set to the Director of Recruiting role group
+ * - Logged to retention tracking spreadsheet (the per-send record; the retention
+ *   group receives the run summary, not a copy of every message)
  * 
  * RECOMMENDED SCHEDULE: Run monthly on the 1st at 10:00 AM
  * This allows time for CAPWATCH data to be updated after month-end processing.
@@ -26,7 +133,8 @@
  * Setup Instructions:
  * 1. Create email templates: Turning18Email.html, Turning21Email.html, ExpiringEmail.html
  * 2. Set RETENTION_LOG_SPREADSHEET_ID in config.gs
- * 3. Verify RETENTION_EMAIL and DIRECTOR_RECRUITING_EMAIL in config.gs
+ * 3. Verify TENANT_RETENTION_EMAIL and TENANT_DIRECTOR_RECRUITING_EMAIL in
+ *    Script Properties (NOT config.gs — a push overwrites that file)
  * 4. Run testAllRetentionEmails() to verify templates and configuration
  * 5. Set up time-driven trigger for sendRetentionEmails()
  * 
@@ -50,55 +158,95 @@
  * @returns {Object} Summary of email operations with sent counts and errors
  */
 function sendRetentionEmails() {
+  if (!PROFILE_.RUN_RETENTION_EMAILS) {
+    Logger.info('Retention emails disabled for this tenant profile', {
+      profile: TENANT_PROFILE
+    });
+    return { skipped: true };
+  }
+
   clearCache(); // Ensure fresh CAPWATCH data
+  _unitStaffIndex = null; // derived from that data — must not outlive it
   const start = new Date();
   Logger.info('Starting retention email process');
-  
+
   // Initialize summary tracking
   const summary = {
     sent: { turning18: 0, turning21: 0, expiring: 0 },
     failed: { turning18: [], turning21: [], expiring: [] },
+    skipped: { turning18: 0, turning21: 0, expiring: 0 },
     startTime: start.toISOString()
   };
-  
+
   try {
     // Get members for each category
     const turning18 = getMembersTurning18();
     const turning21 = getMembersTurning21();
     const expiring = getExpiringMembers();
-    
+
     Logger.info('Member categories retrieved', {
       turning18Count: turning18.length,
       turning21Count: turning21.length,
       expiringCount: expiring.length,
       totalToProcess: turning18.length + turning21.length + expiring.length
     });
-    
+
+    // Drop anyone already mailed this period. Without this, a run that dies
+    // partway (or a second firing, or a manual re-run after a fix) re-mails
+    // everyone it already reached.
+    const alreadySent = retentionAlreadySentThisPeriod_(start);
+    const due18 = retentionFilterUnsent_('TURNING_18', turning18, alreadySent);
+    const due21 = retentionFilterUnsent_('TURNING_21', turning21, alreadySent);
+    const dueExp = retentionFilterUnsent_('EXPIRING', expiring, alreadySent);
+
+    summary.dedupeAvailable = alreadySent.usable;
+    summary.skipped.turning18 = turning18.length - due18.length;
+    summary.skipped.turning21 = turning21.length - due21.length;
+    summary.skipped.expiring = expiring.length - dueExp.length;
+
+    Logger.info('Already-sent filter applied', {
+      period: alreadySent.period,
+      dedupeAvailable: alreadySent.usable,
+      skipped: summary.skipped,
+      toSend: { turning18: due18.length, turning21: due21.length, expiring: dueExp.length }
+    });
+
     // Send emails for each category with progress tracking
-    summary.sent.turning18 = sendTurning18Emails(turning18, summary.failed.turning18);
-    summary.sent.turning21 = sendTurning21Emails(turning21, summary.failed.turning21);
-    summary.sent.expiring = sendExpiringEmails(expiring, summary.failed.expiring);
-    
+    summary.sent.turning18 = sendTurning18Emails(due18, summary.failed.turning18);
+    summary.sent.turning21 = sendTurning21Emails(due21, summary.failed.turning21);
+    summary.sent.expiring = sendExpiringEmails(dueExp, summary.failed.expiring);
+
+    // Per-unit worklist to the command channel. Deliberately built from the FULL
+    // expiring list rather than the deduped one: a unit wants the complete
+    // picture of who is lapsing, not a record of what this particular run mailed.
+    summary.digests = sendRenewalDigests_(expiring, alreadySent);
+
   } catch (err) {
     Logger.error('Retention email process failed', err);
     throw err;
   }
-  
+
   summary.endTime = new Date().toISOString();
   summary.duration = new Date() - start;
   summary.totalSent = summary.sent.turning18 + summary.sent.turning21 + summary.sent.expiring;
-  summary.totalFailed = summary.failed.turning18.length + 
-                        summary.failed.turning21.length + 
+  summary.totalFailed = summary.failed.turning18.length +
+                        summary.failed.turning21.length +
                         summary.failed.expiring.length;
-  
+  summary.totalSkipped = summary.skipped.turning18 +
+                         summary.skipped.turning21 +
+                         summary.skipped.expiring;
+
   Logger.info('Retention email process completed', {
     duration: summary.duration + 'ms',
     totalSent: summary.totalSent,
     totalFailed: summary.totalFailed,
+    totalSkipped: summary.totalSkipped,
+    dedupeAvailable: summary.dedupeAvailable,
+    digests: summary.digests || null,
     breakdown: {
-      turning18: { sent: summary.sent.turning18, failed: summary.failed.turning18.length },
-      turning21: { sent: summary.sent.turning21, failed: summary.failed.turning21.length },
-      expiring: { sent: summary.sent.expiring, failed: summary.failed.expiring.length }
+      turning18: { sent: summary.sent.turning18, failed: summary.failed.turning18.length, skipped: summary.skipped.turning18 },
+      turning21: { sent: summary.sent.turning21, failed: summary.failed.turning21.length, skipped: summary.skipped.turning21 },
+      expiring: { sent: summary.sent.expiring, failed: summary.failed.expiring.length, skipped: summary.skipped.expiring }
     }
   });
   
@@ -402,40 +550,456 @@ function createEmailMap() {
   return emailMap;
 }
 
+/** ORGID -> { commander, byDuty } record, built once per execution. See below. */
+let _unitStaffIndex = null;
+
+/**
+ * Builds ORGID -> unit staff for every unit, resolving each person's CC address.
+ *
+ * Each record is { commander, byDuty: { '<duty title>': person } }, where a
+ * person is { capid, firstName, lastName, rank, email }. Commanders come from
+ * Commanders.txt, which carries its own name columns; the duty holders in
+ * RETENTION_CONFIG.CC_DUTY_TITLES come from DutyPosition.txt, which carries only
+ * a CAPID, so their names are read from raw Member.txt.
+ *
+ * Reading Member.txt RAW rather than through getMembers() is deliberate, for the
+ * same reason RecoveryEmailNotify.gs does it: on the cadets tenant getMembers()
+ * returns cadets only, but a cadet unit's Deputy Commander for Cadets and
+ * Recruiting Officer are senior members. They are present in the extract, being
+ * assigned to the cadet ORGID, but filtered out of the member set.
+ *
+ * PRIMARY BEFORE ASSISTANT. A duty can be held by a primary (Asst=0) and any
+ * number of assistants. The primary wins; an assistant is used only when no
+ * primary holds the duty, so "the unit's recruiting officer" resolves to one
+ * person rather than fanning the CC out across a unit's whole staff.
+ *
+ * ADDRESS ORDER — org account first, CAPWATCH last:
+ *   1. their real Workspace account, read from this tenant's directory
+ *   2. the derived CAP account first.last@<command domain>
+ *   3. their CAPWATCH PRIMARY
+ *
+ * This is `rcResolveRecipientEmail_()` from notifications/RecoveryEmailNotify.gs,
+ * reused rather than reimplemented so the two modules cannot drift on what
+ * "reach the commander" means. (The dependency already runs the other way too —
+ * that module calls createEmailMap() from this one.) Step 1 covers the cases
+ * derivation cannot see: a `.2` duplicate, a manual creation, a rename. Step 2
+ * covers a commander whose account exists on a domain this tenant cannot read —
+ * on the CADETS tenant command staff are seniors, so COMMAND_EMAIL_DOMAIN points
+ * at the senior domain, the directory read yields nothing usable, and the
+ * derived senior address is the right answer. CAPWATCH primary is last because
+ * it is a personal address: it reaches the person, but not at the CAP account
+ * this mail belongs in.
+ *
+ * Derived addresses are never verified, so a commander whose account does not
+ * follow the default naming will have their CC bounce. That costs the commander
+ * their copy; the member's own send is unaffected, since Gmail accepts the
+ * message and bounces per-recipient.
+ *
+ * Built once and cached because the send loop asks per member: the previous
+ * per-call implementation re-walked Commanders.txt and rebuilt the whole
+ * CAPWATCH email map for every single cadet email sent.
+ *
+ * @returns {Object} Map of ORGID to { commander, byDuty }
+ */
+function retentionUnitStaffIndex_() {
+  if (_unitStaffIndex) return _unitStaffIndex;
+
+  const emailMap = createEmailMap();
+
+  // One directory listing per run. rcBuildCommandDirectoryMap_ decides whether
+  // this tenant can actually see command staff and returns {} when it cannot,
+  // so the guard stays in one place rather than being restated here.
+  let directoryMap = {};
+  try {
+    directoryMap = rcBuildCommandDirectoryMap_(getActiveUsers());
+  } catch (e) {
+    Logger.warn('Directory unreadable — falling back to derived/CAPWATCH staff addresses', {
+      errorMessage: e.message
+    });
+  }
+
+  const index = {};
+  const orgRecord = function (orgid) {
+    if (!index[orgid]) index[orgid] = { commander: null, byDuty: {} };
+    return index[orgid];
+  };
+  const resolve = function (capid, info) {
+    const email = rcResolveRecipientEmail_(info, capid, emailMap, directoryMap);
+
+    // Which of the three routes produced this address. Classification only — the
+    // resolution order itself stays in rcResolveRecipientEmail_(). Worth carrying
+    // because 'derived' is the one that can silently bounce: it reproduces the
+    // DEFAULT account name and is wrong for a rename, a manual creation or a
+    // `.2` duplicate. previewRetentionCcLists() reports these so a bad CC can be
+    // found before a send rather than after.
+    let source = null;
+    if (email) {
+      if (directoryMap && directoryMap[capid] === email) source = 'directory';
+      else if (email === rcDeriveCommandEmail_(info)) source = 'derived';
+      else if (email === emailMap[capid]) source = 'capwatch';
+    }
+
+    return {
+      capid: capid,
+      firstName: info.firstName || '',
+      lastName: info.lastName || '',
+      rank: info.rank || '',
+      email: email,
+      source: source
+    };
+  };
+
+  // Commanders.txt: ORGID=0, CAPID=4, NameLast=8, NameFirst=9, Rank=12.
+  // Nationwide, so this is only ever read for ORGIDs of this tenant's members.
+  parseFile('Commanders').forEach(function (row) {
+    const orgid = String(row[0] || '').trim();
+    if (!orgid) return;
+
+    const rec = orgRecord(orgid);
+    if (rec.commander) return; // first row per org wins, as before
+
+    rec.commander = resolve(String(row[4] || '').trim(), {
+      firstName: String(row[9] || '').trim(),
+      lastName: String(row[8] || '').trim(),
+      rank: String(row[12] || '').trim()
+    });
+  });
+
+  // Which duty titles are worth carrying: the union of every CC_DUTY_TITLES
+  // list, so DutyPosition.txt is walked once regardless of how many email types
+  // want staff.
+  const wanted = {};
+  Object.keys(RETENTION_CONFIG.CC_DUTY_TITLES).forEach(function (key) {
+    RETENTION_CONFIG.CC_DUTY_TITLES[key].forEach(function (t) { wanted[t] = true; });
+  });
+
+  if (Object.keys(wanted).length) {
+    // Names for duty holders, who carry only a CAPID. Raw extract on purpose —
+    // see the note above about cadet units' senior staff.
+    const nameByCapid = {};
+    parseFile('Member').forEach(function (row) {
+      const capid = String(row[0] || '').trim();
+      if (!capid) return;
+      nameByCapid[capid] = {
+        lastName: String(row[2] || '').trim(),
+        firstName: String(row[3] || '').trim(),
+        rank: String(row[14] || '').trim()
+      };
+    });
+
+    // DutyPosition.txt: CAPID=0, Duty=1, Asst=4, ORGID=7. The ORGID is the org
+    // the duty is HELD at, which is the unit whose members we are mailing about.
+    parseFile('DutyPosition').forEach(function (row) {
+      const title = formatDutyTitle_(row[1]);
+      if (!wanted[title]) return;
+
+      const orgid = String(row[7] || '').trim();
+      const capid = String(row[0] || '').trim();
+      if (!orgid || !capid) return;
+
+      const rec = orgRecord(orgid);
+      const isAssistant = String(row[4] || '').trim() === '1';
+      const held = rec.byDuty[title];
+
+      // Primary beats assistant; otherwise first row wins.
+      if (held && !(held.isAssistant && !isAssistant)) return;
+
+      const person = resolve(capid, nameByCapid[capid] || {});
+      person.isAssistant = isAssistant;
+      rec.byDuty[title] = person;
+    });
+  }
+
+  Logger.info('Unit staff index built', {
+    organizations: Object.keys(index).length,
+    fromDirectory: Object.keys(directoryMap).length,
+    dutyTitlesCarried: Object.keys(wanted)
+  });
+
+  _unitStaffIndex = index;
+  return index;
+}
+
+/**
+ * The addresses to CC for a member's unit: optionally the commander, plus the
+ * duty holders named for this email type. Each is included independently — a
+ * unit with no reachable commander still reaches its duty holders.
+ *
+ * The commander is conditional because the commander CC is CADET-ONLY, and
+ * always has been. The duty holders are not: the recruiting officer is CC'd on
+ * every renewal, senior and cadet alike, because retention is that officer's job
+ * regardless of who is renewing.
+ *
+ * Deduplicates by address: one person commonly holds several of these duties,
+ * and a unit commander who is also the recruiting officer should appear once.
+ *
+ * @param {string} orgid - Member's ORGID
+ * @param {Array<string>} dutyTitles - From RETENTION_CONFIG.CC_DUTY_TITLES
+ * @param {boolean} includeCommander - Whether this email type CCs the commander
+ * @returns {string} Comma-separated CC list, or '' if nobody resolved
+ */
+function retentionCcList_(orgid, dutyTitles, includeCommander) {
+  const record = retentionUnitStaffIndex_()[String(orgid || '').trim()] || { byDuty: {} };
+  const seen = {};
+  const out = [];
+
+  const push = function (person) {
+    if (!person || !person.email) return;
+    const key = person.email.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(person.email);
+  };
+
+  if (includeCommander) push(getCommanderInfo(orgid));
+  (dutyTitles || []).forEach(function (title) { push(record.byDuty[title]); });
+
+  return out.join(',');
+}
+
 /**
  * Retrieves commander information for a given organization
- * 
- * Looks up the commander (duty position 'Commander') for the specified
- * organization ID. Returns commander details including email if available.
- * 
+ *
+ * Looks up the unit commander for the specified organization ID and returns
+ * their details, including the address to CC — see retentionUnitStaffIndex_()
+ * for how that address is chosen.
+ *
  * @param {string} orgid - Organization ID to look up commander for
  * @returns {Object|null} Commander object with properties or null if not found:
  *   - capid: Commander's CAP ID
  *   - firstName: Commander's first name
  *   - lastName: Commander's last name
  *   - rank: Commander's rank
- *   - email: Commander's primary email (or null if not available)
+ *   - email: Commander's CAP account, or CAPWATCH primary, or null
  */
 function getCommanderInfo(orgid) {
-  const commanderData = parseFile('Commanders');
-  const emailMap = createEmailMap();
-  
-  // Find commander for orgid
-  for (let i = 0; i < commanderData.length; i++) {
-    if (commanderData[i][0] === orgid) {
-      const capid = commanderData[i][4];
-      return {
-        capid: capid,
-        firstName: commanderData[i][9],
-        lastName: commanderData[i][8],
-        rank: commanderData[i][12],
-        email: emailMap[capid] || null
-      };
-    }
+  const record = retentionUnitStaffIndex_()[String(orgid || '').trim()];
+
+  if (!record || !record.commander) {
+    Logger.warn('Commander not found for organization', { orgid: orgid });
+    return null;
   }
-  
-  Logger.warn('Commander not found for organization', { orgid: orgid });
-  return null;
+
+  return record.commander;
+}
+
+/**
+ * Prints the resolved unit CC for every unit the next run would touch, and the
+ * problems worth fixing before it does. Sends nothing and writes nothing.
+ *
+ * A cadet email now carries up to three unit addresses, two of which may be
+ * DERIVED — reconstructed as first.last@<command domain> rather than read from
+ * the directory. A derived address for someone whose account does not follow that
+ * naming is accepted by Gmail and bounces afterward, per recipient. That is
+ * invisible until it happens, so this lists them up front.
+ *
+ * Reported per unit: the commander, each CC'd duty holder, the exact CC string
+ * each applicable email type would carry, and how each address was arrived at.
+ * Then three summaries: units with no reachable commander (which get no CC at
+ * all), units missing one of the CC'd duty positions, and every derived address
+ * in one list.
+ *
+ * @param {Array<Object>} [turning18] - Reuses an existing retrieval if passed
+ * @param {Array<Object>} [turning21] - Reuses an existing retrieval if passed
+ * @param {Array<Object>} [expiring] - Reuses an existing retrieval if passed
+ * @returns {Object} { units, noCommander, missingDuty, derived }
+ */
+function previewRetentionCcLists(turning18, turning21, expiring) {
+  const t18 = turning18 || getMembersTurning18();
+  const t21 = turning21 || getMembersTurning21();
+  const exp = expiring || getExpiringMembers();
+
+  const AGE = RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE;
+  const RENEW = RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL;
+
+  // ORGID -> which email types this unit has members for. Cadet and senior
+  // renewals are counted separately because they differ in ONE way: the
+  // commander is CC'd for cadets only. Both reach the recruiting officer.
+  const units = {};
+  const bump = function (orgid, key) {
+    const id = String(orgid || '').trim();
+    if (!id) return;
+    if (!units[id]) units[id] = { turning18: 0, turning21: 0, expiringCadet: 0, expiringSenior: 0 };
+    units[id][key]++;
+  };
+
+  t18.forEach(function (m) { bump(m.orgid, 'turning18'); });
+  t21.forEach(function (m) { bump(m.orgid, 'turning21'); });
+  exp.forEach(function (m) {
+    bump(m.orgid, m.type === 'CADET' ? 'expiringCadet' : 'expiringSenior');
+  });
+
+  const index = retentionUnitStaffIndex_();
+  const orgids = Object.keys(units).sort();
+  const noCommander = [];
+  const missingDuty = [];
+  const derived = [];
+
+  const describe = function (person) {
+    if (!person) return '(unassigned)';
+    if (!person.email) return '(no resolvable address)';
+    return person.email + '  [' + (person.source || 'unknown') +
+      (person.isAssistant ? ', assistant' : '') + ']';
+  };
+
+  console.log('\n' + '='.repeat(78));
+  console.log('RESOLVED UNIT CC — ' + orgids.length + ' unit(s) in scope');
+  console.log('='.repeat(78) + '\n');
+
+  orgids.forEach(function (orgid) {
+    const counts = units[orgid];
+    const rec = index[orgid] || { commander: null, byDuty: {} };
+    const needsAgeCc = counts.turning18 + counts.turning21 > 0;
+    const needsRenewalCc = counts.expiringCadet + counts.expiringSenior > 0;
+
+    console.log('ORGID ' + orgid +
+      '   turning18=' + counts.turning18 +
+      ' turning21=' + counts.turning21 +
+      ' expiring(cadet)=' + counts.expiringCadet +
+      ' expiring(senior)=' + counts.expiringSenior);
+    console.log('   commander: ' + describe(rec.commander));
+
+    if (rec.commander && rec.commander.source === 'derived') {
+      derived.push(orgid + ' commander ' + rec.commander.email);
+    }
+
+    // Only report a duty as missing where this unit actually needs it.
+    const relevant = []
+      .concat(needsAgeCc ? AGE : [])
+      .concat(needsRenewalCc ? RENEW : []);
+
+    relevant.forEach(function (title) {
+      const holder = rec.byDuty[title];
+      console.log('   ' + title + ': ' + describe(holder));
+      if (!holder || !holder.email) {
+        missingDuty.push(orgid + ' has no ' + title);
+      } else if (holder.source === 'derived') {
+        derived.push(orgid + ' ' + title + ' ' + holder.email);
+      }
+    });
+
+    if (needsAgeCc) {
+      const cc = retentionCcList_(orgid, AGE, true);
+      console.log('   -> turning 18/21 CC:    ' + (cc || '(NONE — nobody resolvable)'));
+    }
+    if (counts.expiringCadet) {
+      const cc = retentionCcList_(orgid, RENEW, true);
+      console.log('   -> cadet renewal CC:    ' + (cc || '(NONE — nobody resolvable)'));
+    }
+    if (counts.expiringSenior) {
+      console.log('   -> senior renewal CC:   (none by design — digest instead)');
+    }
+    if (needsRenewalCc) {
+      // Digest addressing: commander is the addressee, recruiting officer is
+      // copied; with no commander it goes to the recruiting officer alone.
+      const ro = rec.byDuty[RENEW[0]];
+      const to = (rec.commander && rec.commander.email) ? rec.commander.email :
+        ((ro && ro.email) ? ro.email : '');
+      const dcc = (to && ro && ro.email && ro.email.toLowerCase() !== to.toLowerCase())
+        ? '  cc ' + ro.email : '';
+      console.log('   -> renewal digest to:   ' +
+        (to ? to + dcc : '(NONE — unit hears nothing; ' +
+          (counts.expiringCadet + counts.expiringSenior) + ' expiring)'));
+    }
+
+    if (!rec.commander || !rec.commander.email) {
+      noCommander.push(orgid);
+    }
+
+    console.log('');
+  });
+
+  console.log('='.repeat(78));
+  console.log('UNITS WITH NO REACHABLE COMMANDER: ' + noCommander.length);
+  console.log('   (cadet mail loses its commander copy; duty holders are still CC\'d)');
+  noCommander.forEach(function (o) { console.log('   ORGID ' + o); });
+
+  console.log('\nUNFILLED CC DUTY POSITIONS: ' + missingDuty.length);
+  console.log('   (the renewal digest still reaches the commander; only a unit with');
+  console.log('    NEITHER a commander nor a recruiting officer hears nothing at all)');
+  missingDuty.forEach(function (m) { console.log('   ' + m); });
+
+  console.log('\nDERIVED ADDRESSES — NOT verified to exist, these are the bounce risk: ' + derived.length);
+  derived.forEach(function (d) { console.log('   ' + d); });
+  if (derived.length) {
+    console.log('\n   Each was reconstructed as first.last@' +
+      String(CONFIG.COMMAND_EMAIL_DOMAIN || '').replace(/^@/, '') +
+      ' because the directory had no account for that CAPID.');
+    console.log('   Spot-check a few in the Admin console before the first real run.');
+  }
+  console.log('='.repeat(78) + '\n');
+
+  Logger.info('Retention CC preview complete', {
+    units: orgids.length,
+    noCommander: noCommander.length,
+    missingDuty: missingDuty.length,
+    derivedAddresses: derived.length
+  });
+
+  return { units: units, noCommander: noCommander, missingDuty: missingDuty, derived: derived };
+}
+
+// ============================================================================
+// TEMPLATE RENDERING
+// ============================================================================
+
+/**
+ * Builds the closing signature block for member-facing retention email.
+ *
+ * The role holder is an individual, so their name is not version-controlled —
+ * it comes from the TENANT_DIRECTOR_RECRUITING_NAME Script Property. Blank is a
+ * valid state (a tenant that has not named one, or does not want a personal name
+ * on automated mail) and signs with the office title alone.
+ *
+ * @returns {string} HTML fragment for the {{signature}} placeholder
+ */
+function retentionSignatureHtml_() {
+  const wingLine = CONFIG.WING_NAME + ' Civil Air Patrol';
+  const name = String(DIRECTOR_RECRUITING_NAME || '').trim();
+
+  return name
+    ? '<strong>' + name + '</strong><br>Director of Recruiting<br>' + wingLine
+    : '<strong>Director of Recruiting</strong><br>' + wingLine;
+}
+
+/**
+ * Renders a retention email template with member and wing values.
+ *
+ * Every member-facing template shares the wing labels and signature, so all
+ * substitution happens here rather than being repeated at each send site.
+ *
+ * NOTE the template name must be the full slash-prefixed Apps Script filename
+ * minus the folder, which this adds — a file at
+ * src/recruiting-and-retention/ExpiringEmail.html deploys as
+ * 'recruiting-and-retention/ExpiringEmail' and HtmlService needs that exact
+ * name. Pass 'ExpiringEmail'.
+ *
+ * Substitution uses a replacer function, not a string, so a value containing
+ * '$&' or "$'" cannot corrupt the output. Unrecognized placeholders are left
+ * in place so a typo shows up in the rendered mail instead of silently
+ * blanking.
+ *
+ * @param {string} templateName - Template filename without folder or extension
+ * @param {Object} member - Member object (rank, lastName, expiration)
+ * @returns {string} Rendered HTML
+ */
+function retentionRenderTemplate_(templateName, member) {
+  const m = member || {};
+  const fields = {
+    rank: m.rank || '',
+    lastName: m.lastName || '',
+    expiration: m.expiration || '',
+    wingName: CONFIG.WING_NAME,
+    orgLabel: CONFIG.ORG_LABEL,
+    signature: retentionSignatureHtml_()
+  };
+
+  return HtmlService
+    .createHtmlOutputFromFile('recruiting-and-retention/' + templateName)
+    .getContent()
+    .replace(/{{(\w+)}}/g, function (match, key) {
+      return Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : match;
+    });
 }
 
 // ============================================================================
@@ -586,11 +1150,9 @@ function sendExpiringEmails(members, failedList) {
 function sendTurning18Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
-      .getContent()
-      .replace(/{{rank}}/g, member.rank)
-      .replace(/{{lastName}}/g, member.lastName);
-    
+    const cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE, true);
+    const htmlBody = retentionRenderTemplate_('Turning18Email', member);
+
     executeWithRetry(() =>
       GmailApp.sendEmail(
         member.email,
@@ -598,8 +1160,7 @@ function sendTurning18Email(member) {
         htmlBody,
         {
           htmlBody: htmlBody,
-          cc: commander && commander.email ? commander.email : '',
-          bcc: RETENTION_EMAIL,
+          cc: cc,
           replyTo: DIRECTOR_RECRUITING_EMAIL,
           from: AUTOMATION_SENDER_EMAIL,
           name: SENDER_NAME
@@ -613,7 +1174,7 @@ function sendTurning18Email(member) {
     Logger.info('Turning 18 email sent', {
       email: member.email,
       capsn: member.capid,
-      commanderCc: commander && commander.email ? commander.email : 'none'
+      cc: cc || 'none'
     });
     
     return true;
@@ -642,11 +1203,9 @@ function sendTurning18Email(member) {
 function sendTurning21Email(member) {
   try {
     const commander = getCommanderInfo(member.orgid);
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning21Email')
-      .getContent()
-      .replace(/{{rank}}/g, member.rank)
-      .replace(/{{lastName}}/g, member.lastName);
-    
+    const cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.AGE_MILESTONE, true);
+    const htmlBody = retentionRenderTemplate_('Turning21Email', member);
+
     executeWithRetry(() =>
       GmailApp.sendEmail(
         member.email,
@@ -654,8 +1213,7 @@ function sendTurning21Email(member) {
         htmlBody,
         {
           htmlBody: htmlBody,
-          cc: commander && commander.email ? commander.email : '',
-          bcc: RETENTION_EMAIL,
+          cc: cc,
           replyTo: DIRECTOR_RECRUITING_EMAIL,
           from: AUTOMATION_SENDER_EMAIL,
           name: SENDER_NAME
@@ -669,7 +1227,7 @@ function sendTurning21Email(member) {
     Logger.info('Turning 21 email sent', {
       email: member.email,
       capsn: member.capid,
-      commanderCc: commander && commander.email ? commander.email : 'none'
+      cc: cc || 'none'
     });
     
     return true;
@@ -699,28 +1257,30 @@ function sendTurning21Email(member) {
 function sendExpiringEmail(member) {
   try {
     let commander = null;
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/ExpiringEmail')
-      .getContent()
-      .replace(/{{rank}}/g, member.rank)
-      .replace(/{{lastName}}/g, member.lastName)
-      .replace(/{{expiration}}/g, member.expiration);
-    
+    let cc = '';
+    const htmlBody = retentionRenderTemplate_('ExpiringEmail', member);
+
     const options = {
       htmlBody: htmlBody,
-      bcc: RETENTION_EMAIL,
       replyTo: DIRECTOR_RECRUITING_EMAIL,
       from: AUTOMATION_SENDER_EMAIL,
       name: SENDER_NAME
     };
-    
-    // Add commander CC for cadets only
+
+    // CADETS ONLY get a unit CC on their own renewal notice, and that is a cadet
+    // protection matter rather than a retention one: a cadet's command channel is
+    // entitled to see mail sent to the cadet. A SENIOR's renewal is between them
+    // and the wing, so it carries no CC at all — their unit hears about it
+    // through the per-unit digest instead (see sendRenewalDigests_), which is a
+    // worklist rather than a copy of someone's mail.
     if (member.type === 'CADET') {
       commander = getCommanderInfo(member.orgid);
-      if (commander && commander.email) {
-        options.cc = commander.email;
+      cc = retentionCcList_(member.orgid, RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL, true);
+      if (cc) {
+        options.cc = cc;
       }
     }
-    
+
     executeWithRetry(() =>
       GmailApp.sendEmail(
         member.email,
@@ -738,7 +1298,7 @@ function sendExpiringEmail(member) {
       capsn: member.capid,
       type: member.type,
       expiration: member.expiration,
-      commanderCc: commander && commander.email ? commander.email : 'none'
+      cc: cc || 'none'
     });
     
     return true;
@@ -755,6 +1315,306 @@ function sendExpiringEmail(member) {
     });
     return false;
   }
+}
+
+// ============================================================================
+// PER-UNIT RENEWAL DIGEST
+// ============================================================================
+
+/**
+ * Log/dedupe type for the per-unit digest. Rows of this type carry the ORGID in
+ * the CAPID column — the unit is what was mailed, not a member — so the
+ * already-sent guard keys them as 'RENEWAL_DIGEST|<orgid>' and a re-run in the
+ * same month does not re-send a unit's digest.
+ */
+const RENEWAL_DIGEST_TYPE_ = 'RENEWAL_DIGEST';
+
+/**
+ * Mails each unit's command channel a worklist of everyone under their command
+ * whose membership expires this month.
+ *
+ * WHY THIS EXISTS RATHER THAN A CC. A senior's renewal notice is between them
+ * and the wing and carries no unit CC. But the unit still needs to know who is
+ * lapsing, so the information reaches them as a digest instead — a worklist
+ * addressed to them, rather than a blind copy of somebody else's mail. Cadets
+ * appear in the digest too, and separately keep the CC on their own notice,
+ * which is a cadet protection matter rather than a retention one.
+ *
+ * Addressed to the commander with the recruiting officer copied; where a unit has
+ * no reachable commander it is addressed to the recruiting officer alone. A unit
+ * with neither is skipped and reported.
+ *
+ * Deduplicated per unit per month on the same Log sheet as individual sends, so a
+ * re-run does not re-mail a unit. Lists EVERY expiring member, including those
+ * whose own notice was skipped as already-sent — the point is a complete picture
+ * of the unit, not a record of what this run did.
+ *
+ * @param {Array<Object>} expiring - All expiring members, cadet and senior
+ * @param {Object} alreadySent - retentionAlreadySentThisPeriod_() output
+ * @returns {Object} { sent, skipped, failed: [], noRecipients: [] }
+ */
+function sendRenewalDigests_(expiring, alreadySent) {
+  const result = { sent: 0, skipped: 0, failed: [], noRecipients: [] };
+
+  const byOrg = {};
+  (expiring || []).forEach(function (m) {
+    const orgid = String(m.orgid || '').trim();
+    if (!orgid) return;
+    if (!byOrg[orgid]) byOrg[orgid] = [];
+    byOrg[orgid].push(m);
+  });
+
+  const orgids = Object.keys(byOrg).sort();
+  if (!orgids.length) return result;
+
+  const squadrons = getSquadrons();
+  Logger.info('Starting renewal digests', { units: orgids.length });
+
+  orgids.forEach(function (orgid, i) {
+    if (alreadySent && alreadySent.usable &&
+        alreadySent.keys[RENEWAL_DIGEST_TYPE_ + '|' + orgid]) {
+      result.skipped++;
+      return;
+    }
+
+    const squadron = squadrons[orgid] || {};
+    const orgName = squadron.name || ('ORGID ' + orgid);
+    const charter = squadron.charter || orgid;
+
+    // Commander first, recruiting officer copied. Same resolution as the CC.
+    const commander = getCommanderInfo(orgid);
+    const staff = retentionUnitStaffIndex_()[orgid] || { byDuty: {} };
+    const recruiting = staff.byDuty[RETENTION_CONFIG.CC_DUTY_TITLES.RENEWAL[0]];
+
+    const to = (commander && commander.email) ? commander.email :
+      ((recruiting && recruiting.email) ? recruiting.email : '');
+    const cc = (commander && commander.email && recruiting && recruiting.email &&
+      recruiting.email.toLowerCase() !== commander.email.toLowerCase())
+      ? recruiting.email : '';
+
+    if (!to) {
+      result.noRecipients.push({ orgid: orgid, orgName: orgName, members: byOrg[orgid].length });
+      Logger.warn('No renewal-digest recipient for unit', {
+        orgid: orgid, orgName: orgName, members: byOrg[orgid].length
+      });
+      return;
+    }
+
+    const members = byOrg[orgid].slice().sort(function (a, b) {
+      return String(a.lastName || '').localeCompare(String(b.lastName || ''));
+    });
+
+    try {
+      const htmlBody = buildRenewalDigestHtml_(orgName, charter, members);
+      const options = {
+        htmlBody: htmlBody,
+        replyTo: DIRECTOR_RECRUITING_EMAIL,
+        from: AUTOMATION_SENDER_EMAIL,
+        name: SENDER_NAME
+      };
+      if (cc) options.cc = cc;
+
+      executeWithRetry(() =>
+        GmailApp.sendEmail(
+          to,
+          RETENTION_CONFIG.SUBJECTS.RENEWAL_DIGEST + ' — ' + charter,
+          'See the HTML version of this message.',
+          options
+        )
+      );
+
+      try {
+        retentionLogAppend_([
+          new Date(), RENEWAL_DIGEST_TYPE_, orgid, orgName,
+          to, (commander && commander.capid) || '', '', cc
+        ]);
+      } catch (e) {
+        Logger.error('Failed to log renewal digest', {
+          orgid: orgid, errorMessage: e.message
+        });
+      }
+
+      result.sent++;
+      Logger.info('Renewal digest sent', {
+        orgid: orgid, orgName: orgName, to: to, cc: cc || 'none', members: members.length
+      });
+
+    } catch (e) {
+      result.failed.push({ orgid: orgid, orgName: orgName, to: to });
+      Logger.error('Failed to send renewal digest', {
+        orgid: orgid, orgName: orgName, to: to,
+        errorMessage: e.message, errorCode: e.details?.code
+      });
+    }
+
+    if (i < orgids.length - 1) {
+      Utilities.sleep(RETENTION_CONFIG.EMAIL_DELAY_MS);
+    }
+  });
+
+  Logger.info('Renewal digests completed', {
+    sent: result.sent, skipped: result.skipped,
+    failed: result.failed.length, noRecipients: result.noRecipients.length
+  });
+
+  return result;
+}
+
+/**
+ * Builds one unit's renewal digest.
+ *
+ * @param {string} orgName - Unit name
+ * @param {string} charter - Unit charter (e.g. PCR-CA-070)
+ * @param {Array<Object>} members - Expiring members, pre-sorted
+ * @returns {string} HTML body
+ */
+function buildRenewalDigestHtml_(orgName, charter, members) {
+  const rows = members.map(function (m) {
+    return '<tr>' +
+      '<td>' + rcEscapeHtml_((m.rank || '') + ' ' + (m.firstName || '') + ' ' + (m.lastName || '')) + '</td>' +
+      '<td>' + rcEscapeHtml_(m.capid || '') + '</td>' +
+      '<td>' + rcEscapeHtml_(m.type || '') + '</td>' +
+      '<td>' + rcEscapeHtml_(m.expiration || '') + '</td>' +
+      '</tr>';
+  }).join('');
+
+  return '' +
+    '<html><head><style>' +
+    'body { font-family: Arial, sans-serif; color: #000; }' +
+    'h2 { color: #001871; }' +
+    'table { border-collapse: collapse; width: 100%; margin: 15px 0; }' +
+    'th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 14px; }' +
+    'th { background-color: #001871; color: #fff; }' +
+    '.note { background-color: #fff5cc; border-left: 4px solid #ffcd00; padding: 12px; margin: 15px 0; }' +
+    '.footer { font-size: 12px; color: #666; border-top: 1px solid #ddd; margin-top: 25px; padding-top: 12px; }' +
+    '</style></head><body>' +
+    '<h2>Memberships expiring this month — ' + rcEscapeHtml_(orgName) + '</h2>' +
+    '<p>' + members.length + ' member' + (members.length === 1 ? '' : 's') +
+    ' under your command (' + rcEscapeHtml_(charter) + ') ' +
+    (members.length === 1 ? 'has a membership that expires' : 'have memberships that expire') +
+    ' this month.</p>' +
+    '<table><tr><th>Member</th><th>CAPID</th><th>Type</th><th>Expires</th></tr>' +
+    rows + '</table>' +
+    '<div class="note"><strong>Each member has been emailed directly about renewing.</strong> ' +
+    'This list is for your awareness so the unit can follow up with anyone at risk of lapsing. ' +
+    'Cadets also had their own notice copied to you.</div>' +
+    '<div class="footer">Automated monthly message from the ' + rcEscapeHtml_(CONFIG.ORG_LABEL) +
+    ' retention system. Reply to this email to reach the Director of Recruiting.</div>' +
+    '</body></html>';
+}
+
+// ============================================================================
+// ALREADY-SENT GUARD
+// ============================================================================
+
+/**
+ * Period key for the already-sent guard: 'yyyy-MM'.
+ *
+ * Calendar month is the correct grain because it is exactly what member
+ * selection keys on — turning 18/21 match birth MONTH against the current month,
+ * and expiring matches expiration month and year. Two runs in the same month see
+ * the same population by definition, so "already mailed this month" and "already
+ * mailed for this occurrence" are the same statement.
+ *
+ * @param {Date} when - Run start
+ * @returns {string} 'yyyy-MM'
+ */
+function retentionPeriodKey_(when) {
+  const d = when || new Date();
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
+}
+
+/**
+ * Reads the Log sheet and returns who has already been mailed this period.
+ *
+ * The Log sheet has always been written and never read. That is what made a
+ * re-run dangerous: nothing in the module knew what the previous run had done,
+ * so an execution that hit the 30-minute limit partway through the expiring
+ * batch would, on the next firing, start again from the top of the list.
+ *
+ * FAILS OPEN, LOUDLY. If the sheet is missing or unreadable this returns
+ * usable=false and an empty set, so the run proceeds exactly as it did before
+ * this guard existed rather than silently mailing nobody. The summary email
+ * carries the same flag, so an operator can see that the run had no duplicate
+ * protection instead of assuming it did.
+ *
+ * Only SUCCESSFUL sends reach the Log (logEmailSent is called after the send
+ * returns), so a member whose send failed is correctly retried next run. The
+ * converse gap is real but narrow: if the send succeeds and the Log write then
+ * fails, that member is re-mailed on a re-run.
+ *
+ * @param {Date} when - Run start, for the period key
+ * @returns {Object} { usable: boolean, period: string, keys: Object }
+ */
+function retentionAlreadySentThisPeriod_(when) {
+  const period = retentionPeriodKey_(when);
+  const result = { usable: false, period: period, keys: {} };
+
+  if (!RETENTION_LOG_SPREADSHEET_ID) {
+    Logger.warn('No retention log configured — duplicate protection is OFF for this run', {
+      period: period
+    });
+    return result;
+  }
+
+  try {
+    const sheet = SpreadsheetApp.openById(RETENTION_LOG_SPREADSHEET_ID).getSheetByName('Log');
+
+    // No sheet yet means nothing has ever been sent. That is a usable answer,
+    // not a failure — the first run legitimately has an empty history.
+    if (!sheet || sheet.getLastRow() < 2) {
+      result.usable = true;
+      return result;
+    }
+
+    // Columns A-C only: Timestamp, Email Type, CAPID.
+    const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
+    let matched = 0;
+
+    rows.forEach(function (row) {
+      const stamp = row[0];
+      if (!(stamp instanceof Date)) return; // blank or text row — ignore
+      if (retentionPeriodKey_(stamp) !== period) return;
+
+      const type = String(row[1] || '').trim();
+      const capid = String(row[2] || '').trim();
+      if (!type || !capid) return;
+
+      result.keys[type + '|' + capid] = true;
+      matched++;
+    });
+
+    result.usable = true;
+    Logger.info('Retention log read for duplicate protection', {
+      period: period,
+      rowsScanned: rows.length,
+      alreadySentThisPeriod: matched
+    });
+
+  } catch (e) {
+    Logger.warn('Retention log unreadable — duplicate protection is OFF for this run', {
+      period: period,
+      errorMessage: e.message
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Drops members already mailed for this email type this period.
+ *
+ * @param {string} emailType - TURNING_18 | TURNING_21 | EXPIRING
+ * @param {Array<Object>} members - Candidates from the retrieval functions
+ * @param {Object} alreadySent - retentionAlreadySentThisPeriod_() output
+ * @returns {Array<Object>} Members still due
+ */
+function retentionFilterUnsent_(emailType, members, alreadySent) {
+  if (!alreadySent || !alreadySent.usable) return members;
+
+  return members.filter(function (m) {
+    return !alreadySent.keys[emailType + '|' + String(m.capid || '').trim()];
+  });
 }
 
 // ============================================================================
@@ -777,32 +1637,46 @@ function sendExpiringEmail(member) {
  * @param {Object|null} commander - Commander object or null
  * @returns {void}
  */
+/**
+ * Appends one row to the Log sheet, creating it if absent.
+ *
+ * Shared by the per-member log and the per-unit digest log, so both land in the
+ * one sheet the already-sent guard reads. Columns A-C (timestamp, type, key) are
+ * what that guard keys on — see retentionAlreadySentThisPeriod_().
+ *
+ * @param {Array} row - Eight cells matching the header below
+ * @returns {void}
+ */
+function retentionLogAppend_(row) {
+  const spreadsheet = SpreadsheetApp.openById(RETENTION_LOG_SPREADSHEET_ID);
+  let sheet = spreadsheet.getSheetByName('Log');
+
+  // Create sheet if it doesn't exist
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet('Log');
+    sheet.appendRow([
+      'Timestamp',
+      'Email Type',
+      'CAPID',
+      'Name',
+      'Email',
+      'Commander CAPID',
+      'Commander Name',
+      'Commander Email'
+    ]);
+
+    // Format header row
+    const headerRange = sheet.getRange(1, 1, 1, 8);
+    headerRange.setFontWeight('bold')
+               .setBackground('#4285f4')
+               .setFontColor('#ffffff');
+  }
+
+  sheet.appendRow(row);
+}
+
 function logEmailSent(emailType, member, commander) {
   try {
-    const spreadsheet = SpreadsheetApp.openById(RETENTION_LOG_SPREADSHEET_ID);
-    let sheet = spreadsheet.getSheetByName('Log');
-    
-    // Create sheet if it doesn't exist
-    if (!sheet) {
-      sheet = spreadsheet.insertSheet('Log');
-      sheet.appendRow([
-        'Timestamp', 
-        'Email Type', 
-        'CAPID', 
-        'Name', 
-        'Email', 
-        'Commander CAPID', 
-        'Commander Name', 
-        'Commander Email'
-      ]);
-      
-      // Format header row
-      const headerRange = sheet.getRange(1, 1, 1, 8);
-      headerRange.setFontWeight('bold')
-                 .setBackground('#4285f4')
-                 .setFontColor('#ffffff');
-    }
-    
     const commanderName = commander ? 
       (commander.rank + ' ' + commander.firstName + ' ' + commander.lastName) : '';
     const commanderEmail = commander ? commander.email : '';
@@ -865,9 +1739,25 @@ function sendRetentionSummaryEmail(summary) {
             <p><strong>Duration:</strong> ${Math.round(summary.duration / 1000)} seconds</p>
             <p><strong>Total Sent:</strong> ${summary.totalSent}</p>
             <p><strong>Total Failed:</strong> ${summary.totalFailed}</p>
+            <p><strong>Already sent this month (skipped):</strong> ${summary.totalSkipped}</p>
           </div>
     `;
-    
+
+    // An operator reading a low "sent" count needs to know whether the run was
+    // deduping against the log or flying blind, so say so rather than let the
+    // number be ambiguous.
+    if (summary.dedupeAvailable === false) {
+      htmlBody += `
+        <div class="warning">
+          <h2>⚠ Duplicate protection was OFF for this run</h2>
+          <p>The retention log could not be read, so this run could not tell who had
+          already been mailed this month. Anyone reached by an earlier run this month
+          will have received a second copy. Check the execution log for the reason
+          before re-running.</p>
+        </div>
+      `;
+    }
+
     // Breakdown by category
     htmlBody += `
       <h2>Breakdown by Category</h2>
@@ -876,24 +1766,68 @@ function sendRetentionSummaryEmail(summary) {
           <th>Category</th>
           <th>Sent</th>
           <th>Failed</th>
+          <th>Skipped (already sent)</th>
         </tr>
         <tr>
           <td>Turning 18</td>
           <td>${summary.sent.turning18}</td>
           <td>${summary.failed.turning18.length}</td>
+          <td>${summary.skipped.turning18}</td>
         </tr>
         <tr>
           <td>Turning 21</td>
           <td>${summary.sent.turning21}</td>
           <td>${summary.failed.turning21.length}</td>
+          <td>${summary.skipped.turning21}</td>
         </tr>
         <tr>
           <td>Expiring</td>
           <td>${summary.sent.expiring}</td>
           <td>${summary.failed.expiring.length}</td>
+          <td>${summary.skipped.expiring}</td>
         </tr>
       </table>
     `;
+
+    // Per-unit digests, and the units nobody could be found for — that last
+    // number is the one worth acting on, because those units heard nothing.
+    const d = summary.digests;
+    if (d) {
+      htmlBody += `
+        <h2>Unit Renewal Digests</h2>
+        <table>
+          <tr><th>Sent</th><th>Skipped (already sent)</th><th>Failed</th><th>No recipient</th></tr>
+          <tr>
+            <td>${d.sent}</td>
+            <td>${d.skipped}</td>
+            <td>${d.failed.length}</td>
+            <td>${d.noRecipients.length}</td>
+          </tr>
+        </table>
+      `;
+
+      if (d.noRecipients.length) {
+        htmlBody += `
+          <div class="warning">
+            <h3>⚠ Units with no reachable commander or recruiting officer (${d.noRecipients.length})</h3>
+            <p>These units received no renewal digest. Their expiring members were still
+            emailed directly.</p>
+            <ul>
+        `;
+        d.noRecipients.forEach(m => {
+          htmlBody += `<li>${m.orgName} (ORGID ${m.orgid}) — ${m.members} expiring</li>`;
+        });
+        htmlBody += '</ul></div>';
+      }
+
+      if (d.failed.length) {
+        htmlBody += `<h3>Digest send failures (${d.failed.length})</h3><ul>`;
+        d.failed.forEach(m => {
+          htmlBody += `<li>${m.orgName} (ORGID ${m.orgid}) — ${m.to}</li>`;
+        });
+        htmlBody += '</ul>';
+      }
+    }
     
     // Failed sends if any
     if (summary.totalFailed > 0) {
@@ -993,7 +1927,20 @@ function testRetentionEmail() {
   const expiring = getExpiringMembers();
   
   console.log('\n=== RETENTION EMAIL SYSTEM TEST ===\n');
-  
+
+  // Show what a real run would actually send, not just who matches. Without the
+  // already-sent filter these counts overstate the send by everyone the current
+  // month has already reached.
+  const alreadySent = retentionAlreadySentThisPeriod_(new Date());
+  console.log('Tenant profile: ' + TENANT_PROFILE +
+    '   retention enabled: ' + (PROFILE_.RUN_RETENTION_EMAILS ? 'YES' : 'NO — sendRetentionEmails() is a no-op here'));
+  console.log('Period: ' + alreadySent.period +
+    '   duplicate protection: ' + (alreadySent.usable ? 'on' : 'OFF (log unreadable)'));
+  console.log('Would send now: ' +
+    'turning18=' + retentionFilterUnsent_('TURNING_18', turning18, alreadySent).length + ', ' +
+    'turning21=' + retentionFilterUnsent_('TURNING_21', turning21, alreadySent).length + ', ' +
+    'expiring=' + retentionFilterUnsent_('EXPIRING', expiring, alreadySent).length + '\n');
+
   console.log('Members turning 18: ' + turning18.length);
   if (turning18.length > 0) {
     console.log('Sample:', JSON.stringify(turning18[0], null, 2));
@@ -1011,12 +1958,76 @@ function testRetentionEmail() {
     console.log('Sample:', JSON.stringify(expiring[0], null, 2));
   }
   
+  // Full resolved CC per unit, plus the derived addresses that could bounce.
+  previewRetentionCcLists(turning18, turning21, expiring);
+
   console.log('\n=== TEST COMPLETE ===\n');
-  
+
   Logger.info('Test completed', {
     turning18: turning18.length,
     turning21: turning21.length,
     expiring: expiring.length
+  });
+}
+
+/**
+ * Installs the monthly time-driven trigger for sendRetentionEmails().
+ *
+ * MUST be run while signed in as the automation account. A time-driven trigger
+ * runs as whoever creates it, and only the automation account owns the
+ * AUTOMATION_SENDER_EMAIL Send-As alias every retention email is sent with —
+ * created under any other identity, every send fails with "Invalid argument".
+ *
+ * This module fails WORSE than the notification digests do when that happens:
+ * sendRetentionSummaryEmail() also sends as AUTOMATION_SENDER_EMAIL, and its
+ * catch only logs, so a wrong identity produces no member mail AND no failure
+ * summary — nothing arrives anywhere. Confirm the owner in the Triggers panel
+ * afterward rather than waiting to be told.
+ *
+ * Refuses to install where PROFILE_.RUN_RETENTION_EMAILS is false. That is not
+ * pedantry: this module addresses the whole wing from either tenant, so a trigger
+ * on the second one mails every member a duplicate. On such a tenant
+ * sendRetentionEmails() is a no-op anyway, and a trigger that exists to do
+ * nothing is worse than no trigger — it looks like the feature is running.
+ *
+ * Idempotent: removes any existing triggers for this handler first, so re-running
+ * never stacks duplicates, and leaves triggers for other functions alone.
+ *
+ * Scheduled for the 1st at ~10:00, after the daily getCapwatch() has refreshed
+ * the extract. The 1st matters: member selection keys on the current month, so
+ * expiring members get most of a month's notice rather than a few days.
+ *
+ * @returns {void}
+ * @throws {Error} If this tenant profile does not run retention emails
+ */
+function installRetentionMonthlyTrigger() {
+  if (!PROFILE_.RUN_RETENTION_EMAILS) {
+    throw new Error(
+      'Retention emails are disabled for the "' + TENANT_PROFILE + '" profile, so this ' +
+      'trigger would fire into a no-op. Retention runs on ONE tenant only — this module ' +
+      'reads the same wing-wide CAPWATCH extract from either, so arming a second tenant ' +
+      'sends every member a duplicate rather than splitting the work. Install this on the ' +
+      'seniors project.'
+    );
+  }
+
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'sendRetentionEmails') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+
+  ScriptApp.newTrigger('sendRetentionEmails')
+    .timeBased()
+    .onMonthDay(1)
+    .atHour(10)
+    .create();
+
+  Logger.info('Installed monthly retention trigger', {
+    handler: 'sendRetentionEmails',
+    profile: TENANT_PROFILE,
+    schedule: '1st of each month ~10:00 America/Los_Angeles',
+    note: 'Confirm in the Triggers panel that the owner is the automation account'
   });
 }
 
@@ -1033,10 +2044,10 @@ function testRetentionEmail() {
 function testSendSingleEmail() {
   Logger.info('Sending single test email', { recipient: TEST_EMAIL });
   
-  const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
-    .getContent()
-    .replace(/{{rank}}/g, 'C/Amn')
-    .replace(/{{lastName}}/g, 'Test Member');
+  const htmlBody = retentionRenderTemplate_('Turning18Email', {
+    rank: 'C/Amn',
+    lastName: 'Test Member'
+  });
 
   GmailApp.sendEmail(
     TEST_EMAIL,
@@ -1090,11 +2101,8 @@ function testAllRetentionEmails() {
     const commander = getCommanderInfo(testMember.orgid);
     console.log('Commander: ' + JSON.stringify(commander, null, 2));
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning18Email')
-      .getContent()
-      .replace(/{{rank}}/g, testMember.rank)
-      .replace(/{{lastName}}/g, testMember.lastName);
-    
+    const htmlBody = retentionRenderTemplate_('Turning18Email', testMember);
+
     GmailApp.sendEmail(
       TEST_EMAIL,
       'TEST - Turning 18 Email Preview - ' + testMember.rank + ' ' + testMember.lastName,
@@ -1121,11 +2129,8 @@ function testAllRetentionEmails() {
     const commander = getCommanderInfo(testMember.orgid);
     console.log('Commander: ' + JSON.stringify(commander, null, 2));
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/Turning21Email')
-      .getContent()
-      .replace(/{{rank}}/g, testMember.rank)
-      .replace(/{{lastName}}/g, testMember.lastName);
-    
+    const htmlBody = retentionRenderTemplate_('Turning21Email', testMember);
+
     GmailApp.sendEmail(
       TEST_EMAIL,
       'TEST - Turning 21 Email Preview - ' + testMember.rank + ' ' + testMember.lastName,
@@ -1157,12 +2162,8 @@ function testAllRetentionEmails() {
       console.log('Member is SENIOR - no commander CC');
     }
     
-    const htmlBody = HtmlService.createHtmlOutputFromFile('recruiting-and-retention/ExpiringEmail')
-      .getContent()
-      .replace(/{{rank}}/g, testMember.rank)
-      .replace(/{{lastName}}/g, testMember.lastName)
-      .replace(/{{expiration}}/g, testMember.expiration);
-    
+    const htmlBody = retentionRenderTemplate_('ExpiringEmail', testMember);
+
     GmailApp.sendEmail(
       TEST_EMAIL,
       'TEST - Expiring Email Preview - ' + testMember.rank + ' ' + testMember.lastName,

@@ -4,9 +4,34 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.9.0
- * Date: 2026-07-19
- * Changes: Added PROFILE_.RUN_RECOVERY_EMAIL_NOTIFICATIONS (on for seniors and
+ * Version: 1.13.0
+ * Date: 2026-07-25
+ * Changes: Added RETENTION_CONFIG.CC_DUTY_TITLES — the unit duty positions CC'd
+ *   alongside the commander on retention mail, per email type. Turning 18/21 adds
+ *   the Deputy Commander for Cadets; renewals add the Recruiting Officer.
+ *   1.12.0: Added PROFILE_.RUN_RETENTION_EMAILS — true on seniors, false on cadets
+ *   and region. recruiting-and-retention/SendRetentionEmail.gs hardcodes
+ *   'CADET'/'SENIOR' rather than reading MEMBER_TYPES.ACTIVE, and both wing
+ *   tenants download the same wing-wide CAPWATCH extract, so it addresses the
+ *   whole wing from wherever it runs. Arming it on both tenants therefore did not
+ *   split the work between them — it mailed every member twice.
+ *   1.11.0: SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX is now the
+ *   Script Property TENANT_RECRUITING_MAILBOX instead of a literal. It held the
+ *   placeholder '<recruiting email DL here>', which is truthy, so every squadron
+ *   public-contact group update sent that string to AdminDirectory.Members.insert
+ *   and logged the failure — daily, per unit. It was also a tenant value living
+ *   in a file every push overwrites identically, so it could never have been
+ *   right on more than one tenant. Blank now disables the behavior and blank is
+ *   the default: enabling it changes group membership wing-wide.
+ *   1.10.0: Added optional Script Property TENANT_DIRECTOR_RECRUITING_NAME
+ *   (CONFIG-level const DIRECTOR_RECRUITING_NAME), the signature name rendered
+ *   into the retention templates as {{directorName}}. Blank renders the office
+ *   title alone. Like TENANT_DIRECTOR_RECRUITING_EMAIL it names an individual, so
+ *   it is deliberately not version-controlled in config-tenants/. Completes the
+ *   1.7.0 wing-label genericization for the three member-facing retention
+ *   templates, which still carried a hard-coded wing and role holder. See
+ *   PCR_CHANGELOG.md.
+ *   1.9.0: Added PROFILE_.RUN_RECOVERY_EMAIL_NOTIFICATIONS (on for seniors and
  *   cadets, off for region) and CONFIG.COMMAND_EMAIL_DOMAIN (optional Script
  *   Property TENANT_COMMAND_EMAIL_DOMAIN, blank defaults to EMAIL_DOMAIN), both
  *   consumed by notifications/RecoveryEmailNotify.gs. The command domain exists
@@ -125,7 +150,20 @@ function getTenantConfig_() {
     AUTOMATION_SPREADSHEET_ID: get('TENANT_AUTOMATION_SPREADSHEET_ID'),
     RETENTION_LOG_SPREADSHEET_ID: get('TENANT_RETENTION_LOG_SPREADSHEET_ID'),
     RETENTION_EMAIL: get('TENANT_RETENTION_EMAIL'),
+    // Wing recruiting mailbox added as a member to every squadron public-contact
+    // group, so wing recruiting sees squadron-level public inquiries. BLANK
+    // DISABLES the behavior, and blank is the default: switching it on changes
+    // group membership across every unit in the wing, which should be a
+    // deliberate act rather than something a deploy does quietly. Consumed by
+    // squadron-groups/SquadronGroups.gs.
+    RECRUITING_MAILBOX: get('TENANT_RECRUITING_MAILBOX'),
     DIRECTOR_RECRUITING_EMAIL: get('TENANT_DIRECTOR_RECRUITING_EMAIL'),
+    // Signature name rendered into the member-facing retention templates
+    // ({{directorName}}). Like the address above this is an individual, so it is
+    // NOT version-controlled — set it per project. Blank renders the office line
+    // alone ("Director of Recruiting, <Wing> Civil Air Patrol"), which is correct
+    // copy for a tenant that has not named a role holder.
+    DIRECTOR_RECRUITING_NAME: get('TENANT_DIRECTOR_RECRUITING_NAME'),
     AUTOMATION_SENDER_EMAIL: get('TENANT_AUTOMATION_SENDER_EMAIL'),
     SENDER_NAME: get('TENANT_SENDER_NAME', 'CAP Information Technology'),
     TEST_EMAIL: get('TENANT_TEST_EMAIL'),
@@ -185,6 +223,15 @@ const TENANT_PROFILES_ = {
     // record would block a password reset (no CAP address in PRIMARY, and/or no
     // personal address anywhere). On here: every senior member holds an account.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: true,
+    // Monthly member-facing retention mail (turning 18 / turning 21 / expiring).
+    // ON HERE, AND DELIBERATELY ON EXACTLY ONE TENANT. Unlike every other
+    // member-consuming module this one hardcodes 'CADET'/'SENIOR' rather than
+    // reading MEMBER_TYPES.ACTIVE, and both wing tenants download the SAME
+    // wing-wide CAPWATCH extract (same ORGID, unitOnly=0). So it addresses the
+    // whole wing from wherever it runs, and arming it on both tenants does not
+    // split the work — it mails every member twice. Seniors is the right host:
+    // it is where the retention log and role groups live.
+    RUN_RETENTION_EMAILS: true,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: true,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: true,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -251,6 +298,11 @@ const TENANT_PROFILES_ = {
     // REQUIRES TENANT_COMMAND_EMAIL_DOMAIN to be set to the senior domain here:
     // a cadet unit's commander and personnel officer are seniors.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: true,
+    // OFF: not because cadets are out of scope, but because the seniors tenant
+    // already mails them. This module reads the same wing-wide extract from
+    // either tenant, so running it here as well delivers a second copy of every
+    // cadet's birthday and expiration mail. See the seniors profile.
+    RUN_RETENTION_EMAILS: false,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [
@@ -317,6 +369,10 @@ const TENANT_PROFILES_ = {
     // "unit commander" is the region commander sitting alongside the ~50 members
     // the digest would describe. A spreadsheet serves that better than mail.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: false,
+    // Off: the region tenant has no retention log sheet and no recruiting role
+    // group configured, and its ~50 members sit in one unit alongside the staff
+    // who would be mailing them.
+    RUN_RETENTION_EMAILS: false,
     SQUADRON_ACCESS_GROUP_AUTO_CREATE: false,
     SQUADRON_PUBLIC_CONTACT_AUTO_CREATE: false,
     SQUADRON_DISTRIBUTION_TYPES: [], // no subordinate squadrons
@@ -421,7 +477,9 @@ function setupTenantConfig() {
     TENANT_AUTOMATION_SPREADSHEET_ID: '',
     TENANT_RETENTION_LOG_SPREADSHEET_ID: '',
     TENANT_RETENTION_EMAIL: '',
+    TENANT_RECRUITING_MAILBOX: '',         // wing recruiting mailbox added to every squadron public-contact group; '' disables
     TENANT_DIRECTOR_RECRUITING_EMAIL: '',
+    TENANT_DIRECTOR_RECRUITING_NAME: '',   // e.g. Maj Jane Doe; '' signs retention mail with the office title only
     TENANT_AUTOMATION_SENDER_EMAIL: '',
     TENANT_SENDER_NAME: '',
     TENANT_TEST_EMAIL: '',
@@ -740,6 +798,12 @@ const RETENTION_EMAIL = TENANT.RETENTION_EMAIL;
 /** Email address for Director of Recruiting and Retention */
 const DIRECTOR_RECRUITING_EMAIL = TENANT.DIRECTOR_RECRUITING_EMAIL;
 
+/**
+ * Signature name for member-facing retention email ({{directorName}}).
+ * Blank is valid and renders the office title alone — see TENANT config.
+ */
+const DIRECTOR_RECRUITING_NAME = TENANT.DIRECTOR_RECRUITING_NAME;
+
 /** Email alias to use as sender for automated emails */
 const AUTOMATION_SENDER_EMAIL = TENANT.AUTOMATION_SENDER_EMAIL;
 
@@ -763,7 +827,10 @@ const RETENTION_CONFIG = {
   SUBJECTS: {
     TURNING_18: 'Important Membership Update - Turning 18',
     TURNING_21: 'Important Membership Update - Turning 21',
-    EXPIRING: 'Your CAP Membership Expires Soon'
+    EXPIRING: 'Your CAP Membership Expires Soon',
+    // Per-unit worklist to the commander and recruiting officer. The unit
+    // charter is appended at send time.
+    RENEWAL_DIGEST: 'Memberships expiring this month in your unit'
   },
 
   /**
@@ -772,6 +839,29 @@ const RETENTION_CONFIG = {
   AGE_THRESHOLDS: {
     TRANSITION_TO_SENIOR: 18,
     CADET_AGE_OUT: 21
+  },
+
+  /**
+   * Unit duty positions CC'd alongside the commander, by email type.
+   *
+   * These are CAPWATCH `Duty` values, matched after normalization through
+   * formatDutyTitle_() — so the legacy 'Recruiting & Retention Officer' rows the
+   * ICL to CAPR 30-1 renamed are matched by the current title, and the trailing
+   * whitespace the feed ships on duty values does not matter.
+   *
+   * These are CC'd independently of the commander, who is CADET-ONLY. A unit
+   * with no reachable commander still reaches its duty holders, and a SENIOR
+   * renewal reaches the recruiting officer and nobody else at the unit.
+   *   AGE_MILESTONE  — turning 18 / 21. The DCC owns the cadet program at the
+   *                    unit and is the person who actually walks a cadet through
+   *                    the decision the mail describes. Cadets by definition.
+   *   RENEWAL        — expiring, SENIOR AND CADET ALIKE. Retention is the
+   *                    recruiting officer's job regardless of who is renewing;
+   *                    only the commander copy varies by member type.
+   */
+  CC_DUTY_TITLES: {
+    AGE_MILESTONE: ['Deputy Commander for Cadets'],
+    RENEWAL: ['Recruiting Officer']
   },
 
   /**
@@ -1025,11 +1115,21 @@ const SQUADRON_GROUP_CONFIG = {
     ],
     
     /**
-     * Wing-level recruiting mailbox to include in all public contact groups
-     * This allows the Wing Director of Recruiting & Retention to monitor
-     * squadron public contact inquiries for recruiting opportunities
+     * Wing-level recruiting mailbox to include in all public contact groups,
+     * so wing recruiting sees squadron public contact inquiries.
+     *
+     * Per-tenant, so it comes from the TENANT_RECRUITING_MAILBOX Script
+     * Property — it cannot be a literal here, because a push overwrites
+     * config.gs identically on every tenant.
+     *
+     * BLANK DISABLES IT, and blank is the default. This previously held the
+     * literal placeholder '<recruiting email DL here>', which is truthy, so
+     * every squadron public-contact group update tried to add that string as a
+     * member and logged a failure — daily, per unit, for as long as the
+     * placeholder was in place. Switching it on is a wing-wide group membership
+     * change and should be a deliberate act.
      */
-    RECRUITING_MAILBOX: '<recruiting email DL here>',
+    RECRUITING_MAILBOX: TENANT.RECRUITING_MAILBOX,
     
     /**
      * Description template for public contact groups

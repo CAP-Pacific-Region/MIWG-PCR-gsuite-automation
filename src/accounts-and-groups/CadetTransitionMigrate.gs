@@ -1,9 +1,20 @@
 /**
  * Cadet → senior mail migration.
  *
- * Version: 1.0.1
- * Date: 2026-07-17
- * Changes: 1.0.1 — transition-complete email now renders {{wingName}}
+ * Version: 1.1.0
+ * Date: 2026-07-25
+ * Changes: 1.1.0 — the commander CC on the transition-complete email now goes to
+ *   the commander's CAP account rather than the personal address on their
+ *   CAPWATCH record. No code here changed: getCommanderInfo() in
+ *   recruiting-and-retention/SendRetentionEmail.gs (1.2.0) changed how it
+ *   resolves an address, and this is its other caller. Intentional and reviewed,
+ *   not incidental — the notice is CAP business either way. Note this module runs
+ *   on the CADETS tenant, where command staff are seniors, so the address now
+ *   derives onto CONFIG.COMMAND_EMAIL_DOMAIN (the senior domain) instead of
+ *   whatever CAPWATCH held. Derived addresses are unverified, so a commander
+ *   whose account does not follow first.last naming will have their CC bounce;
+ *   the member's own send is unaffected. See PCR_CHANGELOG.md.
+ *   1.0.1 — transition-complete email now renders {{wingName}}
  *   (CONFIG.WING_NAME) so the masthead/footer read for any wing, not literal
  *   California Wing.
  *   1.0.0 — initial release. Parallel Gmail import into the senior
