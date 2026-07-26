@@ -1,10 +1,16 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.6.0
+ * Version: 1.7.0
  * Filename: UpdateGroups.gs
  * Saved: 2026-07-26
- * Changes: 1.6.0: new 'professionalLevel' attribute reads PD levels from the PL_*
+ * Changes: 1.7.0: 'professionalLevel' now places a member on their HIGHEST
+ *   completed level only — a Level V holder is in all-level-v and nowhere else,
+ *   where 1.6.0 put them in every level group they had ever passed. Adds
+ *   'professionalLevelInProgress' for members holding some parts of a level but
+ *   not all (Level 2 Part 1 without Part 2). The level ladder is derived from
+ *   PL_Paths names, so a level re-split upstream needs no code change.
+ *   1.6.0: new 'professionalLevel' attribute reads PD levels from the PL_*
  *   tables (PL_Paths, PL_MemberPathCredit, PL_Lookup), where the post-2018
  *   program actually records them. Achievements.txt still lists the RETIRED
  *   Level II-V (AchvIDs 131-134), so rows keyed on those resolved cleanly and
@@ -1634,42 +1640,70 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
       // retired program, which is the trap — a Groups row keyed on those IDs resolves
       // cleanly and then matches nobody, because no member record uses them any more.
       //
+      // A member appears ONLY in the group for their HIGHEST completed level. A
+      // Level V holder is in all-level-v and nowhere else — the levels are rungs,
+      // not badges you accumulate, and a wing that mails "all-level-ii" means the
+      // people sitting at Level II, not everyone who ever passed through it.
+      //
       // Spreadsheet usage:
       //   Category:   education-training
       //   Group Name: all-level-ii
       //   Attribute:  professionalLevel
       //   Values:     Level 2          (a PathID also works; "Level II" is accepted)
       //
-      // Level 2 is two paths in CAPWATCH ("Level 2 Part 1" and "Part 2"), so a value
-      // naming it requires BOTH before a member counts as having it. Several values
-      // are an OR: "Level 4,Level 5" is anyone holding either.
-      const levelRequirements = resolveProfessionalLevelRequirements_(values, groupName);
+      // Level 2 is two paths in CAPWATCH ("Level 2 Part 1" and "Part 2") and counts
+      // as completed only when BOTH are approved. For the people partway through,
+      // see professionalLevelInProgress below. Several values are an OR: "Level 4,
+      // Level 5" is anyone whose highest is either.
+      //
+      // A value naming something off the level ladder — "Squadron Commander
+      // Training", "TLC Basic" — has no rung to be highest, so it keeps plain
+      // "holds this path" semantics.
+
+    case 'professionalLevelInProgress':
+      // The other side of the same table: members who hold SOME parts of a level
+      // but not all of them. Built for "finished Level II Part 1, hasn't finished
+      // Part 2" — the list a wing sends a nudge to.
+      //
+      // Spreadsheet usage:
+      //   Group Name: all-level-ii-part-1-only
+      //   Attribute:  professionalLevelInProgress
+      //   Values:     Level 2
+      //
+      // A level CAPWATCH stores as a single path can have no in-progress state, and
+      // says so rather than creating a group that can never fill.
+      const wantsInProgress = attribute === 'professionalLevelInProgress';
+      const levelSpec = resolveProfessionalLevelSpec_(values, groupName, wantsInProgress);
+      const levelLadder = getProfessionalLevelLadder_();
       const approvedByCapid = getApprovedPathCreditsByCapid_();
+
       let levelMembersMatched = 0;
-      let levelPartial = 0;
+      let levelSupersededByHigher = 0;
+      let levelPartialSeen = 0;
 
       for (const member in members) {
         if (!members[member].email) continue;
 
-        const earned = approvedByCapid[String(member)];
-        if (!earned) continue;
+        const earned = approvedByCapid[String(member)] || {};
+        const standing = summarizeMemberLevelStanding_(earned, levelLadder);
+        if (standing.partial.length) levelPartialSeen++;
 
-        let holdsAny = false;
-        let holdsSome = false;
-        for (let r = 0; r < levelRequirements.length; r++) {
-          const needed = levelRequirements[r].pathIds;
-          if (!needed.length) continue;
+        let qualifies = false;
 
-          const have = needed.filter(id => earned[id]).length;
-          if (have === needed.length) { holdsAny = true; break; }
-          if (have > 0) holdsSome = true;
+        if (wantsInProgress) {
+          qualifies = levelSpec.levels.some(n => standing.partial.indexOf(n) > -1);
+        } else {
+          qualifies = levelSpec.levels.some(n => standing.highest === n) ||
+            levelSpec.paths.some(p => p.pathIds.length && p.pathIds.every(id => earned[id]));
+
+          // Completed this level, but has since moved past it. Counted so the log
+          // explains a group that shrank the day this rule arrived.
+          if (!qualifies && levelSpec.levels.some(n => standing.completed.indexOf(n) > -1)) {
+            levelSupersededByHigher++;
+          }
         }
 
-        if (!holdsAny) {
-          // Level 2 Part 1 without Part 2 is progress, not the level.
-          if (holdsSome) levelPartial++;
-          continue;
-        }
+        if (!qualifies) continue;
 
         levelMembersMatched++;
         groups[wingGroupId][members[member].email] = 1;
@@ -1684,22 +1718,28 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
 
       Logger.info('Professional level group resolved', {
         group: wingGroupId,
+        mode: wantsInProgress ? 'in progress' : 'highest completed level',
         values: values.join(', '),
-        resolvedPaths: levelRequirements.map(r => `${r.label}=[${r.pathIds.join('+')}]`).join(', ') || '(none)',
+        resolvedLevels: levelSpec.levels.join(', ') || '(none)',
+        resolvedPaths: levelSpec.paths.map(p => `${p.label}=[${p.pathIds.join('+')}]`).join(', ') || '(none)',
         members: levelMembersMatched,
-        partialCredit: levelPartial,
+        excludedHoldingAHigherLevel: levelSupersededByHigher,
+        membersWithAnyPartialLevel: levelPartialSeen,
         capidsWithAnyApprovedPath: Object.keys(approvedByCapid).length
       });
 
       if (Object.keys(groups[wingGroupId]).length === 0) {
         Logger.warn('Professional level group matched no members - leaving it unmanaged this run', {
           group: wingGroupId,
+          mode: wantsInProgress ? 'in progress' : 'highest completed level',
           values: values.join(', '),
-          resolvedPaths: levelRequirements.map(r => r.pathIds.join('+')).join(', ') || '(none)',
-          partialCredit: levelPartial,
+          resolvedLevels: levelSpec.levels.join(', ') || '(none)',
+          excludedHoldingAHigherLevel: levelSupersededByHigher,
           note: Object.keys(approvedByCapid).length === 0
             ? 'PL_MemberPathCredit.txt is missing or empty in the CAPWATCH folder.'
-            : 'Paths resolved and credits loaded, but no member with an account holds this level.'
+            : (levelSupersededByHigher > 0
+              ? 'Everyone who completed this level has gone past it, and each is in the group for their own highest level.'
+              : 'Paths resolved and credits loaded, but nobody with an account is at this level.')
         });
         for (const emptyGroupId in groups) {
           if (Object.keys(groups[emptyGroupId]).length === 0) delete groups[emptyGroupId];
@@ -2024,21 +2064,87 @@ function getApprovedPathCreditsByCapid_() {
 }
 
 /**
- * Resolves Values entries to the PL paths each one requires.
+ * The level ladder: level number -> every PL path that level is made of.
  *
- * A value may be a PathID, or a path name from PL_Paths.txt. A name that CAPWATCH
- * splits into parts — "Level 2" is stored as "Level 2 Part 1" and "Level 2 Part 2"
- * — resolves to ALL of its parts, and the member must hold every one of them for
- * the level to count. Roman numerals fold to digits, so "Level II" works.
+ * Read out of PL_Paths by name, so "Level 2 Part 1" and "Level 2 Part 2" both land
+ * under 2 and a level added or re-split upstream is picked up without a code change.
+ * Paths that are not levels (TLC, commander training, cadet achievements) are not
+ * rungs and are absent here.
+ *
+ * @returns {Object<string, string[]>} e.g. { '1': ['4'], '2': ['7','8'], '3': ['3'] }
+ */
+function getProfessionalLevelLadder_() {
+  const ladder = {};
+
+  readCapwatchTable_('PL_Paths').forEach(row => {
+    const id = String(row.PathID || '').trim();
+    if (!id) return;
+
+    const match = normalizeAchievementLabel_(row.PathName).match(/^level (\d+)( part \d+)?$/);
+    if (!match) return;
+
+    const level = match[1];
+    if (!ladder[level]) ladder[level] = [];
+    if (ladder[level].indexOf(id) === -1) ladder[level].push(id);
+  });
+
+  Object.keys(ladder).forEach(level => ladder[level].sort());
+  return ladder;
+}
+
+/**
+ * Where one member stands on the ladder.
+ *
+ * @param {Object<string, boolean>} earned - Approved PathIDs for this member
+ * @param {Object<string, string[]>} ladder - From getProfessionalLevelLadder_()
+ * @returns {{completed: string[], partial: string[], highest: string}} `highest` is
+ *   '' for a member who has completed no level; `partial` holds levels with some
+ *   parts approved but not all.
+ */
+function summarizeMemberLevelStanding_(earned, ladder) {
+  const completed = [];
+  const partial = [];
+  let highest = 0;
+
+  Object.keys(ladder).forEach(level => {
+    const pathIds = ladder[level];
+    const have = pathIds.filter(id => earned[id]).length;
+
+    if (have === pathIds.length) {
+      completed.push(level);
+      if (Number(level) > highest) highest = Number(level);
+    } else if (have > 0) {
+      partial.push(level);
+    }
+  });
+
+  return {
+    completed: completed,
+    partial: partial,
+    highest: highest ? String(highest) : ''
+  };
+}
+
+/**
+ * Resolves Values entries into level rungs and plain paths.
+ *
+ * A value naming a level — "Level 2", "Level II", or the PathID of any path that
+ * level is made of — becomes a rung, matched against the member's HIGHEST completed
+ * level. Anything else that names a real path ("TLC Basic") stays a plain
+ * "holds this path" requirement, since a non-level has no rung to be highest.
  *
  * @param {string[]} values - Trimmed Values entries from the Groups sheet
  * @param {string} groupName - Base group name, for logging
- * @returns {Array<{label: string, pathIds: string[]}>} One entry per value
+ * @param {boolean} [forInProgress=false] - Warn about values that cannot be partial
+ * @returns {{levels: string[], paths: Array<{label: string, pathIds: string[]}>}}
  */
-function resolveProfessionalLevelRequirements_(values, groupName) {
+function resolveProfessionalLevelSpec_(values, groupName, forInProgress = false) {
   const paths = readCapwatchTable_('PL_Paths');
+  const ladder = getProfessionalLevelLadder_();
+
   const byId = {};
   const byNormalizedName = {};
+  const levelByPathId = {};
 
   paths.forEach(row => {
     const id = String(row.PathID || '').trim();
@@ -2049,35 +2155,41 @@ function resolveProfessionalLevelRequirements_(values, groupName) {
     if (norm) byNormalizedName[norm] = id;
   });
 
-  const requirements = [];
+  Object.keys(ladder).forEach(level => {
+    ladder[level].forEach(id => { levelByPathId[id] = level; });
+  });
+
+  const spec = { levels: [], paths: [] };
   const unresolved = [];
+  const notSplittable = [];
+
+  const addLevel = (level) => {
+    if (spec.levels.indexOf(level) === -1) spec.levels.push(level);
+    if (forInProgress && (ladder[level] || []).length < 2) notSplittable.push('Level ' + level);
+  };
 
   for (let i = 0; i < values.length; i++) {
     const value = String(values[i] || '').trim();
     if (!value) continue;
 
-    if (/^\d+$/.test(value) && byId[value]) {
-      requirements.push({ label: byId[value], pathIds: [value] });
-      continue;
-    }
-
     const norm = normalizeAchievementLabel_(value);
-    if (byNormalizedName[norm]) {
-      requirements.push({ label: value, pathIds: [byNormalizedName[norm]] });
+
+    // "Level 2" / "Level II"
+    const named = norm.match(/^level (\d+)$/);
+    if (named && ladder[named[1]]) {
+      addLevel(named[1]);
       continue;
     }
 
-    // "Level 2" -> every "Level 2 Part N" path, all of them required.
-    const parts = Object.keys(byNormalizedName)
-      .filter(name => name.indexOf(norm + ' part ') === 0)
-      .map(name => byNormalizedName[name])
-      .sort();
-
-    if (parts.length) {
-      requirements.push({ label: value, pathIds: parts });
-    } else {
-      unresolved.push(value);
+    // A PathID, or a full path name. Either becomes a rung when it belongs to one.
+    const pathId = (/^\d+$/.test(value) && byId[value]) ? value : byNormalizedName[norm];
+    if (pathId) {
+      if (levelByPathId[pathId]) addLevel(levelByPathId[pathId]);
+      else spec.paths.push({ label: byId[pathId] || value, pathIds: [pathId] });
+      continue;
     }
+
+    unresolved.push(value);
   }
 
   if (unresolved.length) {
@@ -2091,7 +2203,15 @@ function resolveProfessionalLevelRequirements_(values, groupName) {
     });
   }
 
-  return requirements;
+  if (notSplittable.length) {
+    Logger.warn('Level has no parts, so it has no in-progress state', {
+      groupName: groupName,
+      levels: notSplittable.join(', '),
+      note: 'CAPWATCH stores this level as a single path — a member either holds it or does not.'
+    });
+  }
+
+  return spec;
 }
 
 /**

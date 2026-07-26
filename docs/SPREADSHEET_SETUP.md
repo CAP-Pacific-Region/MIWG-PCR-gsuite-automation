@@ -86,7 +86,8 @@ positional**, so keep this order (`UpdateGroups.gs`):
 | `dutyPositionLevel` | Any duty at the given level | wing DL only |
 | `dutyPositionLevelStaff` | Staff at `WING` or `GROUP` echelon | wing or per-group DLs |
 | `achievements` | Achievement (ES rating, cadet achievement), `ACTIVE` or `TRAINING` | wing + group DLs |
-| `professionalLevel` | PD level / PL path, approved credit | wing + group DLs |
+| `professionalLevel` | Member's **highest completed** PD level (or a non-level PL path) | wing + group DLs |
+| `professionalLevelInProgress` | Some parts of a level approved, not all | wing + group DLs |
 | `committeeIds` | Wing/group committee name | wing + group DLs |
 | `contact` | Cadets + the listed `MbrContact` types | wing + group DLs |
 | `manualOnly` | Nothing — creates the group IDs in `Values` | exactly what `Values` lists |
@@ -116,11 +117,23 @@ used to fail *silently* — producing a real, empty group rather than an error:
   | `all-level-ii` | `professionalLevel` | `Level 2` |
   | `all-level-iii` | `professionalLevel` | `Level 3` |
 
-  `Level 2` is stored as two paths (`Part 1`, `Part 2`) and the member must hold **both**;
-  a `PathID` works in place of a name, Roman numerals fold to digits, and several values
-  are an OR. Only **approved** credit counts (`PL_Lookup` says which StatusID that is).
-  `listProfessionalLevelPaths('level')` prints the real path names — and any path works,
-  not just levels, so `Squadron Commander Training` is a valid row.
+  **A member is in the group for their highest completed level and no other** — the levels
+  are rungs, not badges, so someone who has finished Level V is in `all-level-v` alone.
+  `Level 2` is stored as two paths (`Part 1`, `Part 2`) and the member must hold **both** for
+  it to count. A `PathID` works in place of a name, Roman numerals fold to digits, and
+  several values are an OR. Only **approved** credit counts (`PL_Lookup` says which StatusID
+  that is). `listProfessionalLevelPaths('level')` prints the real path names — and any path
+  works, not just levels, so `Squadron Commander Training` is a valid row (with plain
+  "holds it" semantics, since a non-level has no rung to be highest).
+- **For the people partway up a level, use `professionalLevelInProgress`.** Values name the
+  level; membership is "holds some parts, not all":
+
+  | Group Name | Attribute | Values |
+  |---|---|---|
+  | `all-level-ii-part-1-only` | `professionalLevelInProgress` | `Level 2` |
+
+  Levels 3–5 are a single path each, so they have no in-progress state — a row asking for one
+  warns and creates nothing.
 
 **Group-echelon DLs follow the position, not the sheet.** A duty or rank row creates a
 per-group rollup (`ca0X.<name>`) only where somebody actually qualifies, or where that DL
