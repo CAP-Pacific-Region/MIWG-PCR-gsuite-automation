@@ -665,6 +665,8 @@ Builds group membership lists based on member attributes.
 - `dutyPositionLevel` - Just the level (UNIT, GROUP, WING)
 - `dutyPositionLevelStaff` - Staff at WING or GROUP echelon
 - `achievements` - Achievement name **or** numeric AchvID, `ACTIVE`/`TRAINING`
+- `professionalLevel` - PD level from the `PL_*` tables (path name or `PathID`, approved
+  credit only). Levels are **not** in `MbrAchievements`; `Level 2` is two paths and needs both
 - `committeeIds` - Wing/group committee assignment
 - `contact` - Parent/guardian contacts
 - `manualOnly` - Creates exactly the group IDs listed in Values, deriving no members

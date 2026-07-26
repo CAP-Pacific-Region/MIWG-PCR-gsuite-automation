@@ -1,10 +1,16 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.5.0
+ * Version: 1.6.0
  * Filename: UpdateGroups.gs
  * Saved: 2026-07-26
- * Changes: 1.5.0: group-echelon DLs are no longer minted for positions that
+ * Changes: 1.6.0: new 'professionalLevel' attribute reads PD levels from the PL_*
+ *   tables (PL_Paths, PL_MemberPathCredit, PL_Lookup), where the post-2018
+ *   program actually records them. Achievements.txt still lists the RETIRED
+ *   Level II-V (AchvIDs 131-134), so rows keyed on those resolved cleanly and
+ *   matched nobody. Level 2 is two CAPWATCH paths and requires both.
+ *   listProfessionalLevelPaths() prints the real path names.
+ *   1.5.0: group-echelon DLs are no longer minted for positions that
  *   echelon does not establish. Duty and rank rules seed one DL per group-echelon
  *   org before matching members, so a wing-only office — Director of Information
  *   Technology (an IT Officer below wing), Inspector General (groups have none) —
@@ -1618,6 +1624,89 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
       }
       break;
 
+    case 'professionalLevel':
+      // Professional development levels — Level 1 through Level 5.
+      //
+      // These are NOT in MbrAchievements. The post-2018 PD program lives in its own
+      // CAPWATCH subsystem, the PL_* tables: PL_Paths names each path, and
+      // PL_MemberPathCredit records who has credit for it and whether it is approved.
+      // Achievements.txt still LISTS "Level II".."Level V" (AchvIDs 131-134) from the
+      // retired program, which is the trap — a Groups row keyed on those IDs resolves
+      // cleanly and then matches nobody, because no member record uses them any more.
+      //
+      // Spreadsheet usage:
+      //   Category:   education-training
+      //   Group Name: all-level-ii
+      //   Attribute:  professionalLevel
+      //   Values:     Level 2          (a PathID also works; "Level II" is accepted)
+      //
+      // Level 2 is two paths in CAPWATCH ("Level 2 Part 1" and "Part 2"), so a value
+      // naming it requires BOTH before a member counts as having it. Several values
+      // are an OR: "Level 4,Level 5" is anyone holding either.
+      const levelRequirements = resolveProfessionalLevelRequirements_(values, groupName);
+      const approvedByCapid = getApprovedPathCreditsByCapid_();
+      let levelMembersMatched = 0;
+      let levelPartial = 0;
+
+      for (const member in members) {
+        if (!members[member].email) continue;
+
+        const earned = approvedByCapid[String(member)];
+        if (!earned) continue;
+
+        let holdsAny = false;
+        let holdsSome = false;
+        for (let r = 0; r < levelRequirements.length; r++) {
+          const needed = levelRequirements[r].pathIds;
+          if (!needed.length) continue;
+
+          const have = needed.filter(id => earned[id]).length;
+          if (have === needed.length) { holdsAny = true; break; }
+          if (have > 0) holdsSome = true;
+        }
+
+        if (!holdsAny) {
+          // Level 2 Part 1 without Part 2 is progress, not the level.
+          if (holdsSome) levelPartial++;
+          continue;
+        }
+
+        levelMembersMatched++;
+        groups[wingGroupId][members[member].email] = 1;
+
+        const parent = members[member].group ? squadrons[members[member].group] : null;
+        if (parent && parent.scope === 'GROUP' && parent.unit && parent.unit !== '001' && parent.unit !== '000') {
+          groupId = squadrons[members[member].orgid].wing.toLowerCase() + parent.unit + '.' + groupName;
+          if (!groups[groupId]) groups[groupId] = {};
+          groups[groupId][members[member].email] = 1;
+        }
+      }
+
+      Logger.info('Professional level group resolved', {
+        group: wingGroupId,
+        values: values.join(', '),
+        resolvedPaths: levelRequirements.map(r => `${r.label}=[${r.pathIds.join('+')}]`).join(', ') || '(none)',
+        members: levelMembersMatched,
+        partialCredit: levelPartial,
+        capidsWithAnyApprovedPath: Object.keys(approvedByCapid).length
+      });
+
+      if (Object.keys(groups[wingGroupId]).length === 0) {
+        Logger.warn('Professional level group matched no members - leaving it unmanaged this run', {
+          group: wingGroupId,
+          values: values.join(', '),
+          resolvedPaths: levelRequirements.map(r => r.pathIds.join('+')).join(', ') || '(none)',
+          partialCredit: levelPartial,
+          note: Object.keys(approvedByCapid).length === 0
+            ? 'PL_MemberPathCredit.txt is missing or empty in the CAPWATCH folder.'
+            : 'Paths resolved and credits loaded, but no member with an account holds this level.'
+        });
+        for (const emptyGroupId in groups) {
+          if (Object.keys(groups[emptyGroupId]).length === 0) delete groups[emptyGroupId];
+        }
+      }
+      break;
+
     case 'contact':
       // Always include ALL cadets (Workspace primary emails) at wing level only
       for (const member in members) {
@@ -1837,6 +1926,195 @@ function getExistingGroupEmails_() {
  */
 function managedGroupExists_(groupEmail) {
   return !!getExistingGroupEmails_()[String(groupEmail || '').trim().toLowerCase()];
+}
+
+const _capwatchTableCache_ = {};
+
+/**
+ * Reads a CAPWATCH file WITH its header, as an array of objects.
+ *
+ * parseFile() drops the header row, which leaves column meaning encoded as a
+ * magic index — the habit that left Member.txt's Expiration column unverified at
+ * index 16 for months. The PL_* tables are new here and have no such folklore, so
+ * they are read by name from the start.
+ *
+ * @param {string} fileName - Without extension, e.g. 'PL_MemberPathCredit'
+ * @returns {Array<Object<string,string>>} One object per data row
+ */
+function readCapwatchTable_(fileName) {
+  if (_capwatchTableCache_[fileName]) return _capwatchTableCache_[fileName];
+
+  let out = [];
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+    const files = folder.getFilesByName(fileName + '.txt');
+
+    if (!files.hasNext()) {
+      Logger.warn('CAPWATCH file not found', { fileName: fileName + '.txt' });
+      _capwatchTableCache_[fileName] = out;
+      return out;
+    }
+
+    const rows = Utilities.parseCsv(files.next().getBlob().getDataAsString());
+    if (!rows || rows.length < 2) {
+      Logger.warn('CAPWATCH file has no data rows', { fileName: fileName + '.txt' });
+      _capwatchTableCache_[fileName] = out;
+      return out;
+    }
+
+    const header = rows[0].map(h => String(h || '').trim());
+    for (let i = 1; i < rows.length; i++) {
+      const obj = {};
+      for (let c = 0; c < header.length; c++) {
+        if (header[c]) obj[header[c]] = rows[i][c] === undefined ? '' : String(rows[i][c]).trim();
+      }
+      out.push(obj);
+    }
+  } catch (e) {
+    Logger.warn('Failed to read CAPWATCH file', { fileName: fileName + '.txt', errorMessage: e.message });
+  }
+
+  _capwatchTableCache_[fileName] = out;
+  return out;
+}
+
+/**
+ * CAPID -> { PathID: true } for every APPROVED PL path credit.
+ *
+ * "Approved" is read from PL_Lookup rather than hardcoded: the StatusID that means
+ * APPROVED is 8 today, and the lookup table is right there in the extract.
+ *
+ * @returns {Object<string, Object<string, boolean>>}
+ */
+function getApprovedPathCreditsByCapid_() {
+  const approvedIds = {};
+  readCapwatchTable_('PL_Lookup').forEach(row => {
+    if (String(row.LookupType || '').trim() === 'ApprovalStatus' &&
+        String(row.LookupValue || '').trim().toUpperCase() === 'APPROVED' &&
+        row.LookupID) {
+      approvedIds[String(row.LookupID)] = true;
+    }
+  });
+
+  if (!Object.keys(approvedIds).length) {
+    approvedIds['8'] = true;
+    Logger.warn('PL_Lookup had no APPROVED ApprovalStatus row; falling back to StatusID 8');
+  }
+
+  const byCapid = {};
+  let approvedRows = 0;
+  readCapwatchTable_('PL_MemberPathCredit').forEach(row => {
+    const capid = String(row.CAPID || '').trim();
+    const pathId = String(row.PathID || '').trim();
+    if (!capid || !pathId) return;
+    if (!approvedIds[String(row.StatusID || '').trim()]) return;
+
+    if (!byCapid[capid]) byCapid[capid] = {};
+    byCapid[capid][pathId] = true;
+    approvedRows++;
+  });
+
+  Logger.info('PL path credits loaded', {
+    members: Object.keys(byCapid).length,
+    approvedRows: approvedRows,
+    approvedStatusIds: Object.keys(approvedIds).join(', ')
+  });
+
+  return byCapid;
+}
+
+/**
+ * Resolves Values entries to the PL paths each one requires.
+ *
+ * A value may be a PathID, or a path name from PL_Paths.txt. A name that CAPWATCH
+ * splits into parts — "Level 2" is stored as "Level 2 Part 1" and "Level 2 Part 2"
+ * — resolves to ALL of its parts, and the member must hold every one of them for
+ * the level to count. Roman numerals fold to digits, so "Level II" works.
+ *
+ * @param {string[]} values - Trimmed Values entries from the Groups sheet
+ * @param {string} groupName - Base group name, for logging
+ * @returns {Array<{label: string, pathIds: string[]}>} One entry per value
+ */
+function resolveProfessionalLevelRequirements_(values, groupName) {
+  const paths = readCapwatchTable_('PL_Paths');
+  const byId = {};
+  const byNormalizedName = {};
+
+  paths.forEach(row => {
+    const id = String(row.PathID || '').trim();
+    const name = String(row.PathName || '').trim();
+    if (!id) return;
+    byId[id] = name;
+    const norm = normalizeAchievementLabel_(name);
+    if (norm) byNormalizedName[norm] = id;
+  });
+
+  const requirements = [];
+  const unresolved = [];
+
+  for (let i = 0; i < values.length; i++) {
+    const value = String(values[i] || '').trim();
+    if (!value) continue;
+
+    if (/^\d+$/.test(value) && byId[value]) {
+      requirements.push({ label: byId[value], pathIds: [value] });
+      continue;
+    }
+
+    const norm = normalizeAchievementLabel_(value);
+    if (byNormalizedName[norm]) {
+      requirements.push({ label: value, pathIds: [byNormalizedName[norm]] });
+      continue;
+    }
+
+    // "Level 2" -> every "Level 2 Part N" path, all of them required.
+    const parts = Object.keys(byNormalizedName)
+      .filter(name => name.indexOf(norm + ' part ') === 0)
+      .map(name => byNormalizedName[name])
+      .sort();
+
+    if (parts.length) {
+      requirements.push({ label: value, pathIds: parts });
+    } else {
+      unresolved.push(value);
+    }
+  }
+
+  if (unresolved.length) {
+    Logger.warn('Professional level values could not be resolved to a PL path', {
+      groupName: groupName,
+      unresolved: unresolved.join(', '),
+      pathsIndexed: paths.length,
+      note: paths.length
+        ? 'Value matches no PathName in PL_Paths.txt. Run listProfessionalLevelPaths() to see the real names.'
+        : 'PL_Paths.txt is missing or empty in the CAPWATCH folder.'
+    });
+  }
+
+  return requirements;
+}
+
+/**
+ * Read-only: prints the PL paths CAPWATCH knows about, so a Groups sheet Values
+ * column can be written against the real names.
+ *
+ * @param {string} [filter] - Case-insensitive substring, e.g. 'level'
+ * @returns {void}
+ */
+function listProfessionalLevelPaths(filter) {
+  const needle = String(filter || '').trim().toLowerCase();
+  const paths = readCapwatchTable_('PL_Paths');
+
+  if (!paths.length) {
+    console.log('PL_Paths.txt not found or empty in the CAPWATCH data folder.');
+    return;
+  }
+
+  console.log(`${paths.length} PL paths${needle ? ` matching "${needle}"` : ''}:\n`);
+  paths
+    .filter(row => !needle || String(row.PathName || '').toLowerCase().includes(needle))
+    .sort((a, b) => String(a.PathName).localeCompare(String(b.PathName)))
+    .forEach(row => console.log(`  PathID ${String(row.PathID).padEnd(5)} ${row.PathName}`));
 }
 
 /**
