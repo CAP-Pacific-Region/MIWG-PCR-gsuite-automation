@@ -10,6 +10,49 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-26] — Level groups are rungs, not badges
+
+Two corrections from the wing DA after the first live run.
+
+### Changed — a member is in the group for their HIGHEST level only (`UpdateGroups.gs` 1.7.0)
+
+1.6.0 put a member in every level group they had ever completed, so a Level V holder sat in
+`all-level-ii` through `all-level-v` at once. The levels are **rungs, not badges**: a wing that
+mails `all-level-ii` means the people sitting at Level II, not everyone who passed through it.
+
+`professionalLevel` now matches a member's highest completed level. The rungs come from
+`getProfessionalLevelLadder_()`, which reads them out of `PL_Paths` by name (`Level 2 Part 1`
+and `Part 2` both land under 2), so a level re-split upstream needs no code change.
+
+**The level groups will shrink on the next run.** Everyone who has moved past a level is removed
+from that level's group and appears in their own. The run log counts them as
+`excludedHoldingAHigherLevel`, and a group that empties out entirely for this reason says so
+rather than reporting a mystery.
+
+A value naming something off the ladder — `Squadron Commander Training`, `TLC Basic` — has no
+rung to be highest and keeps plain "holds this path" semantics.
+
+### Added — `professionalLevelInProgress` (`UpdateGroups.gs` 1.7.0)
+
+Members holding **some** parts of a level but not all of them: built for "finished Level II
+Part 1, hasn't finished Part 2", the list a wing sends a nudge to.
+
+```
+Group Name: all-level-ii-part-1-only
+Attribute:  professionalLevelInProgress
+Values:     Level 2
+```
+
+Approved credit only, same as the completed-level rule, so a pending Part 1 is not progress. A
+level CAPWATCH stores as a single path (3, 4, 5) has no in-progress state and warns instead of
+creating a group that can never fill.
+
+### Added (`test/UpdateGroups.professionalLevel.test.js`)
+
+A member who climbed the whole ladder, pinned at each rung; Part 1 alone neither completing
+Level 2 nor promoting past Level 1; the in-progress list; single-path levels rejected for
+in-progress; PathID-of-a-part still meaning the whole level.
+
 ## [2026-07-26] — The E&T level groups were reading a retired program
 
 The `ca.all-level-ii` … `-v` groups came back empty even after achievement names and IDs both
