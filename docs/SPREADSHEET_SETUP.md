@@ -73,6 +73,44 @@ positional**, so keep this order (`UpdateGroups.gs`):
 | E | `Description` | DL description (also the Chat-space display name) | `Group Commanders` |
 | F | `Add Ext` | Allow external members? (`Y`/`Yes`/`X`/`True`) | `N` |
 
+#### `Attribute` — what the rule matches on
+
+| Attribute | Matches | Creates |
+|---|---|---|
+| `type` | Member type (`CADET`, `SENIOR`, …) | wing + group + unit DLs |
+| `rank` | Member rank | wing + group DLs |
+| `dutyPositionIds` | Duty title, held **anywhere** in the wing | wing + group DLs |
+| `dutyPositionIdsWingHQ` | Duty title held **at Wing HQ** (unit 001) | wing DL only |
+| `dutyPositionIdsGroupScope` | Duty title held **at a group echelon org** | wing DL only |
+| `dutyPositionIdsAndLevel` | `<title>_<level>`, excluding Wing HQ | one DL, name as written |
+| `dutyPositionLevel` | Any duty at the given level | wing DL only |
+| `dutyPositionLevelStaff` | Staff at `WING` or `GROUP` echelon | wing or per-group DLs |
+| `achievements` | Achievement, `ACTIVE` or `TRAINING` | wing + group DLs |
+| `committeeIds` | Wing/group committee name | wing + group DLs |
+| `contact` | Cadets + the listed `MbrContact` types | wing + group DLs |
+| `manualOnly` | Nothing — creates the group IDs in `Values` | exactly what `Values` lists |
+
+Three things about `Values` are worth knowing before writing a row, because each of them
+used to fail *silently* — producing a real, empty group rather than an error:
+
+- **Duty rules match the CAPWATCH title, not the office symbol.** `CC` is a `FunctArea`
+  value this code never reads; the title is `Commander`. Titles are compared after the
+  CAPR 30-1 renames, so `Recruiting Officer` also matches records still carrying
+  `Recruiting & Retention Officer`.
+- **`dutyPositionIdsWingHQ` tests the org the duty is held at, not where the member
+  belongs.** Wing staff are usually squadron members holding a wing duty on top, and they
+  belong on the wing office DL; a Wing HQ member holding the same title at a squadron does
+  not.
+- **`achievements` accepts a name or a numeric AchvID.** `MbrAchievements.txt` stores only
+  the ID (Level I is `96`), so names are resolved through `Achievements.txt` —
+  `Level II`, `level ii` and `Level 2` all work. Run `listAchievementNames('level')` to see
+  the exact strings CAPWATCH ships.
+
+**Check a row before trusting it.** `previewEmailGroupRows('recruiting', true)` prints the
+group IDs a matching row generates, the member count for each, and the addresses; it flags
+any group that would be empty and changes nothing. A row whose `Attribute` is misspelled, or
+whose `Values` match no record, creates no group at all and says so in the log.
+
 ### `User Additions` — manual group membership
 People to add to groups beyond what CAPWATCH produces. Header-aware with an A–D positional
 fallback (`UpdateChatSpaces.gs`, `UpdateGroups.gs`):

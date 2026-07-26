@@ -10,6 +10,92 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-26] — Three ways a group rule matched the wrong people, all silent
+
+Reported together, and they turn out to be one habit rather than three bugs: a rule that
+matches nothing, or matches the wrong record, produces a **real Google Group with the wrong
+membership and no error anywhere in the log**. An empty DL is worse than a missing one — it is
+in the GAL, it accepts mail, and it delivers to nobody.
+
+### Fixed — a wing office DL held the assistant and not the primary (`UpdateGroups.gs` 1.4.0)
+
+`dutyPositionIdsWingHQ` tested **the member's home unit** (`squadrons[member.orgid]` being Wing
+HQ) rather than the org the duty is actually held at. Nearly all wing staff are members of a
+squadron and hold their wing duty on top of that, so the rule quietly reduced to *"wing staff who
+are also Wing HQ members"*. For the wing recruiting office that was the assistant; the primary,
+being a squadron member, was dropped. The header comment ("Wing HQ ONLY for the configured duty
+position titles") described the intent, not the code.
+
+It now reads the duty's own org via `getDutyAssignmentOrg_()` — the same resolution
+`dutyPositionLevelStaff` and `dutyPositionIdsGroupScope` already used. The rule reads the same
+way from the other side too: a Wing HQ member holding the title **at a squadron** is now
+excluded, where before they were included on their home unit alone.
+
+### Fixed — retired duty titles no longer miss (`UpdateGroups.gs` 1.4.0)
+
+Duty matching compared raw CAPWATCH strings. `DUTY_TITLE_OVERRIDES` (the ICL to CAPR 30-1 rename
+of `Recruiting & Retention Officer` → `Recruiting Officer`) was applied only to *displayed*
+titles, so a Groups row keyed on the current title silently skipped every holder whose eServices
+record still carried the old one — 2 of CAWG's rows at last count. `normalizeDutyId_()` now runs
+both sides through `formatDutyTitle_()`, so the sheet can be written against current doctrine
+regardless of what is stale upstream. Fixing the record in eServices is still the real remedy.
+
+### Fixed — the Education & Training level groups were unfillable (`UpdateGroups.gs` 1.4.0)
+
+`MbrAchievements.txt` identifies an achievement **only by numeric AchvID** (Level I is `96`); the
+name lives in `Achievements.txt`. The `achievements` rule compared the Values column directly
+against that ID column, so `ca.all-level-ii` and its siblings — written with names, which is the
+obvious thing to type — matched zero rows and created empty groups.
+
+Values may now be **either form**. Names resolve through a `Achievements.txt` index, matched with
+case, whitespace, punctuation and Roman numerals normalized, so `Level II`, `level ii` and
+`Level 2` all land on the same achievement. `listAchievementNames('level')` prints the real
+strings.
+
+### Changed — a rule that matches nobody no longer creates a group
+
+- An **unknown `Attribute`** (a typo in the sheet) used to fall through to a warning *after* its
+  wing-level group had already been pre-created, so the typo shipped a permanent empty group.
+  Nothing is created now.
+- An **achievements row matching no member** is left out of the desired state and warned about,
+  with the row counts by status attached. This also means a mistyped row can no longer *empty* a
+  group that already holds the right people — the failure mode that made the previous behavior
+  dangerous rather than merely untidy.
+
+### Added — see what a rule does before it does it (`UpdateGroups.gs` 1.4.0)
+
+`previewEmailGroupRows(filter, showMembers)` walks the Groups sheet and prints the group IDs each
+row generates and how many members land in each, marking the empty ones. It creates nothing,
+adds nobody and removes nobody. `previewEmailGroupRows('recruiting', true)` is the fastest way to
+confirm a duty rule holds the people it should.
+
+### Fixed — command-staff DLs for positions the unit does not have (`SquadronGroups.gs` 1.5.0)
+
+CAP establishes a plain **Deputy Commander only at senior units**; cadet and composite units have
+**Deputy Commander for Cadets** and **for Seniors** in its place. Every cadet and composite
+squadron was nevertheless getting a `ca###.deputy-commander` DL, which no CAPWATCH duty can fill.
+
+Selection moved into `COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_`, keyed by what the unit's type
+establishes. A **flight** is classified by its own membership (CAPWATCH types it `FLIGHT`
+whatever it runs), and a unit whose kind cannot be determined — unknown type, or a flight with no
+members — now gets the **Commander DL only** instead of all four. Creating all three deputy
+flavors "to be safe" guaranteed at least two were wrong.
+
+`cleanupUnnecessaryDistributionLists()` (preview by default) now offers the wrong ones already
+created: `.deputy-commander` at a cadet or composite unit, `.deputy-commander-cadets/-seniors` at
+a senior one. Flights are left alone. **Deleting a group takes its manual "User Additions"
+members with it** — read the preview.
+
+> Cadet units get `deputy-commander-seniors` under this rule. A prior code comment held that
+> CAPWATCH shows no DCS on cadet units; if that is a doctrine fact rather than a vacancy, drop
+> the suffix from the `CADET_OR_COMPOSITE` entry — it is one line.
+
+### Added (`test/UpdateGroups.dutyGroups.test.js`, `test/UpdateGroups.achievements.test.js`, `test/SquadronGroups.commandStaff.test.js`)
+
+The primary-vs-assistant case pinned directly (synthetic members), the home-unit rule inverted in
+both directions, retired-title matching, achievement names vs IDs vs Roman numerals, status
+filtering, and the command-staff matrix including what cleanup will and will not delete.
+
 ## [2026-07-25] — Per-unit renewal digest; senior notices carry no CC
 
 ### Added — the unit renewal digest (`SendRetentionEmail.gs` 1.7.0, `config.gs`)

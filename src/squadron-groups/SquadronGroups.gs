@@ -1,10 +1,19 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.4.0
+ * Version: 1.5.0
  * Filename: SquadronGroups.gs
- * Saved: 2026-07-25
- * Changes: v1.4.0 — the wing recruiting mailbox added to every public-contact
+ * Saved: 2026-07-26
+ * Changes: v1.5.0 — command-staff DLs now follow what the unit's type actually
+ *   establishes. Every cadet and composite squadron was getting a
+ *   ca###.deputy-commander DL that no CAPWATCH duty can fill, because CAP
+ *   establishes a plain Deputy Commander only at senior units; cadet and
+ *   composite units have Deputy Commander for Cadets / for Seniors instead.
+ *   Selection moves into COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_, an undetermined
+ *   unit type now gets the Commander DL only rather than all four, and
+ *   cleanupUnnecessaryDistributionLists() can delete the wrong ones already
+ *   created. See PCR_CHANGELOG.md.
+ *   v1.4.0 — the wing recruiting mailbox added to every public-contact
  *   group is now validated with sanitizeEmail() before use, not just checked for
  *   truthiness. The config it reads held a literal placeholder string, which is
  *   truthy, so updatePublicContactGroup() passed '<recruiting email dl here>' to
@@ -1012,9 +1021,14 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
     dutyPositions: ['Deputy Commander for Seniors']
   };
 
-  const commandStaffLists = [commanderList, deputyCommanderList];
-  const cadetCommandStaffLists = [deputyCommanderCadetsList];
-  const seniorCommandStaffLists = [deputyCommanderSeniorsList];
+  // Command staff is chosen by what the unit's type actually establishes, NOT by
+  // "create everything and let it sit empty" — see getCommandStaffLists_().
+  const commandStaffLists = getCommandStaffLists_(squadron, squadronType, squadronMembers, {
+    'commander': commanderList,
+    'deputy-commander': deputyCommanderList,
+    'deputy-commander-cadets': deputyCommanderCadetsList,
+    'deputy-commander-seniors': deputyCommanderSeniorsList
+  });
 
   // Determine which lists to create based on squadron type
   switch (squadronType) {
@@ -1025,17 +1039,15 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
         cadetsList,
         seniorsList,
         parentsList
-      ].concat(commandStaffLists, cadetCommandStaffLists, seniorCommandStaffLists));
+      ].concat(commandStaffLists));
 
     case 'CADET':
-      // Cadet squadrons can have Deputy Commander and Deputy Commander for Cadets,
-      // but CAPWATCH does not show Deputy Commander for Seniors on cadet units.
       return filterEnabledSquadronDistributionLists_([
         allHandsList,
         cadetsList,
         seniorsList,
         parentsList
-      ].concat(commandStaffLists, cadetCommandStaffLists));
+      ].concat(commandStaffLists));
 
     case 'FLIGHT':
       // Flight can be cadet or senior - check membership to determine
@@ -1054,7 +1066,7 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
             cadetsList,
             seniorsList,
             parentsList
-          ].concat(commandStaffLists, cadetCommandStaffLists, seniorCommandStaffLists));
+          ].concat(commandStaffLists));
         } else if (hasCadets) {
           // Cadet flight - needs cadet lists
           Logger.info('Cadet flight - creating cadet-focused lists', {
@@ -1066,7 +1078,7 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
             cadetsList,
             seniorsList,
             parentsList
-          ].concat(commandStaffLists, cadetCommandStaffLists));
+          ].concat(commandStaffLists));
         } else if (hasSeniors) {
           // Senior flight - only needs allhands plus senior command staff
           Logger.info('Senior flight - creating only allhands list', {
@@ -1075,8 +1087,9 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
           });
           return filterEnabledSquadronDistributionLists_([allHandsList].concat(commandStaffLists));
         } else {
-          // No members yet - default to all lists (safe approach)
-          Logger.warn('Flight has no members - defaulting to all lists', {
+          // No members yet - default to all rosters (safe approach). Command staff
+          // stays undetermined, so only the Commander DL comes along.
+          Logger.warn('Flight has no members - defaulting to all rosters', {
             squadron: squadron.charter,
             type: squadronType
           });
@@ -1085,11 +1098,11 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
             cadetsList,
             seniorsList,
             parentsList
-          ].concat(commandStaffLists, cadetCommandStaffLists, seniorCommandStaffLists));
+          ].concat(commandStaffLists));
         }
       } else {
-        // No member data provided - default to all lists (safe approach)
-        Logger.warn('Flight type but no member data - defaulting to all lists', {
+        // No member data provided - default to all rosters (safe approach)
+        Logger.warn('Flight type but no member data - defaulting to all rosters', {
           squadron: squadron.charter,
           type: squadronType
         });
@@ -1098,7 +1111,7 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
           cadetsList,
           seniorsList,
           parentsList
-        ].concat(commandStaffLists, cadetCommandStaffLists, seniorCommandStaffLists));
+        ].concat(commandStaffLists));
       }
 
     case 'SENIOR':
@@ -1110,8 +1123,8 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
       return filterEnabledSquadronDistributionLists_([allHandsList].concat(commandStaffLists));
 
     default:
-      // Unknown type - default to all lists for backward compatibility
-      Logger.warn('Unknown squadron type - defaulting to all lists', {
+      // Unknown type - default to all rosters for backward compatibility
+      Logger.warn('Unknown squadron type - defaulting to all rosters', {
         squadron: squadron.charter,
         type: squadronType
       });
@@ -1120,8 +1133,80 @@ function getDistributionListsForSquadron(squadron, squadronMembers) {
         cadetsList,
         seniorsList,
         parentsList
-      ].concat(commandStaffLists, cadetCommandStaffLists, seniorCommandStaffLists));
+      ].concat(commandStaffLists));
   }
+}
+
+/**
+ * Command-staff DL suffixes each kind of unit actually establishes.
+ *
+ * CAP establishes a plain **Deputy Commander only at senior units**. Cadet and
+ * composite units have Deputy Commander for Cadets and Deputy Commander for
+ * Seniors in its place. A `ca###.deputy-commander` DL at a cadet or composite
+ * squadron therefore has no CAPWATCH duty that can ever fill it — it is created,
+ * kept in the GAL, and stays empty forever, which is worse than absent: mail sent
+ * to it is accepted and delivered to nobody.
+ *
+ * Commander is the only command-staff list valid at every unit kind, so it is all
+ * an undetermined unit gets. Creating all three deputy flavors "to be safe"
+ * guarantees at least two of them are wrong.
+ *
+ * @type {Object<string, string[]>}
+ */
+const COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_ = {
+  SENIOR: ['commander', 'deputy-commander'],
+  CADET_OR_COMPOSITE: ['commander', 'deputy-commander-cadets', 'deputy-commander-seniors'],
+  UNDETERMINED: ['commander']
+};
+
+/**
+ * Classifies a unit for command-staff purposes.
+ *
+ * FLIGHT is not a command-staff kind of its own: CAPWATCH types a flight as
+ * FLIGHT regardless of whether it runs a cadet program, so the flight's own
+ * membership decides. A flight with no members at all is undetermined.
+ *
+ * @param {string} squadronType - Effective CAPWATCH org type
+ * @param {Array} [squadronMembers] - Members of this unit (FLIGHT resolution only)
+ * @returns {string} Key into COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_
+ */
+function classifyUnitCommandStaffKind_(squadronType, squadronMembers) {
+  const type = String(squadronType || '').trim().toUpperCase();
+
+  if (type === 'SENIOR') return 'SENIOR';
+  if (type === 'CADET' || type === 'COMPOSITE') return 'CADET_OR_COMPOSITE';
+
+  if (type === 'FLIGHT') {
+    const members = squadronMembers || [];
+    if (members.some(m => m && m.type === 'CADET')) return 'CADET_OR_COMPOSITE';
+    if (members.some(m => m && ['SENIOR', 'FIFTY YEAR', 'INDEFINITE'].includes(m.type))) return 'SENIOR';
+  }
+
+  return 'UNDETERMINED';
+}
+
+/**
+ * Returns the command-staff distribution lists a unit should have.
+ *
+ * @param {Object} squadron - Squadron object (logging only)
+ * @param {string} squadronType - Effective CAPWATCH org type
+ * @param {Array} [squadronMembers] - Members of this unit (FLIGHT resolution only)
+ * @param {Object<string, Object>} listsBySuffix - Available list configs keyed by suffix
+ * @returns {Array<Object>} Command-staff list configs, in suffix order
+ */
+function getCommandStaffLists_(squadron, squadronType, squadronMembers, listsBySuffix) {
+  const kind = classifyUnitCommandStaffKind_(squadronType, squadronMembers);
+  const suffixes = COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_[kind] || COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_.UNDETERMINED;
+
+  if (kind === 'UNDETERMINED') {
+    Logger.warn('Unit type does not say which deputy commander it establishes - creating Commander DL only', {
+      squadron: squadron && squadron.charter,
+      orgid: squadron && squadron.orgid,
+      type: squadronType || 'Unknown'
+    });
+  }
+
+  return suffixes.map(suffix => listsBySuffix[suffix]).filter(Boolean);
 }
 
 function filterEnabledSquadronDistributionLists_(lists) {
@@ -1942,6 +2027,12 @@ function getParentContacts(orgid, squadronMembers, allMembers, excludedCadets) {
  * - Senior squadrons: Removes cadets, seniors, parents (keeps only allhands)
  * - Special units (000, 999): Removes all distribution lists
  * - Group/Wing level: Removes all distribution lists
+ * - Command staff the unit's type does not establish: a plain .deputy-commander at
+ *   a cadet or composite unit, or .deputy-commander-cadets/-seniors at a senior
+ *   unit. Flights are left alone (their kind can't be resolved without members).
+ *
+ * A group deleted here takes its manual "User Additions" members with it. The
+ * preview lists every candidate — read it before running live.
  *
  * IMPORTANT: This function actually DELETES groups. Review the preview first!
  *
@@ -2148,8 +2239,23 @@ function getUnnecessaryDistributionLists(squadron, unitPrefix) {
     return listsToDelete;
   }
 
-  // Senior squadrons and senior flights should only have allhands
+  // Command-staff DLs for a deputy the unit's type does not establish. These were
+  // created in bulk before getCommandStaffLists_() existed (a .deputy-commander at
+  // every cadet and composite squadron, none of which CAPWATCH can ever populate).
+  // Kind is resolved WITHOUT member data here, so FLIGHT stays undetermined and
+  // keeps whatever it has.
   const squadronType = getEffectiveSquadronType_(squadron);
+  const commandStaffKind = classifyUnitCommandStaffKind_(squadronType, null);
+  if (commandStaffKind !== 'UNDETERMINED') {
+    const authorized = COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_[commandStaffKind] || [];
+    Object.keys(COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_)
+      .reduce((all, kind) => all.concat(COMMAND_STAFF_SUFFIXES_BY_UNIT_KIND_[kind]), [])
+      .filter((suffix, i, arr) => arr.indexOf(suffix) === i)
+      .filter(suffix => authorized.indexOf(suffix) === -1)
+      .forEach(suffix => listsToDelete.push(`${unitPrefix}.${suffix}${CONFIG.EMAIL_DOMAIN}`));
+  }
+
+  // Senior squadrons and senior flights should only have allhands
   if (squadronType === 'SENIOR') {
     listsToDelete.push(
       `${unitPrefix}.cadets${CONFIG.EMAIL_DOMAIN}`,
@@ -2159,18 +2265,18 @@ function getUnnecessaryDistributionLists(squadron, unitPrefix) {
     return listsToDelete;
   }
 
-  // For FLIGHT type, we can't determine without member data
-  // So we don't delete anything (safer to keep than delete)
+  // For FLIGHT type, we can't determine the roster lists without member data
+  // So we don't delete any of them (safer to keep than delete)
   if (squadronType === 'FLIGHT') {
     Logger.info('Flight squadron - cannot determine unnecessary lists without member data', {
       squadron: squadron.charter,
       note: 'Manual review recommended'
     });
-    return listsToDelete; // Empty - don't delete anything
+    return listsToDelete;
   }
 
-  // Composite and Cadet squadrons should have all lists
-  // No deletions needed
+  // Composite and Cadet squadrons should have all roster lists
+  // No further deletions needed
   return listsToDelete;
 }
 
@@ -2192,6 +2298,14 @@ function getDeleteReason(squadron, groupEmail) {
   // Group/Wing level
   if (squadron.scope !== 'UNIT') {
     return `${squadron.scope} level squadron does not need distribution lists`;
+  }
+
+  // Command staff the unit's type does not establish
+  if (groupEmail.includes('.deputy-commander@')) {
+    return `${squadronType} unit has Deputy Commander for Cadets/Seniors, not a plain Deputy Commander`;
+  }
+  if (groupEmail.includes('.deputy-commander-cadets@') || groupEmail.includes('.deputy-commander-seniors@')) {
+    return `${squadronType} unit establishes a plain Deputy Commander, not this deputy`;
   }
 
   // Senior squadron

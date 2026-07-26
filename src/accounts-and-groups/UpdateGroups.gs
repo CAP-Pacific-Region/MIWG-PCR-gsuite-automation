@@ -1,10 +1,23 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.3.9
+ * Version: 1.4.0
  * Filename: UpdateGroups.gs
- * Saved: 2026-07-17
- * Changes: Managed wing-scope display name returns CONFIG.WING_ABBREVIATION
+ * Saved: 2026-07-26
+ * Changes: 1.4.0: three group-membership fixes, all of which failed silently.
+ *   - dutyPositionIdsWingHQ matched the MEMBER'S HOME UNIT instead of the org the
+ *     duty is held at, so a wing office DL held only those wing staff who are also
+ *     Wing HQ members — typically the assistant, not the primary.
+ *   - Duty titles are now compared after the CAPR 30-1 renames
+ *     (DUTY_TITLE_OVERRIDES), so a row keyed on a current title also matches
+ *     eServices rows still carrying the retired one.
+ *   - achievements Values may be achievement NAMES, not just numeric AchvIDs;
+ *     MbrAchievements only ever carries the ID, so name rows (the Education &
+ *     Training levels) matched nothing and produced empty groups.
+ *   An unknown Attribute no longer leaves an empty group behind, and
+ *   previewEmailGroupRows() / listAchievementNames() show what a row resolves to
+ *   without changing anything. See PCR_CHANGELOG.md.
+ *   1.3.9: Managed wing-scope display name returns CONFIG.WING_ABBREVIATION
  *   instead of literal 'CAWG' (inside the existing WING==='CA' display branch —
  *   no behavior change for CA). See PCR_CHANGELOG.md.
  *   1.3.8: AdminDirectory.Users.list standardized to customer:"my_customer".
@@ -612,32 +625,7 @@ for (let r = 1; r < groupsConfig.length; r++) {
   let members = getMembers();
   // --- Build CAPWATCH → Workspace email map ---
   attachCommitteesToMembers(members, squadrons);
-  workspaceEmailMap = {};
-  let token = '';
-  try {
-    do {
-      const page = AdminDirectory.Users.list({
-        customer: "my_customer",
-        maxResults: 500,
-        projection: 'full',
-        fields: 'users(primaryEmail,externalIds),nextPageToken',
-        pageToken: token
-      });
-      if (page.users) {
-        page.users.forEach(u => {
-          const capidField = (u.externalIds || []).find(x => x.type === 'organization');
-          if (capidField && capidField.value) {
-            workspaceEmailMap[capidField.value.toString()] = u.primaryEmail.toLowerCase();
-            if (members[capidField.value]) members[capidField.value].email = u.primaryEmail.toLowerCase();
-          }
-        });
-      }
-      token = page.nextPageToken;
-    } while (token);
-    Logger.info('Workspace CAPID→Email map built', { count: Object.keys(workspaceEmailMap).length });
-  } catch (err) {
-    Logger.error('Failed to build Workspace CAPID→Email map', { message: err.message });
-  }
+  buildWorkspaceEmailMapForGroups_(members);
 
   // --- Build Workspace user lookup map (for internal members only) ---
   workspaceUsers = {};
@@ -787,6 +775,136 @@ for (let r = 1; r < groupsConfig.length; r++) {
 }
 
 /**
+ * Populates the module-level workspaceEmailMap (CAPID -> Workspace primary email)
+ * and rewrites each member's email to their Workspace address where one exists.
+ *
+ * Shared by the live delta pass and previewEmailGroupRows(), so a preview resolves
+ * the same addresses a real run would.
+ *
+ * @param {Object<string, Object>} members - Members object indexed by CAPID
+ * @returns {Object<string, string>} The CAPID -> email map
+ */
+function buildWorkspaceEmailMapForGroups_(members) {
+  workspaceEmailMap = {};
+  let token = '';
+
+  try {
+    do {
+      const page = AdminDirectory.Users.list({
+        customer: "my_customer",
+        maxResults: 500,
+        projection: 'full',
+        fields: 'users(primaryEmail,externalIds),nextPageToken',
+        pageToken: token
+      });
+      if (page.users) {
+        page.users.forEach(u => {
+          const capidField = (u.externalIds || []).find(x => x.type === 'organization');
+          if (capidField && capidField.value) {
+            workspaceEmailMap[capidField.value.toString()] = u.primaryEmail.toLowerCase();
+            if (members[capidField.value]) members[capidField.value].email = u.primaryEmail.toLowerCase();
+          }
+        });
+      }
+      token = page.nextPageToken;
+    } while (token);
+    Logger.info('Workspace CAPID→Email map built', { count: Object.keys(workspaceEmailMap).length });
+  } catch (err) {
+    Logger.error('Failed to build Workspace CAPID→Email map', { message: err.message });
+  }
+
+  return workspaceEmailMap;
+}
+
+/**
+ * Read-only: shows what each Groups sheet row would produce, without creating a
+ * group, adding a member or removing one.
+ *
+ * Answers the two questions the execution log cannot: which group IDs a row
+ * generates, and who lands in them. A row that produces a group with zero members
+ * is the signature of a Values column that matches no CAPWATCH record.
+ *
+ *   previewEmailGroupRows()                  // every row
+ *   previewEmailGroupRows('recruiting')      // rows whose name/attribute/values match
+ *   previewEmailGroupRows('level', true)     // and list the members
+ *
+ * @param {string} [filter] - Case-insensitive substring match on the row
+ * @param {boolean} [showMembers=false] - Print each resolved address
+ * @returns {void}
+ */
+function previewEmailGroupRows(filter, showMembers = false) {
+  clearCache();
+  const needle = String(filter || '').trim().toLowerCase();
+
+  const groupsConfig = SpreadsheetApp
+    .openById(CONFIG.AUTOMATION_SPREADSHEET_ID)
+    .getSheetByName('Groups')
+    .getDataRange()
+    .getValues();
+
+  const squadrons = getSquadrons();
+  const members = getMembers();
+  attachCommitteesToMembers(members, squadrons);
+  buildWorkspaceEmailMapForGroups_(members);
+
+  console.log('\n' + '='.repeat(80));
+  console.log('GROUPS SHEET PREVIEW - no groups created, no memberships changed');
+  console.log('='.repeat(80) + '\n');
+
+  let rowsShown = 0;
+  let emptyGroups = 0;
+
+  for (let i = 1; i < groupsConfig.length; i++) {
+    const category = String(groupsConfig[i][0] || '').trim();
+    const groupName = String(groupsConfig[i][1] || '').trim();
+    const attribute = String(groupsConfig[i][2] || '').trim();
+    const values = String(groupsConfig[i][3] || '').trim();
+    if (!groupName) continue;
+
+    const haystack = `${category} ${groupName} ${attribute} ${values}`.toLowerCase();
+    if (needle && haystack.indexOf(needle) === -1) continue;
+
+    rowsShown++;
+    console.log(`Row ${i + 1}: ${groupName}`);
+    console.log(`  Category: ${category || '(blank)'}   Attribute: ${attribute || '(blank)'}`);
+    console.log(`  Values:   ${values || '(blank)'}`);
+
+    let generated = {};
+    try {
+      generated = getGroupMembers(groupName, attribute, values, members, squadrons) || {};
+    } catch (e) {
+      console.log(`  ✗ Threw: ${e.message}`);
+      console.log('');
+      continue;
+    }
+
+    const groupIds = Object.keys(generated);
+    if (!groupIds.length) {
+      console.log('  → creates NO groups');
+      console.log('');
+      continue;
+    }
+
+    groupIds.sort();
+    for (let g = 0; g < groupIds.length; g++) {
+      const memberEmails = Object.keys(generated[groupIds[g]]);
+      const marker = memberEmails.length === 0 ? ' ⚠ EMPTY' : '';
+      if (memberEmails.length === 0) emptyGroups++;
+      console.log(`  → ${groupIds[g]}${CONFIG.EMAIL_DOMAIN}: ${memberEmails.length} member(s)${marker}`);
+      if (showMembers) {
+        memberEmails.sort().forEach(email => console.log(`       ${email}`));
+      }
+    }
+    console.log('');
+  }
+
+  console.log('='.repeat(80));
+  console.log(`Rows shown: ${rowsShown}   Groups that would be empty: ${emptyGroups}`);
+  console.log('An empty group usually means the Values column matches no CAPWATCH record.');
+  console.log('='.repeat(80) + '\n');
+}
+
+/**
  * Loads manual member/group mappings from "User Additions".
  * Expected columns (same as updateAdditionalGroupMembers):
  * - [1] Email
@@ -910,12 +1028,22 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
 
   // Manual/IAOD rows may store multiple duty IDs as a single comma-separated string
   // (optionally with trailing markers like "(A)" / "(P)").
+  //
+  // Both sides of the comparison run through the same CAPR 30-1 renames the
+  // signature generator applies (DUTY_TITLE_OVERRIDES in UpdateMembers.gs), so a
+  // Groups row keyed on a current title still matches the eServices rows that
+  // carry the retired one — "Recruiting & Retention Officer" is the live example,
+  // and a row keyed on "Recruiting Officer" silently missed those holders.
   function normalizeDutyId_(s) {
-    return (s || '')
+    const raw = (s || '')
       .toString()
       .replace(/\s*\((a|p)\)\s*$/i, '')
       .trim()
-      .toLowerCase();
+      .replace(/\s+/g, ' ');
+    if (!raw) return '';
+
+    const canonical = (typeof formatDutyTitle_ === 'function') ? formatDutyTitle_(raw) : raw;
+    return canonical.toLowerCase();
   }
 
   function expandDutyIds_(memberValue) {
@@ -1059,27 +1187,67 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
       //   Attribute: dutyPositionIdsWingHQ
       //   Values: Director of Safety,Safety Officer
       // Result:
-      //   Creates ONLY: <wing>.<groupName> with Wing HQ members only
+      //   Creates ONLY: <wing>.<groupName> with Wing HQ duty holders
       //   (e.g., hi.all-safety-hq)
+      //
+      // Matches on the org the DUTY is held at, not the member's home unit. Wing
+      // staff are overwhelmingly assigned to a squadron and hold their wing duty on
+      // top of that; testing the home unit is why a wing office DL could come back
+      // holding the assistant and not the primary. A Wing HQ member who holds the
+      // same title at a squadron is excluded — the same rule read from the other side.
 
       groupId = wingGroupId;
       if (!groups[groupId]) groups[groupId] = {};
 
+      let wingHqDutyOrgUnresolved = 0;
+      let wingHqDutyOrgFromHomeUnit = 0;
+
       for (const member in members) {
-        const org = squadrons[members[member].orgid];
-        if (
-          org &&
-          org.scope === 'WING' &&
-          org.unit === '001' &&
-          matchesAnyDutyId_(members[member].dutyPositionIds, values) &&
-          members[member].email
-        ) {
-          groups[groupId][members[member].email] = 1;
+        if (!members[member].email || !Array.isArray(members[member].dutyPositions)) continue;
+
+        for (let i = 0; i < members[member].dutyPositions.length; i++) {
+          const dutyPosition = members[member].dutyPositions[i];
+          if (!matchesAnyDutyId_(dutyPosition.id, values)) continue;
+
+          // A Manual Members row records a duty with no charter, because the sheet
+          // has nowhere to put one — such a duty is held at the member's own org by
+          // definition, so fall back to that rather than dropping the row.
+          let dutyOrg = getDutyAssignmentOrg_(dutyPosition);
+          if (!dutyOrg) {
+            dutyOrg = squadrons[members[member].orgid] || null;
+            if (dutyOrg) wingHqDutyOrgFromHomeUnit++;
+          }
+          if (!dutyOrg) {
+            wingHqDutyOrgUnresolved++;
+            continue;
+          }
+
+          if (
+            String(dutyOrg.scope || '').toUpperCase() === 'WING' &&
+            String(dutyOrg.unit || '') === '001' &&
+            String(dutyOrg.wing || '').toUpperCase() === CONFIG.WING.toUpperCase()
+          ) {
+            groups[groupId][members[member].email] = 1;
+            break;
+          }
         }
       }
 
+      Logger.info('Wing HQ duty group resolved', {
+        group: groupId,
+        values: values.join(', '),
+        members: Object.keys(groups[groupId]).length,
+        dutyOrgFromHomeUnit: wingHqDutyOrgFromHomeUnit,
+        dutyOrgUnresolved: wingHqDutyOrgUnresolved
+      });
+
       // Prevent creating an empty group
       if (Object.keys(groups[groupId]).length === 0) {
+        Logger.warn('Wing HQ duty group matched nobody - not creating it', {
+          group: groupId,
+          values: values.join(', '),
+          note: 'Values must match the CAPWATCH duty title exactly, after the CAPR 30-1 renames'
+        });
         delete groups[groupId];
       }
       break;
@@ -1248,27 +1416,84 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
       break;
 
     case 'achievements':
+      // MbrAchievements.txt records the achievement by NUMERIC AchvID ([1]), never by
+      // name — Level I is 96, not the string "Level I". A Values column holding names
+      // (the natural thing to type for the Education & Training levels) therefore
+      // matched no row at all and produced an empty group with no error. Values may
+      // now be either form: numeric IDs pass through, names are resolved against
+      // Achievements.txt.
       let achievements = parseFile('MbrAchievements');
+      const achievementIds = resolveAchievementValuesToIds_(values, groupName);
+      const achievementStatusCounts = {};
+      let achievementRowsMatched = 0;
+      let achievementRowsNotAMember = 0;
+      let achievementRowsNoEmail = 0;
+
       for(let i = 0; i < achievements.length; i++) {
-        if (members[achievements[i][0]] &&
-            members[achievements[i][0]].email &&
-            values.indexOf(achievements[i][1]) > -1 &&
-            ['ACTIVE', 'TRAINING'].indexOf(achievements[i][2]) > -1) {
-          groups[wingGroupId][members[achievements[i][0]].email] = 1;
-          // Group-level achievement DLs: ONLY when the member's parent org is a real GROUP.
-          // Prevents duplicate Wing HQ groups like "hi001.*".
-          const parent = members[achievements[i][0]].group ? squadrons[members[achievements[i][0]].group] : null;
-          if (parent && parent.scope === 'GROUP' && parent.unit && parent.unit !== '001' && parent.unit !== '000') {
-            groupId =
-              squadrons[members[achievements[i][0]].orgid].wing.toLowerCase() +
-              parent.unit +
-              '.' +
-              groupName;
-            if (!groups[groupId]) {
-              groups[groupId] = {};
-            }
-            groups[groupId][members[achievements[i][0]].email] = 1;
+        const achvCapid = achievements[i][0];
+        const achvId = String(achievements[i][1] == null ? '' : achievements[i][1]).trim();
+        const achvStatus = String(achievements[i][2] == null ? '' : achievements[i][2]).trim().toUpperCase();
+
+        if (!achievementIds[achvId]) continue;
+
+        achievementRowsMatched++;
+        const statusKey = achvStatus || '(blank)';
+        achievementStatusCounts[statusKey] = (achievementStatusCounts[statusKey] || 0) + 1;
+
+        if (['ACTIVE', 'TRAINING'].indexOf(achvStatus) === -1) continue;
+        if (!members[achvCapid]) {
+          achievementRowsNotAMember++;
+          continue;
+        }
+        if (!members[achvCapid].email) {
+          achievementRowsNoEmail++;
+          continue;
+        }
+
+        groups[wingGroupId][members[achvCapid].email] = 1;
+        // Group-level achievement DLs: ONLY when the member's parent org is a real GROUP.
+        // Prevents duplicate Wing HQ groups like "hi001.*".
+        const parent = members[achvCapid].group ? squadrons[members[achvCapid].group] : null;
+        if (parent && parent.scope === 'GROUP' && parent.unit && parent.unit !== '001' && parent.unit !== '000') {
+          groupId =
+            squadrons[members[achvCapid].orgid].wing.toLowerCase() +
+            parent.unit +
+            '.' +
+            groupName;
+          if (!groups[groupId]) {
+            groups[groupId] = {};
           }
+          groups[groupId][members[achvCapid].email] = 1;
+        }
+      }
+
+      Logger.info('Achievement group resolved', {
+        group: wingGroupId,
+        values: values.join(', '),
+        resolvedAchvIds: Object.keys(achievementIds).join(', '),
+        members: Object.keys(groups[wingGroupId]).length,
+        matchingRows: achievementRowsMatched,
+        rowsByStatus: achievementStatusCounts,
+        skippedNotAMember: achievementRowsNotAMember,
+        skippedNoWorkspaceEmail: achievementRowsNoEmail
+      });
+
+      if (Object.keys(groups[wingGroupId]).length === 0) {
+        // Leave the group out of the desired state entirely rather than creating it
+        // empty — and, just as important, rather than letting a misconfigured row
+        // empty a group that already has the right people in it.
+        Logger.warn('Achievement group matched no members - leaving it unmanaged this run', {
+          group: wingGroupId,
+          values: values.join(', '),
+          resolvedAchvIds: Object.keys(achievementIds).join(', ') || '(none)',
+          matchingRows: achievementRowsMatched,
+          rowsByStatus: achievementStatusCounts,
+          note: achievementRowsMatched === 0
+            ? 'No MbrAchievements row carries these achievements. Check the Values column against Achievements.txt.'
+            : 'Rows exist but no row is ACTIVE/TRAINING for a member with a Workspace account.'
+        });
+        for (const emptyGroupId in groups) {
+          if (Object.keys(groups[emptyGroupId]).length === 0) delete groups[emptyGroupId];
         }
       }
       break;
@@ -1377,12 +1602,196 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
       break;
 
     default:
-      Logger.warn('Unknown attribute type', {
+      // An unrecognized Attribute used to fall through here having already had its
+      // wing-level group pre-created at the top of this function, so a typo in the
+      // Groups sheet silently produced a real, permanently empty Google Group.
+      // Nothing is created for an attribute this code cannot honor.
+      delete groups[wingGroupId];
+      Logger.warn('Unknown attribute type - no group created for this row', {
         attribute: attribute,
-        groupName: groupName
+        groupName: groupName,
+        wouldHaveCreated: wingGroupId + CONFIG.EMAIL_DOMAIN
       });
   }
   return groups;
+}
+
+/**
+ * Resolves a Groups sheet Values list to the numeric AchvIDs MbrAchievements uses.
+ *
+ * MbrAchievements.txt identifies an achievement only by its numeric AchvID; the
+ * human name lives in Achievements.txt. Both forms are accepted here so a Values
+ * column can read "Level II" instead of a magic number, which is what the
+ * Education & Training level rows were written with.
+ *
+ * Names are matched case-insensitively, with whitespace and punctuation collapsed
+ * and standalone Roman numerals folded to digits, so "Level II", "level ii" and
+ * "Level 2" all reach the same achievement.
+ *
+ * @param {string[]} values - Trimmed Values entries from the Groups sheet
+ * @param {string} groupName - Base group name, for logging
+ * @returns {Object<string, string>} AchvID -> the value that resolved to it
+ */
+function resolveAchievementValuesToIds_(values, groupName) {
+  const ids = {};
+  const unresolved = [];
+  const labelIndex = getAchievementIdsByLabel_();
+
+  for (let i = 0; i < values.length; i++) {
+    const value = String(values[i] || '').trim();
+    if (!value) continue;
+
+    if (/^\d+$/.test(value)) {
+      ids[value] = value;
+      continue;
+    }
+
+    const matchedId = labelIndex[normalizeAchievementLabel_(value)];
+    if (matchedId) {
+      ids[matchedId] = value;
+    } else {
+      unresolved.push(value);
+    }
+  }
+
+  if (unresolved.length) {
+    Logger.warn('Achievement values could not be resolved to an AchvID', {
+      groupName: groupName,
+      unresolved: unresolved.join(', '),
+      achievementsIndexed: Object.keys(labelIndex).length,
+      note: Object.keys(labelIndex).length
+        ? 'Value matches no name in Achievements.txt. Run listAchievementNames() to see the real strings.'
+        : 'Achievements.txt is missing or has no recognizable name column, so only numeric AchvIDs can be used.'
+    });
+  }
+
+  return ids;
+}
+
+let _achievementIdsByLabelCache = null;
+
+/**
+ * Builds a normalized achievement-name -> AchvID index from Achievements.txt.
+ *
+ * Read with its header rather than through parseFile(), which drops the header
+ * row and so leaves no way to tell which column carries the name — CAPWATCH has
+ * used more than one spelling for it.
+ *
+ * @returns {Object<string, string>} normalized label -> AchvID
+ */
+function getAchievementIdsByLabel_() {
+  if (_achievementIdsByLabelCache) return _achievementIdsByLabelCache;
+
+  const index = {};
+
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+    const files = folder.getFilesByName('Achievements.txt');
+
+    if (!files.hasNext()) {
+      Logger.warn('Achievements.txt not found - achievement names cannot be resolved', {
+        folderId: CONFIG.CAPWATCH_DATA_FOLDER_ID
+      });
+      _achievementIdsByLabelCache = index;
+      return index;
+    }
+
+    const rows = Utilities.parseCsv(files.next().getBlob().getDataAsString());
+    if (!rows || rows.length < 2) {
+      _achievementIdsByLabelCache = index;
+      return index;
+    }
+
+    const header = rows[0].map(h => String(h || '').trim());
+    const idIdx = header.findIndex(h => /^achvid$/i.test(h));
+    const labelIdxs = header
+      .map((h, i) => (/^(achv|achvname|name|text|title|description)$/i.test(h) ? i : -1))
+      .filter(i => i > -1);
+
+    if (idIdx === -1 || !labelIdxs.length) {
+      Logger.warn('Achievements.txt has no usable AchvID/name columns', {
+        header: header.join(', ')
+      });
+      _achievementIdsByLabelCache = index;
+      return index;
+    }
+
+    for (let i = 1; i < rows.length; i++) {
+      const achvId = String(rows[i][idIdx] || '').trim();
+      if (!achvId) continue;
+
+      for (let c = 0; c < labelIdxs.length; c++) {
+        const label = normalizeAchievementLabel_(rows[i][labelIdxs[c]]);
+        // First writer wins: an achievement's own name column beats a longer
+        // description that happens to normalize to the same string.
+        if (label && !index[label]) index[label] = achvId;
+      }
+    }
+
+    Logger.info('Achievement name index built', {
+      achievements: rows.length - 1,
+      labels: Object.keys(index).length
+    });
+  } catch (e) {
+    Logger.warn('Failed to index Achievements.txt', { errorMessage: e.message });
+  }
+
+  _achievementIdsByLabelCache = index;
+  return index;
+}
+
+/**
+ * Normalizes an achievement name for comparison: case, whitespace, punctuation,
+ * and Roman numerals ("Level II" and "Level 2" are the same achievement).
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function normalizeAchievementLabel_(value) {
+  const romanToArabic = { i: '1', ii: '2', iii: '3', iv: '4', v: '5' };
+
+  return String(value == null ? '' : value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .map(token => (Object.prototype.hasOwnProperty.call(romanToArabic, token) ? romanToArabic[token] : token))
+    .join(' ');
+}
+
+/**
+ * Read-only: prints the achievements CAPWATCH knows about, so a Groups sheet
+ * Values column can be written against the real strings.
+ *
+ * @param {string} [filter] - Case-insensitive substring, e.g. 'level'
+ * @returns {void}
+ */
+function listAchievementNames(filter) {
+  const needle = String(filter || '').trim().toLowerCase();
+  const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+  const files = folder.getFilesByName('Achievements.txt');
+
+  if (!files.hasNext()) {
+    console.log('Achievements.txt not found in the CAPWATCH data folder.');
+    return;
+  }
+
+  const rows = Utilities.parseCsv(files.next().getBlob().getDataAsString());
+  const header = (rows[0] || []).map(h => String(h || '').trim());
+  const idIdx = header.findIndex(h => /^achvid$/i.test(h));
+  const labelIdxs = header
+    .map((h, i) => (/^(achv|achvname|name|text|title|description)$/i.test(h) ? i : -1))
+    .filter(i => i > -1);
+
+  console.log(`Achievements.txt columns: ${header.join(', ')}`);
+  console.log(`${rows.length - 1} achievements${needle ? ` matching "${needle}"` : ''}:\n`);
+
+  for (let i = 1; i < rows.length; i++) {
+    const labels = labelIdxs.map(c => String(rows[i][c] || '').trim()).filter(Boolean);
+    const line = `  AchvID ${String(rows[i][idIdx] || '').padEnd(6)} ${labels.join(' | ')}`;
+    if (!needle || line.toLowerCase().includes(needle)) console.log(line);
+  }
 }
 
 /**
