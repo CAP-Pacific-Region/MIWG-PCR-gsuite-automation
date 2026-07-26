@@ -10,6 +10,36 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-26] — Group-echelon DLs for positions the echelon does not have
+
+### Fixed (`UpdateGroups.gs` 1.5.0)
+
+Duty and rank rules **seed one DL per group-echelon org before matching anybody**, so that a DL
+whose holder has just left stays in the desired state long enough for that person to be removed
+from it. Right for a position the echelon *has* and is merely vacant; wrong for one it does not
+have — and nothing distinguished the two. CAP puts a **Director of Information Technology at wing
+and above, an IT Officer below it**, and gives groups **no Inspector General**, so each of those
+rows minted one permanently empty DL per group, every run.
+
+The two cases are now told apart by asking whether the group already exists. An empty seed for a
+group already in the tenant is kept (vacant seat, stale members still to clear); an empty seed for
+a group that does not exist is dropped rather than created. That reads the doctrine off the data
+rather than off a hardcoded list of wing-only offices, so it covers the rest of the class —
+Director of Operations, Director of Personnel, and anything else the wing adds later — without
+maintenance.
+
+The group index behind it is built lazily, once per run, and only when a seed comes back empty; a
+failure to list is not fatal, it just skips clearing vacant DLs until the next run. The same
+pruning applies to the `dutyPositionLevelStaff` GROUP seeding.
+
+### Added — `cleanupEmptyEchelonGroups(dryRun = true)`
+
+Deletes the empty group-echelon DLs already created. Candidates come from the Groups sheet, so
+nothing outside the managed naming scheme is considered, and a group is offered **only when it is
+empty** — which is also why nothing is lost: an empty DL has no manual additions in it, and one
+whose position does exist at that echelon is recreated as soon as somebody holds it. Preview by
+default.
+
 ## [2026-07-26] — Three ways a group rule matched the wrong people, all silent
 
 Reported together, and they turn out to be one habit rather than three bugs: a rule that

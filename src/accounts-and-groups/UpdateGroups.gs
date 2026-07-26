@@ -1,10 +1,18 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.4.0
+ * Version: 1.5.0
  * Filename: UpdateGroups.gs
  * Saved: 2026-07-26
- * Changes: 1.4.0: three group-membership fixes, all of which failed silently.
+ * Changes: 1.5.0: group-echelon DLs are no longer minted for positions that
+ *   echelon does not establish. Duty and rank rules seed one DL per group-echelon
+ *   org before matching members, so a wing-only office — Director of Information
+ *   Technology (an IT Officer below wing), Inspector General (groups have none) —
+ *   produced one permanently empty DL per group, every run. An empty seed is now
+ *   kept only when the group already exists, which is the vacant-seat case that
+ *   seeding is for; otherwise it is dropped. cleanupEmptyEchelonGroups() removes
+ *   the ones already created.
+ *   1.4.0: three group-membership fixes, all of which failed silently.
  *   - dutyPositionIdsWingHQ matched the MEMBER'S HOME UNIT instead of the org the
  *     duty is held at, so a wing office DL held only those wing staff who are also
  *     Wing HQ members — typically the assistant, not the primary.
@@ -905,6 +913,109 @@ function previewEmailGroupRows(filter, showMembers = false) {
 }
 
 /**
+ * Deletes group-echelon DLs that exist, are empty, and are for a position that
+ * echelon does not establish — the ones minted before pruneEmptySeededGroups_()
+ * existed (`ca0X.dty.director-it` at every group, and the same for a rule keyed
+ * on a wing-only office such as Inspector General).
+ *
+ * Candidates are computed from the Groups sheet, so nothing outside the managed
+ * naming scheme is ever considered. A group is offered only when it is **empty**,
+ * which is also why deleting it loses nothing: an empty DL has no manual
+ * additions to lose, and one whose position really does exist at that echelon is
+ * recreated the moment somebody holds it.
+ *
+ *   cleanupEmptyEchelonGroups()        // preview
+ *   cleanupEmptyEchelonGroups(false)   // delete
+ *
+ * @param {boolean} [dryRun=true] - When true, only reports
+ * @returns {{toDelete: string[], deleted: string[], errors: Object[]}}
+ */
+function cleanupEmptyEchelonGroups(dryRun = true) {
+  clearCache();
+  const summary = { toDelete: [], deleted: [], errors: [] };
+
+  const groupsConfig = SpreadsheetApp
+    .openById(CONFIG.AUTOMATION_SPREADSHEET_ID)
+    .getSheetByName('Groups')
+    .getDataRange()
+    .getValues();
+
+  const squadrons = getSquadrons();
+  const echelonOrgs = Object.values(squadrons).filter(org =>
+    org &&
+    String(org.scope || '').toUpperCase() === 'GROUP' &&
+    String(org.wing || '').toLowerCase() === CONFIG.WING.toLowerCase() &&
+    String(org.unit || '') !== '000' &&
+    String(org.unit || '') !== '001'
+  );
+
+  console.log('\n' + '='.repeat(80));
+  console.log(dryRun ? 'EMPTY GROUP-ECHELON DLs - PREVIEW' : 'EMPTY GROUP-ECHELON DLs - DELETING');
+  console.log('='.repeat(80) + '\n');
+
+  for (let i = 1; i < groupsConfig.length; i++) {
+    const groupName = String(groupsConfig[i][1] || '').trim();
+    const attribute = String(groupsConfig[i][2] || '').trim();
+    if (!groupName) continue;
+
+    // Only the rules that create per-group-echelon DLs.
+    if (['dutyPositionIds', 'rank', 'dutyPositionLevelStaff', 'achievements', 'committeeIds']
+      .indexOf(attribute) === -1) continue;
+
+    for (let g = 0; g < echelonOrgs.length; g++) {
+      const org = echelonOrgs[g];
+      const groupEmail = (String(org.wing).toLowerCase() + String(org.unit) + '.' + groupName + CONFIG.EMAIL_DOMAIN).toLowerCase();
+
+      if (!managedGroupExists_(groupEmail)) continue;
+
+      let memberCount = 0;
+      try {
+        const page = AdminDirectory.Members.list(groupEmail, { maxResults: 1 });
+        memberCount = (page.members || []).length;
+      } catch (e) {
+        summary.errors.push({ groupEmail: groupEmail, error: e.message });
+        continue;
+      }
+
+      if (memberCount > 0) continue;
+
+      if (dryRun) {
+        summary.toDelete.push(groupEmail);
+        console.log(`  would delete  ${groupEmail}   (row ${i + 1}, ${attribute})`);
+        continue;
+      }
+
+      try {
+        executeWithRetry(() => AdminDirectory.Groups.remove(groupEmail));
+        summary.deleted.push(groupEmail);
+        console.log(`  deleted       ${groupEmail}`);
+      } catch (e) {
+        summary.errors.push({ groupEmail: groupEmail, error: e.message });
+        console.log(`  ✗ ${groupEmail}: ${e.message}`);
+      }
+    }
+  }
+
+  console.log('\n' + '='.repeat(80));
+  if (dryRun) {
+    console.log(`Empty group-echelon DLs found: ${summary.toDelete.length}`);
+    console.log('Review the list, then run: cleanupEmptyEchelonGroups(false)');
+  } else {
+    console.log(`Deleted: ${summary.deleted.length}   Errors: ${summary.errors.length}`);
+  }
+  console.log('='.repeat(80) + '\n');
+
+  Logger.info('Empty echelon DL cleanup finished', {
+    dryRun: dryRun,
+    toDelete: summary.toDelete.length,
+    deleted: summary.deleted.length,
+    errors: summary.errors.length
+  });
+
+  return summary;
+}
+
+/**
  * Loads manual member/group mappings from "User Additions".
  * Expected columns (same as updateAdditionalGroupMembers):
  * - [1] Email
@@ -1125,7 +1236,9 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
       // Pre-seed parent-group variants for configured group-level lists so they
       // continue to exist even when a parent group currently has zero members.
       // Keep unit-level member-type groups dynamic; only real parent GROUP orgs
-      // are pre-created here.
+      // are pre-created here. Seeds that stay empty are pruned after the member
+      // loop — see pruneEmptySeededGroups_().
+      const seededEchelonGroupIds = [];
       if (attribute !== 'type') {
         for (const orgid in squadrons) {
           const org = squadrons[orgid];
@@ -1138,6 +1251,7 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
           ) {
             const seededGroupId = String(org.wing || '').toLowerCase() + String(org.unit || '') + '.' + groupName;
             if (!groups[seededGroupId]) groups[seededGroupId] = {};
+            seededEchelonGroupIds.push(seededGroupId);
           }
         }
       }
@@ -1177,6 +1291,8 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
           }
         }
       }
+
+      pruneEmptySeededGroups_(groups, seededEchelonGroupIds, groupName);
       break;
 
     case 'dutyPositionIdsWingHQ':
@@ -1350,6 +1466,7 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
 
     case 'dutyPositionLevelStaff':
       const staffLevel = (values[0] || '').toString().trim().toUpperCase();
+      const seededStaffGroupIds = [];
 
       if (staffLevel === 'WING') {
         for (const member in members) {
@@ -1385,6 +1502,7 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
           ) {
             groupId = String(org.wing || '').toLowerCase() + String(org.unit || '') + '.' + groupName;
             if (!groups[groupId]) groups[groupId] = {};
+            seededStaffGroupIds.push(groupId);
           }
         }
 
@@ -1410,6 +1528,8 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
             }
           }
         }
+
+        pruneEmptySeededGroups_(groups, seededStaffGroupIds, groupName);
       } else {
         delete groups[wingGroupId];
       }
@@ -1614,6 +1734,109 @@ function getGroupMembers(groupName, attribute, attributeValues, members, squadro
       });
   }
   return groups;
+}
+
+/**
+ * Drops pre-seeded group-echelon DLs that nobody qualifies for.
+ *
+ * A duty rule seeds one DL per group-echelon org up front, so that a DL whose
+ * holder has just left stays in the desired state and gets that person removed
+ * from it. That is right for a position the echelon **has** and is merely vacant,
+ * and wrong for one it does not have: CAP puts a **Director of Information
+ * Technology at wing and above and an IT Officer below it**, and groups have **no
+ * Inspector General**, so those rows minted one empty DL per group, every run,
+ * forever.
+ *
+ * The two cases are told apart by asking whether the group already exists. An
+ * empty seed for a DL that is already in the tenant is kept (a real position,
+ * currently vacant, whose stale members still need clearing); an empty seed for a
+ * group that does not exist is dropped rather than created.
+ *
+ * @param {Object} groups - Generated groups, mutated in place
+ * @param {string[]} seededGroupIds - Group ids seeded before members were matched
+ * @param {string} groupName - Base group name, for logging
+ * @returns {void}
+ */
+function pruneEmptySeededGroups_(groups, seededGroupIds, groupName) {
+  if (!seededGroupIds || !seededGroupIds.length) return;
+
+  const dropped = [];
+  const keptVacant = [];
+
+  for (let i = 0; i < seededGroupIds.length; i++) {
+    const seededGroupId = seededGroupIds[i];
+    if (!groups[seededGroupId] || Object.keys(groups[seededGroupId]).length > 0) continue;
+
+    if (managedGroupExists_(seededGroupId + CONFIG.EMAIL_DOMAIN)) {
+      keptVacant.push(seededGroupId);
+      continue;
+    }
+
+    delete groups[seededGroupId];
+    dropped.push(seededGroupId);
+  }
+
+  if (dropped.length || keptVacant.length) {
+    Logger.info('Pruned empty group-echelon DLs', {
+      groupName: groupName,
+      notCreated: dropped.length,
+      keptExistingButVacant: keptVacant.length,
+      notCreatedIds: dropped.join(', '),
+      note: 'A position that echelon does not establish produces no group; an existing vacant one is kept so its former holder is still removed.'
+    });
+  }
+}
+
+let _existingGroupEmailsCache = null;
+
+/**
+ * Set of every group address in the tenant, lowercased, built once per run.
+ *
+ * Read lazily — nothing calls it unless a seeded DL comes back empty, which on a
+ * settled wing is rare. A failure to list is not fatal: an unseen group is
+ * treated as absent, so the run creates nothing it should not and simply skips
+ * clearing a vacant DL until the next run.
+ *
+ * @returns {Object<string, boolean>} group email -> true
+ */
+function getExistingGroupEmails_() {
+  if (_existingGroupEmailsCache) return _existingGroupEmailsCache;
+
+  const emails = {};
+  let pageToken = '';
+
+  try {
+    do {
+      const page = AdminDirectory.Groups.list({
+        customer: 'my_customer',
+        maxResults: 200,
+        fields: 'groups(email),nextPageToken',
+        pageToken: pageToken || undefined
+      });
+      (page.groups || []).forEach(g => {
+        const email = String((g && g.email) || '').trim().toLowerCase();
+        if (email) emails[email] = true;
+      });
+      pageToken = page.nextPageToken || '';
+    } while (pageToken);
+
+    Logger.info('Existing group index built', { count: Object.keys(emails).length });
+  } catch (e) {
+    Logger.warn('Failed to list existing groups; vacant echelon DLs are skipped this run', {
+      errorMessage: e.message
+    });
+  }
+
+  _existingGroupEmailsCache = emails;
+  return emails;
+}
+
+/**
+ * @param {string} groupEmail
+ * @returns {boolean} True if the group already exists in the tenant
+ */
+function managedGroupExists_(groupEmail) {
+  return !!getExistingGroupEmails_()[String(groupEmail || '').trim().toLowerCase()];
 }
 
 /**

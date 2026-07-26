@@ -106,6 +106,14 @@ used to fail *silently* — producing a real, empty group rather than an error:
   `Level II`, `level ii` and `Level 2` all work. Run `listAchievementNames('level')` to see
   the exact strings CAPWATCH ships.
 
+**Group-echelon DLs follow the position, not the sheet.** A duty or rank row creates a
+per-group rollup (`ca0X.<name>`) only where somebody actually qualifies, or where that DL
+already exists and is temporarily vacant. Rules keyed on a **wing-only office** — CAP has a
+Director of Information Technology at wing and above but an IT Officer below it, and groups
+have no Inspector General — therefore produce a wing DL and nothing at group echelon.
+`cleanupEmptyEchelonGroups()` (preview by default) removes ones created before this rule
+existed.
+
 **Check a row before trusting it.** `previewEmailGroupRows('recruiting', true)` prints the
 group IDs a matching row generates, the member count for each, and the addresses; it flags
 any group that would be empty and changes nothing. A row whose `Attribute` is misspelled, or

@@ -94,10 +94,26 @@ function formatDutyTitle_(dutyId) {
   return overrides[title.toUpperCase()] || title;
 }
 
+/**
+ * An AdminDirectory whose Groups.list returns the given addresses — that index is
+ * how the module tells "position this echelon does not have" from "real position,
+ * currently vacant".
+ *
+ * @param {string[]} [existingGroupEmails]
+ */
+function makeAdminDirectory(existingGroupEmails) {
+  return {
+    Groups: {
+      list: () => ({ groups: (existingGroupEmails || []).map(email => ({ email: email })) })
+    }
+  };
+}
+
 function load(globals) {
   return loadModule(MODULE, Object.assign({
     Logger: makeLogger().logger,
-    CONFIG: CONFIG
+    CONFIG: CONFIG,
+    AdminDirectory: makeAdminDirectory([])
   }, globals || {}), ['getGroupMembers']);
 }
 
@@ -214,6 +230,64 @@ section('7. An unrecognized Attribute creates nothing');
     'dty.typo', 'dutyPositionIdsWingHq', 'Recruiting Officer', members, squadrons
   );
   check('no empty group left behind by a typo', Object.keys(generated), []);
+}
+
+// ---------------------------------------------------------------------------
+section('8. A group echelon gets no DL for a position it does not establish');
+{
+  // CAP has a Director of Information Technology at wing and above, an IT Officer
+  // below it, and no group-echelon Inspector General. Nobody in this wing holds
+  // either title at a group, so the per-group rollups must not be minted.
+  const noneExist = load({ formatDutyTitle_: formatDutyTitle_ });
+
+  const itDirector = noneExist.getGroupMembers(
+    'dty.director-it', 'dutyPositionIds', 'Director of Information Technology', members, squadrons
+  );
+  check('no ca010 DL for a wing-only office',
+    Object.keys(itDirector).filter(id => id !== 'ca.dty.director-it'), []);
+
+  const ig = noneExist.getGroupMembers(
+    'dty.inspector-general', 'dutyPositionIds', 'Inspector General', members, squadrons
+  );
+  check('same for Inspector General',
+    Object.keys(ig).filter(id => id !== 'ca.dty.inspector-general'), []);
+
+  // The wing-level DL is a separate question and is not touched by pruning: it is
+  // empty here only because this fixture has no wing IT director in it.
+  check('the wing-level DL is still offered', Object.keys(itDirector), ['ca.dty.director-it']);
+}
+
+// ---------------------------------------------------------------------------
+section('9. A real position that is merely vacant keeps its DL');
+{
+  // ca010.dty.it-officer already exists in the tenant, so an empty seed means the
+  // seat is open — the DL has to stay in the desired state for its previous
+  // holder to be removed from it.
+  const oneExists = load({
+    formatDutyTitle_: formatDutyTitle_,
+    AdminDirectory: makeAdminDirectory(['ca010.dty.it-officer@example.org'])
+  });
+
+  const vacant = oneExists.getGroupMembers(
+    'dty.it-officer', 'dutyPositionIds', 'Information Technology Officer', members, squadrons
+  );
+  check('existing but empty echelon DL is kept',
+    Object.keys(vacant).sort(), ['ca.dty.it-officer', 'ca010.dty.it-officer']);
+  check('and it is empty, so a stale member would be removed',
+    Object.keys(vacant['ca010.dty.it-officer']), []);
+}
+
+// ---------------------------------------------------------------------------
+section('10. A position the echelon does have is unaffected');
+{
+  const held = load({ formatDutyTitle_: formatDutyTitle_ }).getGroupMembers(
+    'dty.recruiting', 'dutyPositionIds', 'Recruiting Officer', members, squadrons
+  );
+  // Both Group 10 holders, including the one whose record still reads
+  // "Recruiting & Retention Officer".
+  check('the group with holders keeps its DL',
+    membersOf(held, 'ca010.dty.recruiting'),
+    ['alex.primary@example.org', 'devon.stale@example.org']);
 }
 
 done();
