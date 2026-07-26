@@ -172,7 +172,10 @@ Open any project in the browser from the repo with e.g. `npm run open:seniors`.
   not `Director of Recruiting`. Both titles exist in CAPWATCH, but as of the January 2026 extract
   no CAWG member held the latter. Group rules match the duty string exactly, so a rule keyed on
   `Director of Recruiting` matches nobody here and — because `dutyPositionIdsWingHQ` deletes empty
-  groups — fails silently rather than erroring.
+  groups — fails silently rather than erroring. Retired titles are the one exception: the CAPR
+  30-1 renames in `DUTY_TITLE_OVERRIDES` are applied to both sides of the comparison, so a rule
+  keyed on `Recruiting Officer` also matches records still reading
+  `Recruiting & Retention Officer`.
 - Upstream code authors (historical): Luke Bunge, Jeremy Ginnard (Michigan Wing);
   PCR config by Noel Luneau.
 

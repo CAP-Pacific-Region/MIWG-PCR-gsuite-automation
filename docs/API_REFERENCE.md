@@ -657,22 +657,34 @@ Builds group membership lists based on member attributes.
 **Supported Attributes:**
 - `type` - Member type (CADET, SENIOR, etc.)
 - `rank` - Member rank
-- `dutyPositionIds` - Duty position IDs
+- `dutyPositionIds` - Duty title, held anywhere in the wing
+- `dutyPositionIdsWingHQ` - Duty title held **at Wing HQ** (the org the duty is assigned to,
+  not the holder's home unit); wing-level DL only
+- `dutyPositionIdsGroupScope` - Duty title held at a group-echelon org; wing-level DL only
 - `dutyPositionIdsAndLevel` - Position ID with level
 - `dutyPositionLevel` - Just the level (UNIT, GROUP, WING)
-- `achievements` - Specialty qualifications
+- `dutyPositionLevelStaff` - Staff at WING or GROUP echelon
+- `achievements` - Achievement name **or** numeric AchvID, `ACTIVE`/`TRAINING`
+- `committeeIds` - Wing/group committee assignment
 - `contact` - Parent/guardian contacts
+- `manualOnly` - Creates exactly the group IDs listed in Values, deriving no members
+
+Duty titles are compared after the CAPR 30-1 renames in `DUTY_TITLE_OVERRIDES`. An
+unrecognized attribute creates nothing and logs a warning; see
+[SPREADSHEET_SETUP.md](SPREADSHEET_SETUP.md#groups--group--committee--chat-space-definitions)
+for how to write the `Values` column and `previewEmailGroupRows()` for checking a row.
 
 **Example:**
 ```javascript
 var members = getMembers();
 var squadrons = getSquadrons();
 
-// Get all commanders
+// Get all commanders. The CAPWATCH duty title is 'Commander' — 'CC' is the
+// FunctArea office symbol, which this code never reads.
 var commanders = getGroupMembers(
   'commanders',
   'dutyPositionIds',
-  'CC',
+  'Commander',
   members,
   squadrons
 );
