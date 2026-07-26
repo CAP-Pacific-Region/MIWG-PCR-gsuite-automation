@@ -10,6 +10,55 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-26] — The E&T level groups were reading a retired program
+
+The `ca.all-level-ii` … `-v` groups came back empty even after achievement names and IDs both
+resolved correctly, and the reason turned out to be more interesting than a bad Values column:
+**they were pointed at the wrong CAPWATCH subsystem entirely.**
+
+`Achievements.txt` still lists `Level II`–`Level V` as AchvIDs 131–134 under FunctionalArea
+`ET-Senior` — leftovers from the pre-2018 professional development program. The Groups sheet
+was keyed on those IDs, correctly, and `MbrAchievements.txt` carries **no row** for any of them,
+because the current PD program records nothing there. A rule keyed that way resolves cleanly,
+reports its resolved AchvIDs, and matches nobody — the most convincing possible way to be wrong.
+
+The live program lives in the **`PL_*` tables**:
+
+| File | Holds |
+|---|---|
+| `PL_Paths.txt` | `PathID` → `PathName`; Level 1 = 4, **Level 2 = 7 + 8** (Part 1 / Part 2), Level 3 = 3, Level 4 = 2, Level 5 = 1 |
+| `PL_MemberPathCredit.txt` | `MemberPathCreditID, PathID, CAPID, StatusID, Completed, Expiration, ExtraCreditEarned` |
+| `PL_Lookup.txt` | `StatusID` 8 = `APPROVED`, 26 = `PENDING`, 27 = `DISAPPROVED` |
+
+### Added — `professionalLevel` attribute (`UpdateGroups.gs` 1.6.0)
+
+```
+Category: education-training   Group Name: all-level-ii
+Attribute: professionalLevel   Values: Level 2
+```
+
+- **Level 2 requires both parts.** CAPWATCH splits it into `Level 2 Part 1` and `Level 2 Part 2`,
+  so a value naming the level resolves to both PathIDs and the member must hold *each*. Part 1
+  alone is progress, not the level, and is counted separately in the log as `partialCredit`.
+- **Values may be a path name or a PathID**, with Roman numerals folded to digits, so `Level 2`,
+  `Level II` and `3` all work. Several values are an OR.
+- **Approval is read from `PL_Lookup`, not hardcoded** — the extract states which StatusID means
+  APPROVED, so a future renumbering does not silently admit pending credits.
+- Any path name works, not just levels: `Squadron Commander Training` is a path too.
+- `listProfessionalLevelPaths('level')` prints the real names.
+
+### Changed — the PL tables are read by column name
+
+`readCapwatchTable_()` reads a CAPWATCH file *with* its header and returns objects.
+`parseFile()` drops the header, which encodes column meaning as a magic index — the habit that
+left Member.txt's Expiration column unverified at index 16 for months. The PL_* tables are new
+here and have no such folklore, so they start out read by name.
+
+> **The Groups sheet needs editing for this to take effect**: the seven `ca.all-level-*` rows
+> must move from `achievements` + `131`–`134` to `professionalLevel` + `Level 2`…`Level 5`.
+> Until then those rows keep resolving to retired AchvIDs and keep matching nobody — which the
+> run now says out loud rather than silently creating an empty group.
+
 ## [2026-07-26] — Group-echelon DLs for positions the echelon does not have
 
 ### Fixed (`UpdateGroups.gs` 1.5.0)

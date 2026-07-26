@@ -85,7 +85,8 @@ positional**, so keep this order (`UpdateGroups.gs`):
 | `dutyPositionIdsAndLevel` | `<title>_<level>`, excluding Wing HQ | one DL, name as written |
 | `dutyPositionLevel` | Any duty at the given level | wing DL only |
 | `dutyPositionLevelStaff` | Staff at `WING` or `GROUP` echelon | wing or per-group DLs |
-| `achievements` | Achievement, `ACTIVE` or `TRAINING` | wing + group DLs |
+| `achievements` | Achievement (ES rating, cadet achievement), `ACTIVE` or `TRAINING` | wing + group DLs |
+| `professionalLevel` | PD level / PL path, approved credit | wing + group DLs |
 | `committeeIds` | Wing/group committee name | wing + group DLs |
 | `contact` | Cadets + the listed `MbrContact` types | wing + group DLs |
 | `manualOnly` | Nothing — creates the group IDs in `Values` | exactly what `Values` lists |
@@ -102,9 +103,24 @@ used to fail *silently* — producing a real, empty group rather than an error:
   belong on the wing office DL; a Wing HQ member holding the same title at a squadron does
   not.
 - **`achievements` accepts a name or a numeric AchvID.** `MbrAchievements.txt` stores only
-  the ID (Level I is `96`), so names are resolved through `Achievements.txt` —
-  `Level II`, `level ii` and `Level 2` all work. Run `listAchievementNames('level')` to see
-  the exact strings CAPWATCH ships.
+  the ID, so names are resolved through `Achievements.txt`. Run
+  `listAchievementNames('mro')` to see the exact strings CAPWATCH ships.
+- **Professional development levels are NOT achievements — use `professionalLevel`.**
+  `Achievements.txt` still lists `Level II`–`Level V` (AchvIDs 131–134) from the program
+  CAP retired in 2018, and `MbrAchievements.txt` carries no rows for them, so a row keyed
+  that way resolves cleanly and matches nobody. The live program is in the `PL_*` tables.
+  Write the level by name:
+
+  | Group Name | Attribute | Values |
+  |---|---|---|
+  | `all-level-ii` | `professionalLevel` | `Level 2` |
+  | `all-level-iii` | `professionalLevel` | `Level 3` |
+
+  `Level 2` is stored as two paths (`Part 1`, `Part 2`) and the member must hold **both**;
+  a `PathID` works in place of a name, Roman numerals fold to digits, and several values
+  are an OR. Only **approved** credit counts (`PL_Lookup` says which StatusID that is).
+  `listProfessionalLevelPaths('level')` prints the real path names — and any path works,
+  not just levels, so `Squadron Commander Training` is a valid row.
 
 **Group-echelon DLs follow the position, not the sheet.** A duty or rank row creates a
 per-group rollup (`ca0X.<name>`) only where somebody actually qualifies, or where that DL
