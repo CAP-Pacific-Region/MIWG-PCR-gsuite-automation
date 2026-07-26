@@ -10,6 +10,56 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-26] — updateEmailGroups() can be run in slices
+
+`updateEmailGroups()` timed out. The run's length tracks the number of membership **changes**,
+not the number of groups — each one is an API call with `API_DELAY_MS` pacing behind it, plus a
+15-second cooldown every 25 adds. A steady day is minutes. The day the level rule changed to
+highest-rung-only, thousands of memberships moved at once, and the execution limit arrived first:
+the run was killed partway with no record of where it got to, and the next run started over.
+
+### Added — `updateEmailGroupsBatch(budgetMinutes)` (`UpdateGroups.gs` 1.8.0)
+
+```
+updateEmailGroupsBatch()        // 25 minutes, sized for the 30-minute execution limit
+updateEmailGroupsBatch(5)       // a shorter slice, e.g. on the 6-minute tier
+checkEmailGroupsBatchStatus()   // how far along, changes nothing
+resetEmailGroupsBatchProgress() // discard the parked run, recompute next time
+```
+
+The first call computes the deltas and parks them in Drive with the group metadata; each call
+applies what fits in its budget and saves its position, down to the individual member. Run it
+again — by hand, or by pointing the daily trigger at it — until it reports complete.
+
+**Rather than a second copy of the add/remove logic, the existing loop learned to stop.**
+`updateEmailGroups()` now takes an optional `{deadlineMs, resume}` and returns where it got to;
+called with no arguments it behaves exactly as before, so the daily trigger is unaffected.
+Two details that matter:
+
+- **Metadata and settings are not re-applied** when resuming into the middle of a group.
+- **The error sheet is written only on the run that completes.** `saveErrorEmails()` clears and
+  rewrites the tab, so writing it per slice would leave only the last slice's errors on it;
+  errors accumulate in the parked state instead.
+
+Re-applying a slice is harmless in any case — an add that already happened returns 409 and a
+removal 404, both already caught — so a hard timeout between saves costs at most one group.
+A parked run older than 12 hours is discarded rather than resumed: past that point its deltas
+describe a directory that has moved on.
+
+### Not changed — the pacing itself
+
+`CONFIG.API_DELAY_MS` is 250 ms before every call, and the add path sleeps another 250 ms plus
+15 seconds every 25 adds. That is ~0.5 s per change before the API is even consulted, well under
+what the Directory API allows (~15 queries/second). Loosening it would cut these runs
+substantially, but it is a shared constant every module paces on, so it is a deliberate,
+separate decision rather than something a timeout fix should take unilaterally.
+
+### Added (`test/UpdateGroups.batch.test.js`)
+
+A faked clock and directory: pausing mid-group and at a group boundary, the exact resume
+position in both cases, a two-pass run applying all five changes exactly once with totals
+carried across, and metadata not re-applied on resume.
+
 ## [2026-07-26] — Level groups are rungs, not badges
 
 Two corrections from the wing DA after the first live run.

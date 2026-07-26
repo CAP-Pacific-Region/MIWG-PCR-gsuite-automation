@@ -1,10 +1,17 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.7.0
+ * Version: 1.8.0
  * Filename: UpdateGroups.gs
  * Saved: 2026-07-26
- * Changes: 1.7.0: 'professionalLevel' now places a member on their HIGHEST
+ * Changes: 1.8.0: updateEmailGroups() takes an optional deadline and resume
+ *   position, and new updateEmailGroupsBatch() drives it in slices that fit
+ *   inside the Apps Script execution limit. A run's length tracks the number of
+ *   membership CHANGES, so the day a rule changes and thousands of memberships
+ *   move with it, one pass is killed partway with no record of where it got to.
+ *   State parks in Drive; checkEmailGroupsBatchStatus() reports it,
+ *   resetEmailGroupsBatchProgress() discards it. No-argument behavior unchanged.
+ *   1.7.0: 'professionalLevel' now places a member on their HIGHEST
  *   completed level only — a Level V holder is in all-level-v and nowhere else,
  *   where 1.6.0 put them in every level group they had ever passed. Adds
  *   'professionalLevelInProgress' for members holding some parts of a level but
@@ -70,40 +77,89 @@ var groupAllowExternalByName = {};
 
 const DRY_RUN = false; // change to false for real updates
 
-function updateEmailGroups() {
-  clearCache();
+/**
+ * Applies the Groups sheet to Google Groups.
+ *
+ * Called with no arguments this behaves as it always has: compute the deltas, then
+ * apply every one of them in a single execution.
+ *
+ * `options` makes the same pass **interruptible**, which is what updateEmailGroupsBatch()
+ * uses. A membership change costs an API call plus its pacing delay, so a run that
+ * moves thousands of members — the day a rule changes, for instance — can outlast the
+ * Apps Script execution limit. Rather than a second copy of the add/remove logic, the
+ * one loop learned to stop on a deadline and say exactly where it stopped.
+ *
+ * @param {Object} [options]
+ * @param {number} [options.deadlineMs] - Epoch ms to stop by; 0/absent = run to completion
+ * @param {Object} [options.resume] - Saved state from a previous paused run:
+ *   { deltas, groupIndex, memberIndex, errorEmails, totals }
+ * @returns {{complete: boolean, groupIndex: number, memberIndex: number, totalGroups: number,
+ *   errorEmails: Object, totals: {added: number, removed: number, errors: number}}}
+ */
+function updateEmailGroups(options) {
+  const opts = options || {};
+  const deadlineMs = Number(opts.deadlineMs || 0);
+  const resume = opts.resume || null;
+
   const start = new Date();
-  let deltas = getEmailGroupDeltas();
-  let errorEmails = {};
-  let totalAdded = 0;
-  let totalRemoved = 0;
-  let totalErrors = 0;
-  let processedCategories = 0;
-  const totalCategories = Object.keys(deltas).length;
+  if (!resume) clearCache();
+
+  let deltas = resume ? resume.deltas : getEmailGroupDeltas();
+  let errorEmails = (resume && resume.errorEmails) || {};
+  let totalAdded = (resume && resume.totals && resume.totals.added) || 0;
+  let totalRemoved = (resume && resume.totals && resume.totals.removed) || 0;
+  let totalErrors = (resume && resume.totals && resume.totals.errors) || 0;
+
+  // One flat, ordered list so a position in the run is a single number. Object key
+  // order is insertion order here, and the deltas are rebuilt from the same sheet in
+  // the same order, so the list is stable across executions.
+  const work = [];
+  for (const category in deltas) {
+    for (const group in deltas[category]) work.push([category, group]);
+  }
+
+  let groupIndex = (resume && Number(resume.groupIndex)) || 0;
+  let memberIndex = (resume && Number(resume.memberIndex)) || 0;
+  let processedCategories = groupIndex;
+  const totalCategories = work.length;
+  const outOfTime = () => deadlineMs > 0 && Date.now() >= deadlineMs;
 
   // For dry-run summary
   let dryRunSummary = [];
 
-  for(const category in deltas) {
+  for (; groupIndex < work.length; groupIndex++) {
+    if (outOfTime()) break;
+
+    const category = work[groupIndex][0];
+    const group = work[groupIndex][1];
     processedCategories++;
-    for (const group in deltas[category]) {
+    {
       let added = 0;
       let removed = 0;
       const groupEmail = group + CONFIG.EMAIL_DOMAIN;
       const baseGroupName = group.includes('.') ? group.split('.').slice(1).join('.') : group;
 
-      // Ensure existing group name/description match desired metadata from Groups sheet
-      const metaForGroup = desiredGroupMeta[groupEmail.toLowerCase()] || {};
-      applyGroupMeta_(groupEmail, metaForGroup);
-      applyManagedGroupSettings_(groupEmail, {
-        allowExternalMembers: !!groupAllowExternalByName[baseGroupName],
-        whoCanViewMembership: 'ALL_IN_DOMAIN_CAN_VIEW',
-        whoCanPostMessage: 'ANYONE_CAN_POST'
-      });
+      // Metadata and settings are checked once per group, and skipped when resuming
+      // into the middle of one — they were applied before the pause.
+      if (memberIndex === 0) {
+        const metaForGroup = desiredGroupMeta[groupEmail.toLowerCase()] || {};
+        applyGroupMeta_(groupEmail, metaForGroup);
+        applyManagedGroupSettings_(groupEmail, {
+          allowExternalMembers: !!groupAllowExternalByName[baseGroupName],
+          whoCanViewMembership: 'ALL_IN_DOMAIN_CAN_VIEW',
+          whoCanPostMessage: 'ANYONE_CAN_POST'
+        });
+      }
 
       let dryRunMembers = [];
 
-      for (const email in deltas[category][group]) {
+      const memberEmails = Object.keys(deltas[category][group]);
+      let pausedInGroup = false;
+
+      for (; memberIndex < memberEmails.length; memberIndex++) {
+        if (outOfTime()) { pausedInGroup = true; break; }
+        const email = memberEmails[memberIndex];
+
         switch(deltas[category][group][email]) {
           case -1:
             // Remove member
@@ -309,14 +365,18 @@ function updateEmailGroups() {
       }
 
       const meta = desiredGroupMeta[groupEmail.toLowerCase()] || {};
-      Logger.info('Updated group', {
+      Logger.info(pausedInGroup ? 'Paused partway through group' : 'Updated group', {
         groupId: group,
         group: groupEmail,
         name: meta.name || '',
         description: meta.description || '',
         added: added,
-        removed: removed
+        removed: removed,
+        membersDone: pausedInGroup ? `${memberIndex}/${memberEmails.length}` : undefined
       });
+
+      if (pausedInGroup) break;   // leave groupIndex here; memberIndex says where to resume
+      memberIndex = 0;            // next group starts at its first member
     }
     if (processedCategories % 5 === 0 || processedCategories === totalCategories) {
       Logger.info('Progress update', {
@@ -327,7 +387,12 @@ function updateEmailGroups() {
     }
   }
 
-  saveErrorEmails(errorEmails);
+  const complete = groupIndex >= work.length;
+
+  // A paused run keeps its errors in the returned state and writes the sheet once,
+  // at the end — saveErrorEmails() clears and rewrites the tab, so calling it per
+  // execution would leave only the last batch's errors on it.
+  if (complete) saveErrorEmails(errorEmails);
 
   // Dry-run: Save summary file and log
   if (DRY_RUN) {
@@ -348,13 +413,218 @@ function updateEmailGroups() {
     }
   }
 
-  Logger.info('Email group update completed', {
+  Logger.info(complete ? 'Email group update completed' : 'Email group update paused on deadline', {
     duration: new Date() - start + 'ms',
+    groupsDone: `${groupIndex}/${work.length}`,
     totalAdded: totalAdded,
     totalRemoved: totalRemoved,
     totalErrors: totalErrors,
     errorEmailsCount: Object.keys(errorEmails).length
   });
+
+  return {
+    complete: complete,
+    groupIndex: groupIndex,
+    memberIndex: memberIndex,
+    totalGroups: work.length,
+    errorEmails: errorEmails,
+    totals: { added: totalAdded, removed: totalRemoved, errors: totalErrors },
+    // Handed back so a paused run can be parked without recomputing it.
+    deltas: deltas
+  };
+}
+
+const EMAIL_GROUPS_BATCH_STATE_FILE_ = 'EmailGroupsBatchState.json';
+
+/**
+ * Wall-clock budget for one slice, in minutes.
+ *
+ * These tenants allow a 30-minute execution, so 25 leaves five minutes of headroom
+ * for the final state save — which writes the whole delta set to Drive and is the
+ * one step that must not be interrupted. A tenant on the 6-minute tier should pass
+ * 5 explicitly.
+ */
+const EMAIL_GROUPS_BATCH_DEFAULT_BUDGET_MIN_ = 25;
+const EMAIL_GROUPS_BATCH_STALE_HOURS_ = 12;
+
+/**
+ * updateEmailGroups() in slices, for when one pass cannot finish inside the Apps
+ * Script execution limit.
+ *
+ * Every membership change is an API call with pacing behind it, so the run's length
+ * tracks the number of CHANGES, not the number of groups. A steady day is minutes;
+ * the day a rule changes and thousands of memberships move with it is not, and that
+ * run gets killed partway with no record of where it got to.
+ *
+ * The first call computes the deltas and parks them in Drive alongside the group
+ * metadata; each call then applies as much as fits in its time budget and saves its
+ * position. Run it again — by hand, or by pointing the daily trigger at it — until
+ * it reports complete. Re-applying a slice is harmless anyway: an add that already
+ * happened comes back 409 and a removal 404, both of which are caught.
+ *
+ *   updateEmailGroupsBatch()        // 25 minutes, sized for this tenant's 30-minute limit
+ *   updateEmailGroupsBatch(5)       // a shorter slice, e.g. on the 6-minute tier
+ *   checkEmailGroupsBatchStatus()   // how far along, without touching anything
+ *   resetEmailGroupsBatchProgress() // discard the parked run and start fresh
+ *
+ * @param {number} [budgetMinutes=25] - Wall-clock budget for THIS execution
+ * @returns {{complete: boolean, groupIndex: number, totalGroups: number}}
+ */
+function updateEmailGroupsBatch(budgetMinutes) {
+  const budgetMs = Math.max(1, Number(budgetMinutes || EMAIL_GROUPS_BATCH_DEFAULT_BUDGET_MIN_)) * 60 * 1000;
+  const deadlineMs = Date.now() + budgetMs;
+
+  const saved = loadEmailGroupsBatchState_();
+  let resume = null;
+
+  if (saved) {
+    // Restore the maps the apply pass reads out of module scope.
+    desiredGroupMeta = saved.desiredGroupMeta || {};
+    groupAllowExternalByName = saved.groupAllowExternalByName || {};
+    groupAttributeByName = saved.groupAttributeByName || {};
+    workspaceEmailMap = saved.workspaceEmailMap || {};
+
+    resume = {
+      deltas: saved.deltas,
+      groupIndex: saved.groupIndex,
+      memberIndex: saved.memberIndex,
+      errorEmails: saved.errorEmails || {},
+      totals: saved.totals
+    };
+
+    Logger.info('Resuming parked email group run', {
+      startedAt: saved.startedAt,
+      resumingAt: `${saved.groupIndex}/${saved.totalGroups}`,
+      memberIndex: saved.memberIndex
+    });
+  }
+
+  const result = updateEmailGroups({ deadlineMs: deadlineMs, resume: resume });
+
+  if (result.complete) {
+    clearEmailGroupsBatchState_();
+    Logger.info('Email group batch finished', {
+      groups: result.totalGroups,
+      added: result.totals.added,
+      removed: result.totals.removed,
+      errors: result.totals.errors
+    });
+    console.log(`✅ Complete — ${result.totalGroups} groups, ` +
+      `+${result.totals.added} / -${result.totals.removed}, ${result.totals.errors} errors.`);
+  } else {
+    saveEmailGroupsBatchState_({
+      startedAt: (saved && saved.startedAt) || new Date().toISOString(),
+      savedAt: new Date().toISOString(),
+      groupIndex: result.groupIndex,
+      memberIndex: result.memberIndex,
+      totalGroups: result.totalGroups,
+      totals: result.totals,
+      errorEmails: result.errorEmails,
+      deltas: result.deltas,
+      desiredGroupMeta: desiredGroupMeta,
+      groupAllowExternalByName: groupAllowExternalByName,
+      groupAttributeByName: groupAttributeByName,
+      workspaceEmailMap: workspaceEmailMap
+    });
+    console.log(`⏸ Paused at group ${result.groupIndex}/${result.totalGroups}. ` +
+      `Run updateEmailGroupsBatch() again to continue.`);
+  }
+
+  return { complete: result.complete, groupIndex: result.groupIndex, totalGroups: result.totalGroups };
+}
+
+/**
+ * Read-only: how far the parked run got.
+ * @returns {void}
+ */
+function checkEmailGroupsBatchStatus() {
+  const saved = loadEmailGroupsBatchState_();
+  if (!saved) {
+    console.log('No parked email group run. The next updateEmailGroupsBatch() starts fresh.');
+    return;
+  }
+  console.log(`Parked run started ${saved.startedAt}, last saved ${saved.savedAt}`);
+  console.log(`  position: group ${saved.groupIndex}/${saved.totalGroups}, member ${saved.memberIndex}`);
+  console.log(`  so far:   +${saved.totals.added} / -${saved.totals.removed}, ${saved.totals.errors} errors`);
+}
+
+/**
+ * Discards a parked run so the next batch recomputes from the sheet. Changes nothing
+ * in Workspace — the memberships already applied stay applied.
+ * @returns {void}
+ */
+function resetEmailGroupsBatchProgress() {
+  clearEmailGroupsBatchState_();
+  console.log('Parked email group run discarded. The next updateEmailGroupsBatch() starts fresh.');
+}
+
+/**
+ * @returns {Object|null} Parked state, or null when there is none or it has gone stale
+ */
+function loadEmailGroupsBatchState_() {
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+    const files = folder.getFilesByName(EMAIL_GROUPS_BATCH_STATE_FILE_);
+    if (!files.hasNext()) return null;
+
+    const state = JSON.parse(files.next().getBlob().getDataAsString());
+    if (!state || !state.deltas) return null;
+
+    // Deltas were computed against a directory that has since moved on. Past a point
+    // it is more honest to recompute than to apply yesterday's answer.
+    const ageHours = (Date.now() - new Date(state.savedAt).getTime()) / 3600000;
+    if (ageHours > EMAIL_GROUPS_BATCH_STALE_HOURS_) {
+      Logger.warn('Parked email group run is stale; recomputing instead of resuming', {
+        savedAt: state.savedAt,
+        ageHours: Math.round(ageHours)
+      });
+      clearEmailGroupsBatchState_();
+      return null;
+    }
+
+    return state;
+  } catch (e) {
+    Logger.warn('Could not read parked email group run; starting fresh', { errorMessage: e.message });
+    return null;
+  }
+}
+
+/**
+ * @param {Object} state
+ * @returns {void}
+ */
+function saveEmailGroupsBatchState_(state) {
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+    const content = JSON.stringify(state);
+    const files = folder.getFilesByName(EMAIL_GROUPS_BATCH_STATE_FILE_);
+
+    if (files.hasNext()) files.next().setContent(content);
+    else folder.createFile(EMAIL_GROUPS_BATCH_STATE_FILE_, content, MimeType.PLAIN_TEXT);
+
+    Logger.info('Parked email group run saved', {
+      position: `${state.groupIndex}/${state.totalGroups}`,
+      memberIndex: state.memberIndex,
+      bytes: content.length
+    });
+  } catch (e) {
+    Logger.error('Failed to park the email group run - the next call will start over', {
+      errorMessage: e.message
+    });
+  }
+}
+
+/**
+ * @returns {void}
+ */
+function clearEmailGroupsBatchState_() {
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+    const files = folder.getFilesByName(EMAIL_GROUPS_BATCH_STATE_FILE_);
+    while (files.hasNext()) files.next().setTrashed(true);
+  } catch (e) {
+    Logger.warn('Could not clear the parked email group run', { errorMessage: e.message });
+  }
 }
 
 /**
