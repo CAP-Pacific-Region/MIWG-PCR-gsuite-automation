@@ -497,6 +497,31 @@ an internal helper. **Preview/test functions never modify Workspace** — use th
 - `addAliasesFromSheet()` / `updateMissingAliases`-style helpers — alias repair.
 - `getMembers()`, `getSquadrons()`, `getAEMembers()` — data builders (used by tests/other modules).
 
+### Welcome email for an account created by hand (`WelcomeEmailResend.gs`)
+The welcome email is sent from **one place only**: the insert branch of `addOrUpdateUser()`. An
+account created in the Admin console or by GAM never passes through it, so that member gets no
+credentials — and the next sync, finding an account already there, just updates it. Nothing
+detects this.
+- `previewWelcomeEmailResend(capid)` — **read-only.** Reports whether the member would be sent
+  a welcome email, on which account, and to which addresses. Run this first.
+- `resendWelcomeEmail(capid)` — **destructive.** Resets the account password and mails the
+  welcome email carrying the new one.
+  > **This is a password reset, not a re-send.** The original temp password is generated at
+  > insert time and stored nowhere, so it cannot be reproduced; new credentials are the only
+  > thing that can be delivered. The member's existing password stops working immediately.
+
+  Refused (with a reason) when the account **has login history** — the member is using it and a
+  reset would lock them out — or is **suspended**, **archived**, absent, or has no CAPWATCH
+  record. `resendWelcomeEmail(capid, {force: true})` overrides the login-history and suspended
+  guards only.
+  > **One refusal cannot be forced:** if CAPWATCH holds no address outside this tenant, the
+  > credentials would be mailed to the mailbox they unlock. Have the member add a personal
+  > address in eServices first. Watch for this — a send like that *looks* successful.
+
+  A member with **no account at all** is not a resend case. Run `updateAllMembers()`; if they
+  are a senior, check they have completed Level I (`REQUIRE_LEVEL_I_FOR_SENIORS` gates new
+  senior accounts, and an account that appears *before* Level I was made by hand).
+
 ### Duplicate accounts (`DuplicateAccountScan.gs`, `DuplicateAccountGuard.gs`)
 Provisioning used to create a **second** account for a member when their real account
 was invisible to the CAPID→email map — i.e. it was suspended, tagged under a

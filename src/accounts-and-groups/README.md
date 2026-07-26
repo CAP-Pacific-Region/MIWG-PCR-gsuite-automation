@@ -17,12 +17,13 @@ This module handles the core automation for synchronizing CAPWATCH member data w
 
 ## Overview
 
-This module consists of four main components:
+This module consists of five main components:
 
 1. **UpdateMembers.gs** - User account lifecycle management
 2. **UpdateGroups.gs** - Email group membership synchronization
 3. **ManageLicenses.gs** - License optimization and account archival
 4. **CadetTransition*.gs** - Cadet → senior cross-tenant account transition (PCR only; cadets tenant)
+5. **WelcomeEmailResend.gs** - Welcome email for an account created outside provisioning
 
 Together, these scripts ensure that your Google Workspace environment stays synchronized with CAPWATCH membership data automatically.
 
@@ -281,6 +282,52 @@ skip note, hold indefinitely and need a human.
 `appsscript.json`): cadets SA needs `gmail.readonly` + Drive/Contacts read; seniors
 (peer) SA needs `gmail.insert` + `gmail.labels` to import, and `gmail.metadata` for
 the duplicate-guard check. Missing scopes fail loudly per phase.
+
+### 5. WelcomeEmailResend.gs - Welcome Email for an Out-of-Band Account
+
+**Purpose**: Delivers credentials to a member whose account was created **outside
+provisioning** — in the Admin console, by GAM, or by another admin — and who therefore
+never received a welcome email.
+
+**Why it is needed**: `sendWelcomeEmail()` has exactly one call site, inside the *insert*
+branch of `addOrUpdateUser()`. An account that already exists never reaches it. The next
+sync finds the account, takes the update path, and the member is indistinguishable from
+any other existing member. Nothing detects the gap and nothing repairs it.
+
+The tell-tale is an account created **before** the member's Level I completion:
+`REQUIRE_LEVEL_I_FOR_SENIORS` withholds new senior accounts until Level I is recorded,
+so provisioning cannot have made it.
+
+**Key Functions**:
+- `previewWelcomeEmailResend(capid)` — **read-only.** Whether the member would be sent a
+  welcome email, on which account, to which addresses. Also flags a CAPID carrying more
+  than one account.
+- `resendWelcomeEmail(capid, opts)` — resets the password and sends. `{force: true}`
+  bypasses the login-history and suspended guards.
+
+**A resend is a password RESET, not a re-send.** The temp password is generated at insert
+time and stored nowhere, so the original message cannot be reproduced — minting new
+credentials is the only option. That makes this destructive on a live account, so the
+eligibility decision is a pure function (`welcomeResendEligibility_`, tested in
+`test/WelcomeEmailResend.test.js`) rather than inline conditions:
+
+| Refusal | Forceable | Why |
+|---|---|---|
+| account has login history | yes | member is using it; a reset locks them out |
+| account suspended | yes | credentials would not work until it is lifted |
+| no address outside this tenant | **no** | credentials would go to the mailbox they unlock |
+| account archived | **no** | restore it first |
+| no account for that CAPID | **no** | needs provisioning, not a resend |
+| CAPID not in CAPWATCH | **no** | expired, wrong wing, or a typo |
+
+The un-forceable recipient rule is the one that matters in practice: it is the failure that
+*looks* like a successful send.
+
+**Account resolution goes through the duplicate guard** (`findExistingAccountsByCapid_` +
+`chooseAuthoritativeAccount_`), never a derived `first.last` address — an out-of-band
+account is frequently not at the derived address, which is how it got missed to begin with.
+`UpdateMembers.gs` is untouched; `sendWelcomeEmail()` and `generateTempPassword_()` are
+reused as-is.
 
 ## How It Works
 

@@ -170,6 +170,39 @@ The system includes automatic retry logic with exponential backoff. If you still
    - Check logs for specific error codes
    - See [Error Codes Reference](#error-codes-reference)
 
+### Member Never Received a Welcome Email
+
+**Symptom:** The member has a working account, but never got credentials.
+
+**Cause, almost always:** the account was **created out-of-band** — in the Admin console, by
+GAM, or by another admin. `sendWelcomeEmail()` has a single call site, inside the *insert*
+branch of `addOrUpdateUser()`. An account that already exists never reaches it: the next sync
+finds it, takes the update path, and the member reads as an ordinary existing member. Nothing
+detects or repairs this on its own.
+
+**Tell-tale:** an account whose creation date **precedes** the member's Level I completion.
+`REQUIRE_LEVEL_I_FOR_SENIORS` withholds new senior accounts until Level I is recorded, so
+provisioning could not have created it — someone did it by hand.
+
+**Confirm:**
+
+1. Execution log around the account's creation date — you should find neither
+   `New user created` nor `Welcome email sent to IT` for that CAPID, and (for a senior)
+   `Senior skipped — Level I not complete` on the runs before it appeared.
+2. Every welcome email CCs `ITSUPPORT_EMAIL`. No CC on file is direct proof none was sent.
+
+**Fix:**
+
+```javascript
+previewWelcomeEmailResend(123456);  // read-only: would it send, and to whom
+resendWelcomeEmail(123456);         // resets the password, then sends
+```
+
+This **resets the account password** — the original temp password is stored nowhere, so new
+credentials are the only thing that can be delivered. See
+[Admin Guide §9](ADMIN_GUIDE.md#9-entry-point-function-reference) for the guards; the refusals
+that cannot be forced are described there.
+
 ### Members Not Being Updated
 
 **Symptom:** Changes in CAPWATCH not reflected in Google Workspace

@@ -10,6 +10,55 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-26] — a welcome email can be sent to an account created out-of-band
+
+A new senior never received a welcome email. They joined in June, cleared Level I in July, and
+had an account by 01Jul — a week *before* Level I. That ordering is the whole story:
+`REQUIRE_LEVEL_I_FOR_SENIORS` was withholding provisioning the entire time, so the script
+cannot have created that account. Someone made it by hand.
+
+**The welcome email has exactly one call site** — inside the `if (!user)` insert branch of
+`addOrUpdateUser()`. When the gate finally lifted, `Users.update()` at that address succeeded,
+`user` came back truthy, and the whole insert branch (welcome email included) was skipped. The
+member read as an ordinary existing account getting a routine attribute update. Every account
+created in the Admin console or by GAM has this hole, nothing detects it, nothing repairs it.
+
+### Added — `WelcomeEmailResend.gs` 1.0.0
+
+```
+previewWelcomeEmailResend(capid)        // read-only: would this send, and to whom
+resendWelcomeEmail(capid)               // resets the password, sends the welcome email
+resendWelcomeEmail(capid, {force:true}) // bypass the login-history / suspended guards
+```
+
+**A resend is a password RESET plus a send, not a re-send.** The original temp password is
+generated at insert time and stored nowhere, so the message cannot be reproduced — the only
+way to deliver working credentials is to mint new ones. That makes this destructive on a live
+account, so the decision of whether a member may be resent is a pure function
+(`welcomeResendEligibility_`) with hard guards, covered by `test/WelcomeEmailResend.test.js`:
+
+- **An account with login history is refused.** The member is demonstrably using it; a reset
+  locks them out of a working account to fix a cosmetic gap. `{force: true}` overrides, and the
+  log records that a guard was bypassed.
+- **Credentials are never mailed to the mailbox they unlock.** If CAPWATCH holds no address
+  outside the tenant, the welcome email would land in the account the new password is needed to
+  open. Refused outright — `force` does not override, because the send would be useless rather
+  than merely unwise. This one is silent in the wild: it looks like a successful send.
+- Suspended (refusable with `force`), archived, no account, and no CAPWATCH record are each
+  refused with their own reason slug.
+
+The account is resolved by **CAPID through the duplicate-guard path**
+(`findExistingAccountsByCapid_` + `chooseAuthoritativeAccount_`), never by deriving
+`first.last` — an out-of-band account frequently is not at the derived address, which is how
+it came to be missed in the first place.
+
+`UpdateMembers.gs` is untouched: `sendWelcomeEmail()` and `generateTempPassword_()` are reused
+as-is, so provisioning behavior is unchanged.
+
+**Not fixed here:** nothing yet *detects* an account that never got a welcome email — this is
+a repair tool an admin runs against a known CAPID. Closing that gap needs a welcome-sent marker
+and a one-time backfill, or the entire existing wing gets re-welcomed on first run.
+
 ## [2026-07-26] — updateEmailGroups() can be run in slices
 
 `updateEmailGroups()` timed out. The run's length tracks the number of membership **changes**,

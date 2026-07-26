@@ -39,6 +39,7 @@ dry run the *second* check rather than the first.
 | `UpdateGroups.batch.test.js` | Pausing on a deadline and resuming: position, no double-apply, no half-written error sheet |
 | `UpdateGroups.professionalLevel.test.js` | PD level DLs off the `PL_*` tables: highest-rung-only, both Level 2 parts, in-progress, approval status |
 | `SquadronGroups.commandStaff.test.js` | Which command-staff DLs each unit type gets, and what cleanup will delete |
+| `WelcomeEmailResend.test.js` | The guards on a welcome-email resend: never reset an account in use, never mail credentials to the mailbox they unlock |
 
 Nothing here ships to Apps Script: clasp's `rootDir` is `../src` and
 `.claspignore` excludes everything outside `src/`, so `test/` never leaves the
