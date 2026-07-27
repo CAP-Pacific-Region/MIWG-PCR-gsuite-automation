@@ -63,9 +63,26 @@ carries context the rollup does not. Grouped by address rather than per occurren
 bad contact on a cadet's record reaches every list that cadet belongs to, and reading the same
 address three times invites someone to fix it once and assume they are done.
 
-First live run on cadets found **12 occurrences across 11 addresses** — one plus-addressed, one
-with underscores in a Gmail username (structurally impossible), the rest well-formed but not
-resolving.
+Both refusals Google issues are collected, because they are one situation for the wing:
+
+| Code | Meaning | Reported as |
+|---|---|---|
+| 404 | Google checked gmail.com and found no such account | `no such account` |
+| 400 | Google would not parse the address at all | `malformed` |
+
+The first pass recorded only the 404s, and the live run promptly turned up a **double dot in a
+domain** — which `sanitizeEmail()`'s format check accepts, since `[^\s@]+\.[^\s@]+` is satisfied
+by `icloud..com`. That address failed every run and appeared in no worklist. Thirteen addresses
+failed; twelve were reported.
+
+First live run on cadets: **12 occurrences across 11 addresses** for the 404s alone — one
+plus-addressed, one with underscores in a Gmail username (both structurally impossible), the rest
+well-formed but not resolving.
+
+`sanitizeEmail()` is deliberately left alone. Rejecting consecutive dots there would be correct,
+but it is a shared validator used by member provisioning and every mail path, and the worklist
+already gets the address in front of the people who can fix it. Worth doing separately, on its
+own terms.
 
 ### Fixed — a run that could not add twelve members still reported `errors: 0`
 
