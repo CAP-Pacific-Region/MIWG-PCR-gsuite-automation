@@ -27,6 +27,20 @@ const MODULE = path.join(__dirname, '..', 'src', 'notifications', 'ParentEmailNo
 const { section, check, done } = makeChecker();
 const { logger } = makeLogger();
 
+/** Member.txt row: [0] CAPID, [2] last, [3] first, [11] ORGID, [13] unit, [21] type, [24] status */
+function memberRow(capid, orgid, first, last, opts) {
+  const o = opts || {};
+  const row = [];
+  row[0] = capid;
+  row[2] = last;
+  row[3] = first;
+  row[11] = orgid;
+  row[13] = o.unit || '101';
+  row[21] = o.type || 'CADET';
+  row[24] = o.status || 'ACTIVE';
+  return row;
+}
+
 /** MbrContact rows: [capid, type, priority, value, , , doNotContact] */
 function contact(capid, value, opts) {
   const o = opts || {};
@@ -52,8 +66,13 @@ function load(fixture) {
     Session: Session,
     CONFIG: { CAPWATCH_DATA_FOLDER_ID: 'folder' },
     PROFILE_: { RUN_PARENT_EMAIL_NOTIFICATIONS: true },
-    parseFile: name => (name === 'MbrContact' ? (f.contacts || []) : []),
-    getMembers: () => f.members || {},
+    parseFile: name => {
+      if (name === 'MbrContact') return f.contacts || [];
+      if (name === 'Member') return f.memberRows || [];
+      return [];
+    },
+    // getMembers is deliberately NOT provided. On the cadets tenant it hides
+    // every cadet-lite member, and this module must never reach for it.
     getSquadrons: () => f.squadrons || {}
   }, ['peIsSuppressed_', 'peResolveToUnits_', 'peParseIsoDate_', 'PARENT_EMAIL_NOTIFY_CONFIG']);
 }
@@ -95,10 +114,10 @@ section('3. Ledger addresses resolve to the cadet who owns the record');
       contact('100001', 'parent.one@example.org'),
       contact('100002', 'parent.two@example.org')
     ],
-    members: {
-      '100001': { capsn: '100001', orgid: '900', firstName: 'Alex', lastName: 'Rivera' },
-      '100002': { capsn: '100002', orgid: '901', firstName: 'Sam', lastName: 'Okafor' }
-    },
+    memberRows: [
+      memberRow('100001', '900', 'Alex', 'Rivera'),
+      memberRow('100002', '901', 'Sam', 'Okafor')
+    ],
     squadrons: { '900': { charter: 'PCR-XX-001' }, '901': { charter: 'PCR-XX-002' } }
   };
   const mod = load(fixture);
@@ -119,11 +138,56 @@ section('3. Ledger addresses resolve to the cadet who owns the record');
 }
 
 // ---------------------------------------------------------------------------
-section('4. Nobody is mailed about a cadet who is not there');
+section('4. Cadet-lite members resolve — the ones this digest exists for');
+{
+  // A cadet below the account-holding grade is filtered out of getMembers() on
+  // the cadets tenant. Resolving against that set dropped ten of thirteen
+  // addresses on the first live preview. These cadets hold no account, so their
+  // parent's address is the ONLY way a unit list reaches the family — they are
+  // the population the digest is for, not an edge case.
+  const mod = load({
+    contacts: [contact('100010', 'lite.parent@example.org')],
+    memberRows: [memberRow('100010', '900', 'Robin', 'Nakamura', { rank: 'C/Amn' })],
+    squadrons: { '900': { charter: 'PCR-XX-001' } }
+  });
+  const summary = { resolved: 0, unresolved: 0 };
+  const byOrg = mod.peResolveToUnits_(
+    [{ member: 'lite.parent@example.org', reason: 'no such account' }], summary);
+
+  check('the cadet is found in the raw extract', summary.resolved, 1);
+  check('and reaches their unit', Object.keys(byOrg), ['900']);
+  check('named from Member.txt', byOrg['900'][0].cadetName, 'Robin Nakamura');
+}
+
+// ---------------------------------------------------------------------------
+section('5. Only ACTIVE cadets, and only real units');
+{
+  const base = {
+    contacts: [contact('100011', 'p@example.org')],
+    squadrons: { '900': { charter: 'PCR-XX-001' } }
+  };
+  const resolveWith = rows => {
+    const s = { resolved: 0, unresolved: 0 };
+    const mod = load(Object.assign({}, base, { memberRows: rows }));
+    return Object.keys(mod.peResolveToUnits_([{ member: 'p@example.org' }], s));
+  };
+
+  check('an expired member is not reported',
+    resolveWith([memberRow('100011', '900', 'A', 'B', { status: 'EXPIRED' })]), []);
+  check('a senior is not a cadet',
+    resolveWith([memberRow('100011', '900', 'A', 'B', { type: 'SENIOR' })]), []);
+  check('the 000 holding unit is skipped',
+    resolveWith([memberRow('100011', '900', 'A', 'B', { unit: '000' })]), []);
+  check('an ordinary active cadet is reported',
+    resolveWith([memberRow('100011', '900', 'A', 'B')]), ['900']);
+}
+
+// ---------------------------------------------------------------------------
+section('6. Nobody is mailed about a cadet who is not there');
 {
   const mod = load({
     contacts: [contact('100003', 'gone@example.org')],
-    members: {},                                    // cadet no longer active here
+    memberRows: [],                                 // cadet no longer active here
     squadrons: {}
   });
   const summary = { resolved: 0, unresolved: 0 };
@@ -135,14 +199,14 @@ section('4. Nobody is mailed about a cadet who is not there');
 }
 
 // ---------------------------------------------------------------------------
-section('5. Only parent EMAIL contacts, and only contactable ones');
+section('7. Only parent EMAIL contacts, and only contactable ones');
 {
-  const members = { '100004': { capsn: '100004', orgid: '900', firstName: 'Jo', lastName: 'Kim' } };
+  const memberRows = [memberRow('100004', '900', 'Jo', 'Kim')];
   const squadrons = { '900': { charter: 'PCR-XX-001' } };
 
   const wrongType = load({
     contacts: [contact('100004', 'x@example.org', { type: 'CADET PARENT PHONE' })],
-    members: members, squadrons: squadrons
+    memberRows: memberRows, squadrons: squadrons
   });
   let s = { resolved: 0, unresolved: 0 };
   check('a phone row is not an email row',
@@ -150,7 +214,7 @@ section('5. Only parent EMAIL contacts, and only contactable ones');
 
   const dnc = load({
     contacts: [contact('100004', 'x@example.org', { doNotContact: true })],
-    members: members, squadrons: squadrons
+    memberRows: memberRows, squadrons: squadrons
   });
   s = { resolved: 0, unresolved: 0 };
   check('do-not-contact is honoured',
@@ -158,17 +222,17 @@ section('5. Only parent EMAIL contacts, and only contactable ones');
 }
 
 // ---------------------------------------------------------------------------
-section('6. One address, several cadets — siblings');
+section('8. One address, several cadets — siblings');
 {
   const mod = load({
     contacts: [
       contact('100005', 'shared@example.org'),
       contact('100006', 'shared@example.org')
     ],
-    members: {
-      '100005': { capsn: '100005', orgid: '900', firstName: 'Ada', lastName: 'Lin' },
-      '100006': { capsn: '100006', orgid: '900', firstName: 'Bo', lastName: 'Lin' }
-    },
+    memberRows: [
+      memberRow('100005', '900', 'Ada', 'Lin'),
+      memberRow('100006', '900', 'Bo', 'Lin')
+    ],
     squadrons: { '900': { charter: 'PCR-XX-001' } }
   });
   const summary = { resolved: 0, unresolved: 0 };
@@ -181,11 +245,11 @@ section('6. One address, several cadets — siblings');
 }
 
 // ---------------------------------------------------------------------------
-section('7. Address matching is case- and whitespace-insensitive');
+section('9. Address matching is case- and whitespace-insensitive');
 {
   const mod = load({
     contacts: [contact('100007', '  Parent.Mixed@Example.org  ')],
-    members: { '100007': { capsn: '100007', orgid: '900', firstName: 'Cy', lastName: 'Vale' } },
+    memberRows: [memberRow('100007', '900', 'Cy', 'Vale')],
     squadrons: { '900': { charter: 'PCR-XX-001' } }
   });
   const summary = { resolved: 0, unresolved: 0 };

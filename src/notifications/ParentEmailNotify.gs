@@ -249,6 +249,15 @@ function peLoadLedger_() {
  * a cadet who has since left, or whose contact row was corrected, resolves to
  * nothing and is not reported.
  *
+ * CADETS COME FROM THE RAW EXTRACT, NOT getMembers(). On the cadets tenant
+ * CADET_LITE filters every cadet below the account-holding grade out of
+ * getMembers() — on CAWG that is over 1,600 of them, and they are exactly the
+ * population this digest exists for: a cadet-lite member holds no account, so
+ * their parent's address is the ONLY way the unit's list reaches that family.
+ * Resolving against the filtered set silently dropped ten of thirteen addresses
+ * on the first live preview. Reading Member.txt directly is what makes them
+ * visible, the same reason rcBuildRecipientDirectory_ reads it raw.
+ *
  * One address can belong to several cadets — siblings share a parent — so this
  * can produce more rows than the ledger has addresses.
  *
@@ -263,7 +272,29 @@ function peResolveToUnits_(ledger, summary) {
     if (address) wanted[address] = row;
   });
 
-  const members = getMembers();
+  // Member.txt columns: [0] CAPID, [2] last, [3] first, [11] ORGID, [13] unit,
+  // [21] type, [24] status — the same layout buildCadetLiteExcludedCadetsByOrgid_
+  // reads in SquadronGroups.gs.
+  const cadets = {};
+  parseFile('Member').forEach(function (row) {
+    const capid = String(row[0] || '').trim();
+    const orgid = String(row[11] || '').trim();
+    const unit = String(row[13] || '').trim();
+    const type = String(row[21] || '').trim().toUpperCase();
+    const status = String(row[24] || '').trim().toUpperCase();
+
+    if (!capid || !orgid) return;
+    if (status !== 'ACTIVE') return;
+    if (type !== 'CADET') return;
+    if (unit === '0' || unit === '000' || unit === '999') return;
+
+    cadets[capid] = {
+      orgid: orgid,
+      lastName: String(row[2] || '').trim(),
+      firstName: String(row[3] || '').trim()
+    };
+  });
+
   const squadrons = getSquadrons();
   const byOrg = {};
   const matchedAddresses = {};
@@ -278,11 +309,10 @@ function peResolveToUnits_(ledger, summary) {
     if (doNotContact === 'True') return;
     if (!wanted[value]) return;
 
-    const member = members[capid];
+    const member = cadets[capid];
     if (!member) return;                       // no longer an active cadet here
 
-    const orgid = String(member.orgid || '').trim();
-    if (!orgid) return;
+    const orgid = member.orgid;
 
     const squadron = squadrons[orgid];
     matchedAddresses[value] = true;
