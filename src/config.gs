@@ -223,6 +223,11 @@ const TENANT_PROFILES_ = {
     // record would block a password reset (no CAP address in PRIMARY, and/or no
     // personal address anywhere). On here: every senior member holds an account.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: true,
+    // Monthly digest to unit Commander + Deputy Commander for Cadets listing
+    // parent-contact addresses Google refuses. OFF HERE: parent contacts belong
+    // to cadets, and this tenant's managed .parents lists hold no parent
+    // addresses at all — every rejection is observed on the cadets tenant.
+    RUN_PARENT_EMAIL_NOTIFICATIONS: false,
     // Monthly member-facing retention mail (turning 18 / turning 21 / expiring).
     // ON HERE, AND DELIBERATELY ON EXACTLY ONE TENANT. Unlike every other
     // member-consuming module this one hardcodes 'CADET'/'SENIOR' rather than
@@ -298,6 +303,13 @@ const TENANT_PROFILES_ = {
     // REQUIRES TENANT_COMMAND_EMAIL_DOMAIN to be set to the senior domain here:
     // a cadet unit's commander and personnel officer are seniors.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: true,
+    // Monthly digest to unit Commander + Deputy Commander for Cadets listing
+    // parent-contact addresses Google refuses. ON HERE: this is the tenant that
+    // syncs parent contacts, so this is where the rejections are observed and
+    // where the units that own the records are.
+    // REQUIRES TENANT_COMMAND_EMAIL_DOMAIN, for the same reason as the recovery
+    // digest — both recipients are seniors, holding accounts on the other domain.
+    RUN_PARENT_EMAIL_NOTIFICATIONS: true,
     // OFF: not because cadets are out of scope, but because the seniors tenant
     // already mails them. This module reads the same wing-wide extract from
     // either tenant, so running it here as well delivers a second copy of every
@@ -369,6 +381,9 @@ const TENANT_PROFILES_ = {
     // "unit commander" is the region commander sitting alongside the ~50 members
     // the digest would describe. A spreadsheet serves that better than mail.
     RUN_RECOVERY_EMAIL_NOTIFICATIONS: false,
+    // Off: a single-unit region HQ with no cadets, so no parent contacts exist
+    // to be wrong in the first place.
+    RUN_PARENT_EMAIL_NOTIFICATIONS: false,
     // Off: the region tenant has no retention log sheet and no recruiting role
     // group configured, and its ~50 members sit in one unit alongside the staff
     // who would be mailing them.

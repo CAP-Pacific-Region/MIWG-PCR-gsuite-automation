@@ -746,6 +746,18 @@ owned by the automation account (see the warning in [Section 8](#8-what-runs-whe
   - ⚠️ Unlike LSCode, the **first run is deliberately loud** — it reports a standing condition,
     so it surfaces the entire existing backlog at once. **Run the preview first and look at the
     volume** before scheduling it.
+- `previewBadParentEmails()` / `notifyBadParentEmails()` — parent/guardian addresses on a unit's
+  cadet records that **Google refuses**, so the unit's parents list never reaches those families.
+  **Cadets only** (`RUN_PARENT_EMAIL_NOTIFICATIONS`). Sent to the unit **Commander**, copying the
+  **Deputy Commander for Cadets**. Per member *and* address, at most once every 3 months.
+  `installParentEmailMonthlyTrigger()`; `resetParentEmailNotifyState()` clears the cooldown.
+  - **Reads a ledger, does not test addresses.** An address is only known to be bad because
+    `updateAllSquadronGroups()` was refused when adding it — there is no read-only way to ask
+    Google. The sync writes `RejectedMemberAddresses.json`; this reports from it.
+  - ⚠️ **No ledger means "not yet looked", not "nothing wrong."** Until a squadron sync has run
+    on the tenant, this correctly reports nothing. Run the sync first, then the preview.
+  - A complete sync **replaces** the ledger, so corrected addresses drop out on their own. A
+    **paused** slice only merges into it — it has not seen the whole wing.
   - An issue reported once is not reported again for **3 months**, even if uncorrected. The
     window runs **per issue category** (email record / 2SV / never signed in), so a member
     already inside the email window is still reported when a 2SV gap appears. A fixed issue
