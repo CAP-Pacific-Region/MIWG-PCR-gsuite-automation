@@ -2272,12 +2272,21 @@ var SQUADRON_MEMBER_FAILURES_ = 0;
 function recordRejectedMemberAddress_(groupEmail, memberEmail, err) {
   SQUADRON_MEMBER_FAILURES_++;
 
+  // 404 — Google looked the address up in its own domain and found no account.
+  // 400 — Google would not parse it at all; the live example was a double dot in
+  //       the domain, which sanitizeEmail()'s format check happily accepts.
+  //
+  // Different messages from Google, one situation for the wing: an address in
+  // CAPWATCH that will never work, no matter how many times it is retried. The
+  // first pass reported only the 404s, so a malformed address failed every run
+  // and appeared in no worklist.
   const code = (err && err.details && err.details.code) || 0;
-  if (code !== ERROR_CODES.NOT_FOUND) return;
+  if (code !== ERROR_CODES.NOT_FOUND && code !== ERROR_CODES.BAD_REQUEST) return;
 
   SQUADRON_REJECTED_MEMBERS_.push({
     group: groupEmail,
-    member: memberEmail
+    member: memberEmail,
+    reason: code === ERROR_CODES.BAD_REQUEST ? 'malformed' : 'no such account'
   });
 }
 
@@ -2303,7 +2312,9 @@ function reportRejectedMemberAddresses_() {
 
   const byMember = {};
   raw.forEach(row => {
-    if (!byMember[row.member]) byMember[row.member] = { member: row.member, groups: [] };
+    if (!byMember[row.member]) {
+      byMember[row.member] = { member: row.member, reason: row.reason, groups: [] };
+    }
     if (byMember[row.member].groups.indexOf(row.group) === -1) {
       byMember[row.member].groups.push(row.group);
     }
@@ -2314,8 +2325,9 @@ function reportRejectedMemberAddresses_() {
   Logger.warn('Addresses Google would not accept as group members — fix these in eServices', {
     addresses: rejected.length,
     occurrences: raw.length,
-    hint: 'Google verifies gmail.com addresses against real accounts; plus-addressing ' +
-      'is refused outright and Gmail usernames allow only letters, digits and dots.',
+    hint: 'no such account = Google checked gmail.com and found nothing (typo, or a closed ' +
+      'account); malformed = the address is not valid at all. Plus-addressing is refused ' +
+      'outright, and Gmail usernames allow only letters, digits and dots.',
     rejected: rejected.slice(0, 100)
   });
 
