@@ -10,6 +10,74 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-27] — a run that stops is not a run that finished
+
+`updateAllSquadronGroups()` had timeout protection and no memory. It gave up gracefully when
+it ran out of time — and recorded nothing about where it got to, so the next execution
+started at the top of the same list and gave up in the same place.
+
+The units past that line were never reached. **Not "reached late" — never, on any run.**
+
+On the CAWG cadet tenant that was the last **9 of 68** squadrons. Their `.all` lists still
+carried `allowExternalMembers: false` two weeks after the sync began enforcing `true`, which
+is how they were found: the setting is a fossil recording that no run ever arrived. Their
+Cadet Lite members — added by personal email, since those cadets hold no account — had never
+been added either. Nothing raised an error the entire time, because a run that stops early
+still reports success for the part it did.
+
+Confirmed rather than assumed: the nine were exactly the **last nine in iteration order**.
+
+### Changed — `SquadronGroups.gs` 1.7.0
+
+`updateAllSquadronGroups(options)` accepts `{deadlineMs, resume}` and returns its position and
+a `complete` flag. **No-argument behavior is unchanged.** New:
+
+```
+updateAllSquadronGroupsBatch()        // 25-minute slice; point the daily trigger here
+updateAllSquadronGroupsBatch(5)       // shorter slice, e.g. the 6-minute tier
+checkSquadronGroupsBatchStatus()      // read-only
+resetSquadronGroupsBatchProgress()    // discard the parked run
+```
+
+Only the **position** is parked, not the computed rosters — those are rebuilt from CAPWATCH
+each slice. Cheap next to the API calls, and a resumed slice then acts on today's data instead
+of replaying a snapshot from before the pause.
+
+**It shares `SQUADRON_BATCH_INDEX` with the batch driver that already existed.** This nearly
+shipped as a second, parallel mechanism with its own state file. `updateSquadronGroupsBatch()`
+has been slicing the same list by count — 10 squadrons a run, a week to come round on a 68-unit
+wing — and parking its position in that Script Property all along. Two entry points walking one
+list with two private cursors is the original bug wearing a hat: a daily trigger on one and a
+manual run of the other would each advance their own, and units would fall between. One pointer,
+two paces (count or time), and mixing them is safe. The companion keys (`_CHARTER`, `_SAVED_AT`)
+are new; a legacy bare index is still honoured rather than discarded.
+
+**So the operative fix is a trigger change, not just code.** The daily trigger points at
+`updateAllSquadronGroups()`, which is exactly the entry point that cannot resume. The Admin
+Guide now says so at the trigger table.
+
+**The fix has the same failure mode as the bug, and that is the interesting part.** A parked
+index is a position in an order, and the order comes from CAPWATCH; one unit chartering or
+folding shifts every index after it, and resuming on the stale number would skip squadrons
+silently — precisely what this exists to stop. So the charter sitting at that index is parked
+alongside it, and any disagreement means start over. Re-walking squadrons is idempotent and
+cheap; skipping them is the whole bug. `resolveSquadronResumePosition_()` never returns a
+mid-list guess — every rejection lands on 0.
+
+### Changed — `config.gs` (comment only)
+
+`MAX_EXECUTION_TIME_MS` is 1,750,000 ms — **29.2 minutes**, not the "5.5 minutes" the comment
+above it claimed. That text described the 6-minute consumer tier and had been wrong for a long
+time. The real number leaves 48 seconds before a hard kill, and the elapsed check runs only
+between squadrons, so one slow unit can carry a run past the cap and have it killed outright —
+which parks nothing. Hence the batch driver's shorter default.
+
+### Added — `test/SquadronGroups.resume.test.js`
+
+20 assertions on the resolver, weighted toward the ways a resume could silently skip: a list
+that grew, a list that shrank, an index past the end, and malformed state. Redundant work is
+always preferred to a possible skip.
+
 ## [2026-07-26] — a missing welcome email is now detected, not stumbled over
 
 The resend below repairs a member you already know about. This is how you find out.

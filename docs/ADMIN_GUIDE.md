@@ -439,7 +439,7 @@ the data runs after the download. Apps Script schedules within a 1-hour window, 
 | 2 | `updateAllMembers()` | Daily, 5–6 AM | Create/update Workspace accounts from member data. |
 | 3 | `suspendExpiredMembers()` | Daily, 5–6 AM | Suspend members expired past the 7-day grace window. |
 | 4 | `updateEmailGroups()` | Daily, 5–6 AM | Sync wing/duty/specialty distribution groups. A day with unusually many membership changes can outrun the execution limit — see `updateEmailGroupsBatch()` below. |
-| 5 | `updateAllSquadronGroups()` | Daily, 6–7 AM | Squadron all-hands/cadets/seniors/parents + public-contact + access groups. Batches via `SQUADRON_BATCH_INDEX`. |
+| 5 | `updateAllSquadronGroupsBatch()` | Daily, 6–7 AM | Squadron all-hands/cadets/seniors/parents + public-contact + access groups. Resumes via `SQUADRON_BATCH_INDEX`. **Do not point this trigger at `updateAllSquadronGroups()`** — that entry point does not resume, and the tail of the squadron list will never be reached. |
 | 6 | `updateAdditionalGroupMembers()` | Daily, 6–7 AM | Merge manual additions from the `User Additions` sheet. |
 | 7 | `addSecondaryDomainAliases()` | Daily, 7–8 AM | Give accounts on the `Secondary Aliases` tab a matching address on the tenant's secondary domain. **Seniors only** (`TENANT_SECONDARY_EMAIL_DOMAIN`). Must run *after* `updateAllMembers()` so a same-morning account already exists. |
 | 8 | `updateAllSendAsNames()` | Daily, 8–9 AM | Sync Directory displayName **and** Gmail Send-As names (primary + org-owned aliases) from CAPWATCH, so promotions propagate. Resumable: time-boxes at 25 min and self-schedules a continuation, so one firing may span several executions. |
@@ -628,9 +628,17 @@ inserting and updates the existing account in place instead (see `UpdateMembers.
 - `getEmailGroupDeltas()` — **preview** adds/removes without applying (inspect before running).
 
 ### Squadron groups (`SquadronGroups.gs`)
-- `updateAllSquadronGroups()` — full squadron group sync (batched).
+- `updateAllSquadronGroups()` — full squadron group sync. **Bare, it does not resume**: it stops
+  when it runs out of time and the next run starts over, so on a wing too large to finish in one
+  pass the tail is never reached. Prefer a batch entry point for the daily trigger.
+- `updateAllSquadronGroupsBatch(budgetMinutes)` / `checkSquadronGroupsBatchStatus()` /
+  `resetSquadronGroupsBatchProgress()` — **time-sliced** (25 min default); uses the whole budget,
+  so a 68-unit wing comes round in a day or two. **This is what the daily trigger should call.**
+- `updateSquadronGroupsBatch(batchSize)` / `checkBatchStatus()` / `resetBatchProgress()` —
+  **count-sliced** (10 per run); a 68-unit wing takes a week to come round. Older, still supported.
+  Both batch entry points share the one `SQUADRON_BATCH_INDEX` position, so mixing them cannot
+  strand a unit between two cursors — but pick one pace and stay with it.
 - `createAllSquadronGroups()` — create missing squadron groups.
-- `updateSquadronGroupsBatch(batchSize)` / `checkBatchStatus()` / `resetBatchProgress()` — batch control.
 - `previewSquadronGroups()`, `testPreviewSquadronGroups()`, `listAvailableSquadrons()` — **preview/inspect.**
 - `updateSingleSquadronGroups(unitNumber)` — operate on one unit.
 - Which list types get created is **tenant-driven** via `PROFILE_.SQUADRON_DISTRIBUTION_TOGGLES`

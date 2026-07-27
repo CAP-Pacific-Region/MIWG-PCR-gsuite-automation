@@ -1,10 +1,19 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.5.0
+ * Version: 1.7.0
  * Filename: SquadronGroups.gs
- * Saved: 2026-07-26
- * Changes: v1.5.0 — command-staff DLs now follow what the unit's type actually
+ * Saved: 2026-07-27
+ * Changes: v1.7.0 — updateAllSquadronGroups() can be resumed, and
+ *   updateAllSquadronGroupsBatch() drives it in slices. The run gave up on time
+ *   without recording where it got to, so every execution restarted at the top of
+ *   the same list and died at the same place: on the CAWG cadet tenant the last 9
+ *   of 68 squadrons had never been reached, on any run, for weeks. Their lists kept
+ *   stale settings and their Cadet Lite members were never added. A stop is not a
+ *   finish, and the summary now says which one happened. No-argument behavior is
+ *   unchanged. (Assumes v1.6.0 from the posting-permissions branch lands first;
+ *   if it does not, this file simply skips that number.)
+ *   v1.5.0 — command-staff DLs now follow what the unit's type actually
  *   establishes. Every cadet and composite squadron was getting a
  *   ca###.deputy-commander DL that no CAPWATCH duty can fill, because CAP
  *   establishes a plain Deputy Commander only at senior units; cadet and
@@ -494,17 +503,42 @@ function createSquadronGroupsOnly(squadron) {
  * Main function to create and update all squadron groups
  * Should be scheduled to run daily after member sync
  *
- * Includes execution time protection to prevent timeout
+ * Includes execution time protection to prevent timeout.
  *
- * @returns {Object} Summary of actions taken
+ * **Stopping is not the same as finishing.** The loop below gives up when it runs
+ * out of time, and for a long while it gave up without recording where it got to,
+ * so every run restarted at the top of the same list and died at the same place.
+ * The units past that point were never reached — not once, on any run. On the CAWG
+ * cadet tenant that was the last 9 of 68 squadrons, starved for weeks: their lists
+ * kept whatever settings they had and their members, including the Cadet Lite ones
+ * added by personal email, were never reconciled. Nothing failed loudly enough to
+ * notice, because a run that stops early still reports success for what it did do.
+ *
+ * So a paused run now hands back its position, and updateAllSquadronGroupsBatch()
+ * parks it. No-argument behavior is unchanged: call it bare and it still runs from
+ * the beginning until its own time limit.
+ *
+ * @param {{deadlineMs?: number, resume?: Object}} [options] - deadlineMs stops the
+ *   run at a wall-clock instant; resume restarts from a parked position.
+ * @returns {Object} Summary of actions taken, including the resume position
  */
-function updateAllSquadronGroups() {
+function updateAllSquadronGroups(options) {
+  const opts = options || {};
+  const resume = opts.resume || null;
   const start = new Date();
-  const maxExecutionTime = SQUADRON_GROUP_CONFIG.MAX_EXECUTION_TIME_MS || 400000; // 5.5 minutes default
+  const maxExecutionTime = SQUADRON_GROUP_CONFIG.MAX_EXECUTION_TIME_MS || 400000;
+
+  // Two independent stops: the module's own budget, and a deadline handed down by
+  // the batch driver. Whichever comes first wins, so a caller can always ask for a
+  // shorter slice than the config allows but never a longer one.
+  const ownDeadline = start.getTime() + maxExecutionTime;
+  const callerDeadline = Number(opts.deadlineMs || 0);
+  const effectiveDeadline = callerDeadline > 0 ? Math.min(ownDeadline, callerDeadline) : ownDeadline;
 
   Logger.info('Starting squadron groups update', {
     maxExecutionTime: maxExecutionTime + 'ms',
-    timeoutProtection: 'enabled'
+    timeoutProtection: 'enabled',
+    resuming: resume ? `${resume.squadronIndex}` : 'no'
   });
 
   // Clear cache to ensure fresh CAPWATCH data
@@ -515,7 +549,10 @@ function updateAllSquadronGroups() {
     updated: [],
     errors: [],
     timedOut: false,
-    processedSquadrons: 0,
+    complete: false,
+    squadronIndex: 0,
+    charterAtIndex: '',
+    processedSquadrons: (resume && Number(resume.processedSquadrons)) || 0,
     totalSquadrons: 0,
     startTime: start.toISOString()
   };
@@ -530,21 +567,26 @@ function updateAllSquadronGroups() {
     const unitSquadrons = Object.values(squadrons).filter(sq => sq.scope === 'UNIT');
     summary.totalSquadrons = unitSquadrons.length;
 
+    let squadronIndex = resolveSquadronResumePosition_(unitSquadrons, resume);
+
     Logger.info('Processing squadron groups', {
       totalSquadrons: unitSquadrons.length,
+      startingAt: squadronIndex,
       maxExecutionTime: maxExecutionTime + 'ms'
     });
 
     // Process each squadron with timeout protection
-    for (const squadron of unitSquadrons) {
+    for (; squadronIndex < unitSquadrons.length; squadronIndex++) {
+      const squadron = unitSquadrons[squadronIndex];
+
       // Check execution time before processing each squadron
-      const elapsed = new Date() - start;
-      if (elapsed > maxExecutionTime) {
+      if (Date.now() >= effectiveDeadline) {
         Logger.warn('Execution time limit approaching - stopping gracefully', {
-          elapsed: elapsed + 'ms',
+          elapsed: (new Date() - start) + 'ms',
           maxExecutionTime: maxExecutionTime + 'ms',
+          pausedAt: `${squadronIndex}/${unitSquadrons.length}`,
           processedSquadrons: summary.processedSquadrons,
-          remainingSquadrons: unitSquadrons.length - summary.processedSquadrons
+          remainingSquadrons: unitSquadrons.length - squadronIndex
         });
         summary.timedOut = true;
         break;
@@ -583,6 +625,15 @@ function updateAllSquadronGroups() {
       Utilities.sleep(200);
     }
 
+    summary.squadronIndex = squadronIndex;
+    summary.complete = squadronIndex >= unitSquadrons.length;
+    // Parked alongside the index so a resume can tell whether the list still means
+    // what it meant last time — an index is only a position in an order, and the
+    // order comes from CAPWATCH, which changes when units charter or fold.
+    summary.charterAtIndex = summary.complete
+      ? ''
+      : String((unitSquadrons[squadronIndex] && unitSquadrons[squadronIndex].charter) || '');
+
   } catch (err) {
     Logger.error('Squadron groups update failed', err);
     summary.errors.push({
@@ -601,6 +652,8 @@ function updateAllSquadronGroups() {
     errors: summary.errors.length,
     processedSquadrons: summary.processedSquadrons,
     totalSquadrons: summary.totalSquadrons,
+    position: `${summary.squadronIndex}/${summary.totalSquadrons}`,
+    complete: summary.complete,
     timedOut: summary.timedOut
   });
 
@@ -608,6 +661,279 @@ function updateAllSquadronGroups() {
   // Results are logged and can be reviewed in execution logs
 
   return summary;
+}
+
+/**
+ * Decides where a resumed run should pick up.
+ *
+ * The parked position is an index into the UNIT-scope squadron list, which is
+ * rebuilt from CAPWATCH on every execution. That is fine while the roster is
+ * stable and wrong the moment it is not: a unit chartering or folding shifts
+ * every index after it, and resuming on the old number would silently skip or
+ * repeat squadrons. So the charter that was sitting at the index is parked too,
+ * and disagreement is treated as "the list moved" — start over rather than
+ * resume into the wrong place. Re-processing squadrons is cheap and idempotent;
+ * skipping them is the bug this whole mechanism exists to fix.
+ *
+ * @param {Array<Object>} unitSquadrons - Current UNIT-scope squadrons, in order
+ * @param {Object|null} resume - Parked position, or null for a fresh run
+ * @returns {number} Index to start from
+ */
+function resolveSquadronResumePosition_(unitSquadrons, resume) {
+  if (!resume) return 0;
+
+  const index = Number(resume.squadronIndex);
+  if (!isFinite(index) || index <= 0) return 0;
+
+  if (index >= unitSquadrons.length) {
+    Logger.warn('Parked squadron position is past the end of the list; starting over', {
+      parkedIndex: index,
+      totalSquadrons: unitSquadrons.length
+    });
+    return 0;
+  }
+
+  const expected = String(resume.charterAtIndex || '');
+  const actual = String((unitSquadrons[index] && unitSquadrons[index].charter) || '');
+
+  if (expected && expected !== actual) {
+    Logger.warn('Squadron list changed since the run was parked; starting over', {
+      parkedIndex: index,
+      expectedCharter: expected,
+      actualCharter: actual
+    });
+    return 0;
+  }
+
+  return index;
+}
+
+/**
+ * Where a paused run's position lives.
+ *
+ * SQUADRON_BATCH_INDEX is NOT new — updateSquadronGroupsBatch() has parked its
+ * position there all along, in fixed slices of 10 squadrons. Reusing the same key
+ * is deliberate: two entry points walking one list must share one pointer, or a
+ * daily trigger on one and a manual run of the other would each advance a private
+ * cursor and leave units unvisited by both. Which is the bug, wearing a hat.
+ *
+ * The companions are new. The legacy mechanism parks a bare integer, with no way to
+ * tell whether the list still means what it meant — see
+ * resolveSquadronResumePosition_() for why that matters.
+ */
+const SQUADRON_BATCH_INDEX_PROP_ = 'SQUADRON_BATCH_INDEX';
+const SQUADRON_BATCH_CHARTER_PROP_ = 'SQUADRON_BATCH_CHARTER';
+const SQUADRON_BATCH_SAVED_AT_PROP_ = 'SQUADRON_BATCH_SAVED_AT';
+
+/**
+ * Wall-clock budget for one slice, in minutes.
+ *
+ * These tenants allow a 30-minute execution. SQUADRON_GROUP_CONFIG's own budget is
+ * 29.2 minutes, which leaves 48 seconds of headroom — and the elapsed check happens
+ * only BETWEEN squadrons, so a single slow unit can carry the run past the hard cap
+ * and have it killed outright. A killed execution parks nothing, which is the state
+ * this mechanism exists to escape. 25 minutes leaves a real margin.
+ *
+ * A tenant on the 6-minute tier should pass 5 explicitly.
+ */
+const SQUADRON_GROUPS_BATCH_DEFAULT_BUDGET_MIN_ = 25;
+const SQUADRON_GROUPS_BATCH_STALE_HOURS_ = 12;
+
+/**
+ * updateAllSquadronGroups() in slices, for when one pass cannot finish inside the
+ * Apps Script execution limit.
+ *
+ * Point the daily trigger at this instead of updateAllSquadronGroups() and the tail
+ * of the squadron list stops being permanently starved: each run picks up where the
+ * last one stopped, so every unit is reached within a few days at worst, rather than
+ * never.
+ *
+ * Related, and NOT a second mechanism: updateSquadronGroupsBatch(batchSize) slices
+ * the same list by COUNT — 10 squadrons per call by default, so a 68-unit wing takes
+ * a week of daily runs to come round. This one slices by TIME, using whatever budget
+ * it is given, which on these tenants is most of the wing per run. They share the one
+ * SQUADRON_BATCH_INDEX position deliberately, so mixing them cannot strand a unit
+ * between two private cursors; pick whichever pace suits and let the other alone.
+ *
+ * Unlike updateEmailGroupsBatch(), this parks only the POSITION, not the computed
+ * data. Squadron rosters are rebuilt from CAPWATCH each slice — cheap next to the
+ * API calls, and it means a resumed slice acts on today's data rather than
+ * replaying a snapshot taken before the pause.
+ *
+ *   updateAllSquadronGroupsBatch()          // 25 minutes
+ *   updateAllSquadronGroupsBatch(5)         // a shorter slice, e.g. on the 6-minute tier
+ *   checkSquadronGroupsBatchStatus()        // how far along, without touching anything
+ *   resetSquadronGroupsBatchProgress()      // discard the parked run and start fresh
+ *
+ * @param {number} [budgetMinutes=25] - Wall-clock budget for THIS execution
+ * @returns {{complete: boolean, squadronIndex: number, totalSquadrons: number}}
+ */
+function updateAllSquadronGroupsBatch(budgetMinutes) {
+  const budgetMs = Math.max(1, Number(budgetMinutes || SQUADRON_GROUPS_BATCH_DEFAULT_BUDGET_MIN_)) * 60 * 1000;
+  const deadlineMs = Date.now() + budgetMs;
+
+  const saved = loadSquadronGroupsBatchState_();
+  let resume = null;
+
+  if (saved) {
+    resume = {
+      squadronIndex: saved.squadronIndex,
+      charterAtIndex: saved.charterAtIndex,
+      processedSquadrons: saved.processedSquadrons
+    };
+
+    Logger.info('Resuming parked squadron groups run', {
+      startedAt: saved.startedAt,
+      resumingAt: `${saved.squadronIndex}/${saved.totalSquadrons}`,
+      charter: saved.charterAtIndex
+    });
+  }
+
+  const summary = updateAllSquadronGroups({ deadlineMs: deadlineMs, resume: resume });
+
+  if (summary.complete) {
+    clearSquadronGroupsBatchState_();
+    Logger.info('Squadron groups batch finished', {
+      squadrons: summary.totalSquadrons,
+      created: summary.created.length,
+      updated: summary.updated.length,
+      errors: summary.errors.length
+    });
+    console.log(`✅ Complete — ${summary.totalSquadrons} squadrons, ` +
+      `${summary.created.length} created / ${summary.updated.length} updated, ` +
+      `${summary.errors.length} errors.`);
+  } else {
+    saveSquadronGroupsBatchState_({
+      startedAt: (saved && saved.startedAt) || new Date().toISOString(),
+      savedAt: new Date().toISOString(),
+      squadronIndex: summary.squadronIndex,
+      charterAtIndex: summary.charterAtIndex,
+      totalSquadrons: summary.totalSquadrons,
+      processedSquadrons: summary.processedSquadrons
+    });
+    console.log(`⏸ Paused at squadron ${summary.squadronIndex}/${summary.totalSquadrons} ` +
+      `(${summary.charterAtIndex}). Run updateAllSquadronGroupsBatch() again to continue.`);
+  }
+
+  return {
+    complete: summary.complete,
+    squadronIndex: summary.squadronIndex,
+    totalSquadrons: summary.totalSquadrons
+  };
+}
+
+/**
+ * Read-only: how far the parked squadron run got.
+ * @returns {void}
+ */
+function checkSquadronGroupsBatchStatus() {
+  const saved = loadSquadronGroupsBatchState_();
+  if (!saved) {
+    console.log('No parked squadron groups run. The next updateAllSquadronGroupsBatch() starts fresh.');
+    return;
+  }
+  console.log(`Parked run started ${saved.startedAt}, last saved ${saved.savedAt}`);
+  console.log(`  position: squadron ${saved.squadronIndex}/${saved.totalSquadrons} (${saved.charterAtIndex})`);
+  console.log(`  processed so far: ${saved.processedSquadrons}`);
+}
+
+/**
+ * Discards a parked run so the next batch starts from the first squadron. Changes
+ * nothing in Workspace — groups already reconciled stay reconciled.
+ * @returns {void}
+ */
+function resetSquadronGroupsBatchProgress() {
+  clearSquadronGroupsBatchState_();
+  console.log('Parked squadron groups run discarded. The next updateAllSquadronGroupsBatch() starts fresh.');
+}
+
+/**
+ * Reads the shared batch position.
+ *
+ * A position parked by the legacy updateSquadronGroupsBatch() has an index and no
+ * companions; that is a valid state, not a corrupt one, and resolving it is left to
+ * resolveSquadronResumePosition_() — which trusts a bare index because an unverified
+ * position is still better than restarting a list that was probably fine.
+ *
+ * @returns {Object|null} Parked state, or null when there is none or it has gone stale
+ */
+function loadSquadronGroupsBatchState_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const raw = props.getProperty(SQUADRON_BATCH_INDEX_PROP_);
+    if (raw === null || raw === '') return null;
+
+    const squadronIndex = parseInt(raw, 10);
+    if (!isFinite(squadronIndex) || squadronIndex <= 0) return null;
+
+    const savedAt = props.getProperty(SQUADRON_BATCH_SAVED_AT_PROP_) || '';
+
+    // A run parked long enough ago has lost its claim on the roster it was walking.
+    // Starting over costs a re-walk of squadrons already done, which is idempotent;
+    // resuming into a stale order risks skipping units, which is not. A legacy
+    // position carries no timestamp, so it is taken at face value rather than
+    // discarded — it came from the same list and nothing suggests it is wrong.
+    if (savedAt) {
+      const ageHours = (Date.now() - new Date(savedAt).getTime()) / 3600000;
+      if (ageHours > SQUADRON_GROUPS_BATCH_STALE_HOURS_) {
+        Logger.warn('Parked squadron groups run is stale; starting over instead of resuming', {
+          savedAt: savedAt,
+          ageHours: Math.round(ageHours)
+        });
+        clearSquadronGroupsBatchState_();
+        return null;
+      }
+    }
+
+    return {
+      squadronIndex: squadronIndex,
+      charterAtIndex: props.getProperty(SQUADRON_BATCH_CHARTER_PROP_) || '',
+      savedAt: savedAt,
+      startedAt: savedAt,
+      totalSquadrons: 0,
+      processedSquadrons: 0
+    };
+  } catch (e) {
+    Logger.warn('Could not read parked squadron groups run; starting fresh', { errorMessage: e.message });
+    return null;
+  }
+}
+
+/**
+ * @param {Object} state
+ * @returns {void}
+ */
+function saveSquadronGroupsBatchState_(state) {
+  try {
+    PropertiesService.getScriptProperties().setProperties({
+      [SQUADRON_BATCH_INDEX_PROP_]: String(state.squadronIndex),
+      [SQUADRON_BATCH_CHARTER_PROP_]: String(state.charterAtIndex || ''),
+      [SQUADRON_BATCH_SAVED_AT_PROP_]: String(state.savedAt || new Date().toISOString())
+    });
+
+    Logger.info('Parked squadron groups run saved', {
+      position: `${state.squadronIndex}/${state.totalSquadrons}`,
+      charter: state.charterAtIndex
+    });
+  } catch (e) {
+    Logger.error('Failed to park the squadron groups run - the next call will start over', {
+      errorMessage: e.message
+    });
+  }
+}
+
+/**
+ * @returns {void}
+ */
+function clearSquadronGroupsBatchState_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    props.deleteProperty(SQUADRON_BATCH_INDEX_PROP_);
+    props.deleteProperty(SQUADRON_BATCH_CHARTER_PROP_);
+    props.deleteProperty(SQUADRON_BATCH_SAVED_AT_PROP_);
+  } catch (e) {
+    Logger.warn('Could not clear the parked squadron groups run', { errorMessage: e.message });
+  }
 }
 
 /**
@@ -2917,7 +3243,9 @@ function updateSquadronGroupsBatch(batchSize = 10) {
     // Check if complete
     if (currentIndex >= unitSquadrons.length) {
       summary.complete = true;
-      scriptProperties.deleteProperty('SQUADRON_BATCH_INDEX');
+      // Clears the companions too, not just the index — both entry points share
+      // this position, and a leftover charter would outlive the run that set it.
+      clearSquadronGroupsBatchState_();
       Logger.info('Batch processing complete - resetting to start');
     } else {
       scriptProperties.setProperty('SQUADRON_BATCH_INDEX', currentIndex.toString());
@@ -2952,7 +3280,7 @@ function updateSquadronGroupsBatch(batchSize = 10) {
  * Use this if you want to force a full re-run
  */
 function resetBatchProgress() {
-  PropertiesService.getScriptProperties().deleteProperty('SQUADRON_BATCH_INDEX');
+  clearSquadronGroupsBatchState_();
   Logger.info('Batch progress reset to start');
   console.log('✓ Batch progress reset - next run will start from beginning');
 }
