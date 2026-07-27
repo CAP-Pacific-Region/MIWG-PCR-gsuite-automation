@@ -1,10 +1,19 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.7.0
+ * Version: 1.8.0
  * Filename: SquadronGroups.gs
  * Saved: 2026-07-27
- * Changes: v1.7.0 — updateAllSquadronGroups() can be resumed, and
+ * Changes: v1.8.0 — membership is diffed on Google ACCOUNT identity, not string
+ *   equality. Two spellings of one gmail.com address (dots are meaningless there,
+ *   +tags are tags) read as a member to ADD and a stranger to REMOVE; the add came
+ *   back 409 and was swallowed, the remove succeeded, and the member sat off their
+ *   unit list until the next run. diffGroupMembership_() is pure and tested. A 409
+ *   now names the member instead of swallowing the address, and addresses Google
+ *   refuses outright are collected into one worklist rather than scattered through
+ *   the run one ERROR at a time. (Numbered assuming v1.6.0 and v1.7.0 from the
+ *   posting-permissions and resume branches land first.)
+ *   v1.7.0 — updateAllSquadronGroups() can be resumed, and
  *   updateAllSquadronGroupsBatch() drives it in slices. The run gave up on time
  *   without recording where it got to, so every execution restarted at the top of
  *   the same list and died at the same place: on the CAWG cadet tenant the last 9
@@ -552,6 +561,10 @@ function updateAllSquadronGroups(options) {
   // Clear cache to ensure fresh CAPWATCH data
   clearCache();
 
+  // Per-execution tallies; a slice reports what IT was refused.
+  SQUADRON_REJECTED_MEMBERS_ = [];
+  SQUADRON_MEMBER_FAILURES_ = 0;
+
   const summary = {
     created: [],
     updated: [],
@@ -652,12 +665,20 @@ function updateAllSquadronGroups(options) {
 
   summary.endTime = new Date().toISOString();
   summary.duration = new Date() - start;
+  summary.rejectedAddresses = reportRejectedMemberAddresses_();
+  // 'errors' counts squadrons that threw. memberFailures counts individual adds
+  // and removes that failed underneath a squadron that otherwise succeeded — the
+  // two are not the same number, and reporting only the first reads as a clean
+  // run when members are missing from their lists.
+  summary.memberFailures = SQUADRON_MEMBER_FAILURES_;
 
   Logger.info('Squadron groups update completed', {
     duration: summary.duration + 'ms',
     created: summary.created.length,
     updated: summary.updated.length,
     errors: summary.errors.length,
+    memberFailures: summary.memberFailures,
+    rejectedAddresses: summary.rejectedAddresses.length,
     processedSquadrons: summary.processedSquadrons,
     totalSquadrons: summary.totalSquadrons,
     position: `${summary.squadronIndex}/${summary.totalSquadrons}`,
@@ -2089,6 +2110,61 @@ function applyGroupSettings(email, settings) {
 }
 
 /**
+ * Works out which members to add and which to remove.
+ *
+ * Membership is compared on Google ACCOUNT identity, not on string equality —
+ * see googleAccountKey() in utils.gs for why the two differ and what it cost.
+ * Both sides are keyed the same way, so an address the group already holds under
+ * another spelling of the same account is neither added again nor removed.
+ *
+ * Pure: no API calls, no logging. All the decisions live here so they can be
+ * tested without Google, and the caller is left with nothing but execution.
+ *
+ * @param {Array<string>} currentEmails - Addresses the group holds now
+ * @param {Object} desiredMembers - Map of address -> { role }
+ * @returns {{toAdd: Array<Object>, toRemove: Array<string>, duplicates: Array<Object>}}
+ */
+function diffGroupMembership_(currentEmails, desiredMembers) {
+  const current = (currentEmails || []).map(e => String(e || '').toLowerCase()).filter(Boolean);
+
+  const currentKeys = {};
+  current.forEach(email => { currentKeys[googleAccountKey(email)] = email; });
+
+  const toAdd = [];
+  const toRemove = [];
+  const duplicates = [];
+  const desiredKeys = {};
+
+  Object.keys(desiredMembers || {}).forEach(rawEmail => {
+    const email = String(rawEmail || '').trim().toLowerCase();
+    if (!email) return;
+
+    const key = googleAccountKey(email);
+
+    // Two desired addresses for one account: keep the first, and say so rather
+    // than firing a second insert that can only ever come back 409.
+    if (desiredKeys[key]) {
+      duplicates.push({ kept: desiredKeys[key], skipped: email });
+      return;
+    }
+    desiredKeys[key] = email;
+
+    if (!currentKeys[key]) {
+      toAdd.push({
+        email: email,
+        role: (desiredMembers[rawEmail] && desiredMembers[rawEmail].role) || 'MEMBER'
+      });
+    }
+  });
+
+  current.forEach(email => {
+    if (!desiredKeys[googleAccountKey(email)]) toRemove.push(email);
+  });
+
+  return { toAdd: toAdd, toRemove: toRemove, duplicates: duplicates };
+}
+
+/**
  * Updates group membership to match desired state
  * Adds missing members and removes members who shouldn't be in the group
  *
@@ -2103,59 +2179,161 @@ function updateGroupMembership(groupEmail, desiredMembers) {
     failed: 0
   };
 
-  // Get current members
   const currentMembers = getCurrentGroupMembers(groupEmail);
-  const currentEmailSet = new Set(currentMembers.map(m => m.toLowerCase()));
-  const desiredEmailSet = new Set(Object.keys(desiredMembers).map(e => e.toLowerCase()));
+  const plan = diffGroupMembership_(currentMembers, desiredMembers);
+
+  if (plan.duplicates.length > 0) {
+    Logger.info('Duplicate addresses for one Google account — extra copies skipped', {
+      groupEmail: groupEmail,
+      duplicates: plan.duplicates
+    });
+  }
 
   // Add missing members
-  for (const email in desiredMembers) {
-    const normalizedEmail = email.toLowerCase();
-    if (!currentEmailSet.has(normalizedEmail)) {
-      try {
-        executeWithRetry(() =>
-          AdminDirectory.Members.insert({
-            email: email,
-            role: desiredMembers[email].role || 'MEMBER'
-          }, groupEmail)
-        );
-        result.added++;
-      } catch (err) {
-        if (err.details?.code !== ERROR_CODES.CONFLICT) {
-          Logger.error('Failed to add member to squadron group', {
-            groupEmail: groupEmail,
-            member: email,
-            errorMessage: err.message,
-            errorCode: err.details?.code
-          });
-          result.failed++;
-        }
+  for (const entry of plan.toAdd) {
+    try {
+      executeWithRetry(
+        () => AdminDirectory.Members.insert({ email: entry.email, role: entry.role }, groupEmail),
+        undefined,
+        [ERROR_CODES.CONFLICT]
+      );
+      result.added++;
+    } catch (err) {
+      if (err.details?.code === ERROR_CODES.CONFLICT) {
+        // Already a member under an address the account key did not predict —
+        // a Workspace alias, say. Harmless, but record WHICH member: the two
+        // membership bugs found in July were both invisible in the log because
+        // this branch swallowed the address along with the error.
+        Logger.info('Member already in group under another address', {
+          groupEmail: groupEmail,
+          member: entry.email
+        });
+        continue;
       }
+
+      Logger.error('Failed to add member to squadron group', {
+        groupEmail: groupEmail,
+        member: entry.email,
+        errorMessage: err.message,
+        errorCode: err.details?.code
+      });
+      result.failed++;
+      recordRejectedMemberAddress_(groupEmail, entry.email, err);
     }
   }
 
   // Remove members who shouldn't be in the group
-  for (const currentEmail of currentMembers) {
-    const normalizedEmail = currentEmail.toLowerCase();
-    if (!desiredEmailSet.has(normalizedEmail)) {
-      try {
-        executeWithRetry(() =>
-          AdminDirectory.Members.remove(groupEmail, currentEmail)
-        );
-        result.removed++;
-      } catch (err) {
-        Logger.error('Failed to remove member from squadron group', {
-          groupEmail: groupEmail,
-          member: currentEmail,
-          errorMessage: err.message,
-          errorCode: err.details?.code
-        });
-        result.failed++;
-      }
+  for (const currentEmail of plan.toRemove) {
+    try {
+      executeWithRetry(() => AdminDirectory.Members.remove(groupEmail, currentEmail));
+      result.removed++;
+    } catch (err) {
+      Logger.error('Failed to remove member from squadron group', {
+        groupEmail: groupEmail,
+        member: currentEmail,
+        errorMessage: err.message,
+        errorCode: err.details?.code
+      });
+      result.failed++;
+      SQUADRON_MEMBER_FAILURES_++;
     }
   }
 
   return result;
+}
+
+/**
+ * Addresses Google refused during this execution.
+ *
+ * A 404 from members.insert on a gmail.com address means Google looked the
+ * account up in its own domain and did not find it — a typo or a closed account
+ * in CAPWATCH, not something code can correct. Those members simply never reach
+ * their unit's list, and one ERROR line per failure scattered through a run of
+ * thousands is not a thing anyone acts on. Collected here and reported once, they
+ * become a short worklist for the unit to fix in eServices.
+ */
+var SQUADRON_REJECTED_MEMBERS_ = [];
+
+/**
+ * Every member add or remove that failed this execution, for any reason.
+ *
+ * updateGroupMembership() has always counted these into result.failed, and
+ * NOTHING has ever read that field — so a run where twelve members could not be
+ * added still signed off with errors: 0. The run summary counts squadron-level
+ * throws only, and a per-member failure is not one of those. Counted here so the
+ * summary can stop overstating its own health.
+ */
+var SQUADRON_MEMBER_FAILURES_ = 0;
+
+/**
+ * @param {string} groupEmail
+ * @param {string} memberEmail
+ * @param {Error} err
+ * @returns {void}
+ */
+function recordRejectedMemberAddress_(groupEmail, memberEmail, err) {
+  SQUADRON_MEMBER_FAILURES_++;
+
+  // 404 — Google looked the address up in its own domain and found no account.
+  // 400 — Google would not parse it at all; the live example was a double dot in
+  //       the domain, which sanitizeEmail()'s format check happily accepts.
+  //
+  // Different messages from Google, one situation for the wing: an address in
+  // CAPWATCH that will never work, no matter how many times it is retried. The
+  // first pass reported only the 404s, so a malformed address failed every run
+  // and appeared in no worklist.
+  const code = (err && err.details && err.details.code) || 0;
+  if (code !== ERROR_CODES.NOT_FOUND && code !== ERROR_CODES.BAD_REQUEST) return;
+
+  SQUADRON_REJECTED_MEMBERS_.push({
+    group: groupEmail,
+    member: memberEmail,
+    reason: code === ERROR_CODES.BAD_REQUEST ? 'malformed' : 'no such account'
+  });
+}
+
+/**
+ * Logs the rejected-address worklist, if any, and clears it.
+ *
+ * Grouped by ADDRESS rather than listed per occurrence: one bad contact on a
+ * cadet's record reaches every list that cadet belongs to, and reading the same
+ * address three times invites someone to fix it once and assume they are done.
+ * The unit has one thing to correct in eServices, so it appears once.
+ *
+ * The per-failure ERROR lines are still emitted where they happen — a failed add
+ * IS an error and carries context this summary does not. This is the actionable
+ * rollup, not a replacement for them.
+ *
+ * @returns {Array<Object>} What was reported, one entry per address
+ */
+function reportRejectedMemberAddresses_() {
+  const raw = SQUADRON_REJECTED_MEMBERS_.slice();
+  SQUADRON_REJECTED_MEMBERS_ = [];
+
+  if (raw.length === 0) return [];
+
+  const byMember = {};
+  raw.forEach(row => {
+    if (!byMember[row.member]) {
+      byMember[row.member] = { member: row.member, reason: row.reason, groups: [] };
+    }
+    if (byMember[row.member].groups.indexOf(row.group) === -1) {
+      byMember[row.member].groups.push(row.group);
+    }
+  });
+
+  const rejected = Object.keys(byMember).sort().map(m => byMember[m]);
+
+  Logger.warn('Addresses Google would not accept as group members — fix these in eServices', {
+    addresses: rejected.length,
+    occurrences: raw.length,
+    hint: 'no such account = Google checked gmail.com and found nothing (typo, or a closed ' +
+      'account); malformed = the address is not valid at all. Plus-addressing is refused ' +
+      'outright, and Gmail usernames allow only letters, digits and dots.',
+    rejected: rejected.slice(0, 100)
+  });
+
+  return rejected;
 }
 
 /**

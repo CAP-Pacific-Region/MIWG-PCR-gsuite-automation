@@ -1,6 +1,13 @@
 /**
  * Shared Utility Functions
  *
+ * Saved: 2026-07-27
+ * Changes: Added googleAccountKey() — reduces an address to the Google ACCOUNT it
+ *   identifies, so membership can be compared the way Google resolves it rather
+ *   than by string equality. executeWithRetry() takes an optional quietCodes list
+ *   for status codes the CALLER handles as an expected outcome, so an expected 409
+ *   stops being logged as an error. See PCR_CHANGELOG.md.
+ *
  * This file contains common utilities used across the CAPWATCH automation:
  * - File parsing and caching
  * - Retry logic for API calls
@@ -98,10 +105,17 @@ function clearCache() {
  * - Retries on transient errors (403 quotaExceeded, 429, 500, 503)
  * - Stops immediately on permanent errors (400, 404, 409)
  */
-function executeWithRetry(fn, maxRetries = CONFIG.API_RETRY_ATTEMPTS || 5) {
+function executeWithRetry(fn, maxRetries = CONFIG.API_RETRY_ATTEMPTS || 5, quietCodes) {
   const apiDelay = CONFIG.API_DELAY_MS || 3000;          // steady pacing between calls
   const baseDelay = CONFIG.API_BACKOFF_BASE_MS || 10000;  // first backoff wait
   const backoffFactor = 2.0;                             // double each retry delay
+
+  // Codes the CALLER handles as an expected outcome. Still thrown — the caller
+  // decides — but not logged as an error on the way out. A 409 from a membership
+  // add means "already a member", which the caller treats as success; logging it
+  // as ERROR while the run summary reports errors:0 taught readers that ERROR
+  // lines here are noise, which is a bad thing to teach in a log people rely on.
+  const quiet = Array.isArray(quietCodes) ? quietCodes : [];
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -112,11 +126,13 @@ function executeWithRetry(fn, maxRetries = CONFIG.API_RETRY_ATTEMPTS || 5) {
       const transient = [403, 429, 500, 503].includes(code);
 
       if (!transient || attempt === maxRetries) {
-        Logger.error('Max retries exceeded', {
-          attempts: attempt,
-          errorMessage: e.message,
-          errorCode: code
-        });
+        if (quiet.indexOf(code) === -1) {
+          Logger.error('Max retries exceeded', {
+            attempts: attempt,
+            errorMessage: e.message,
+            errorCode: code
+          });
+        }
         throw e;
       }
 
@@ -205,6 +221,50 @@ function sanitizeEmail(email) {
   }
 
   return email;
+}
+
+/**
+ * Reduces an address to the Google ACCOUNT it identifies, for comparison only.
+ *
+ * Two different strings can be one Google account, and Google resolves them while
+ * string equality does not. On gmail.com dots carry no meaning and everything from
+ * a '+' onward is a tag, so first.last@gmail.com, firstlast@gmail.com and
+ * firstlast+cap@gmail.com are all one mailbox. googlemail.com is the same service
+ * under an older name.
+ *
+ * That gap had teeth. A group holding one spelling while CAPWATCH supplied another
+ * looked to a string diff like a member to ADD and a stranger to REMOVE. The add
+ * came back 409 "Member already exists" and was swallowed; the remove succeeded.
+ * Net effect: the member was dropped from their unit list and only restored on the
+ * following run — a day off the list, once per address change, silently.
+ *
+ * Only gmail/googlemail are folded. Dots ARE significant in other domains, and
+ * plus-addressing is a convention rather than a rule, so treating a.b@example.org
+ * and ab@example.org as one account would merge two real people.
+ *
+ * The result is an identity KEY, not a deliverable address — never send mail to it
+ * or store it as a member. Use it to decide whether two addresses mean one account.
+ *
+ * @param {string} email - Address to reduce
+ * @returns {string} Comparison key (lowercased; '' for unusable input)
+ */
+function googleAccountKey(email) {
+  const raw = String(email || '').trim().toLowerCase();
+  const at = raw.lastIndexOf('@');
+  if (at < 1 || at === raw.length - 1) return raw;
+
+  const domain = raw.slice(at + 1);
+  if (domain !== 'gmail.com' && domain !== 'googlemail.com') return raw;
+
+  // Strip the +tag first: dots inside a tag are part of the tag, not the mailbox.
+  const local = raw.slice(0, at).split('+')[0].replace(/\./g, '');
+
+  // An all-dots or bare-tag local part is not an address Google would resolve.
+  // Folding it would collapse every such string onto one key and start merging
+  // unrelated members, so leave it exactly as it came in.
+  if (!local) return raw;
+
+  return local + '@gmail.com';
 }
 
 /**

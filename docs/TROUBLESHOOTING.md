@@ -390,6 +390,39 @@ function checkMemberStatus() {
      won't add, confirm the `AdminGroupsSettings` advanced service is enabled and
      check the log for "Group settings applied".
 
+<<<<<<< HEAD
+### A member keeps disappearing from their unit list
+
+**Symptom:** a member is on the list one day and gone the next, then back again. Or the log
+shows `Member already exists` (409) on a group that plainly does not contain them.
+
+**Cause:** two spellings of one Google account. On `gmail.com` dots carry no meaning and
+everything after a `+` is a tag, so `first.last@`, `firstlast@` and `firstlast+cap@` are one
+mailbox. Before SquadronGroups.gs 1.8.0 membership was compared as strings, so a group holding
+one spelling while CAPWATCH supplied another read as a member to add **and** a stranger to
+remove — the add 409'd and was swallowed, the remove succeeded.
+
+**Fix:** already in place — `googleAccountKey()` (utils.gs) keys both sides of the diff on the
+account rather than the string. If you still see it, check whether the address is a **Workspace
+alias** rather than a Gmail variant; those are folded by Google too but not by this key, and the
+409 log line now names the member so you can tell.
+
+### Addresses Google will not accept as members
+
+**Symptom:** `Failed to add member ... Resource Not Found: <address>` (404), and the member never
+appears on the list. At the end of a run, `Addresses Google would not accept as group members`.
+
+**Cause:** Google verifies `gmail.com` addresses against real accounts, so a typo or a closed
+account is refused rather than accepted blindly the way an arbitrary domain would be. Two
+patterns are impossible regardless of whether the account exists:
+
+- **plus-addressing** (`name+tag@gmail.com`) — the Directory API refuses it for group membership
+- **underscores** in a Gmail username — Gmail permits only letters, digits and dots
+
+**Fix:** none available in code — the address is wrong in CAPWATCH. `sanitizeEmail()` cannot
+catch these; they are all well-formed. Take the run's worklist to the unit and have the contact
+corrected in eServices.
+=======
 ### A member on the other tenant cannot post to a list
 
 **Symptom:** a senior on `@cawgcap.org` mails a cadet-side list such as
@@ -412,6 +445,7 @@ tenant that owns the list. Verify first, and after, with
 just the sibling tenant. It is paired with `spamModerationLevel=MODERATE` for that
 reason. A list that genuinely must stay closed should be left out of the managed set
 rather than hand-set in the console, where the next sync will overwrite it.
+>>>>>>> origin/master
 
 ### Too Many Members Removed
 
