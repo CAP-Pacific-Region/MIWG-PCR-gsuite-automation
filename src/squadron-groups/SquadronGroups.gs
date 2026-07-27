@@ -14,6 +14,32 @@
  *   than what it replaced. fitGroupName_() trims the UNIT at a word boundary and
  *   never the label, and only when the limit is exceeded, so no existing group
  *   is renamed. (Numbered assuming v1.6.0-v1.8.0 land first.)
+ *   v1.8.0 — membership is diffed on Google ACCOUNT identity, not string
+ *   equality. Two spellings of one gmail.com address (dots are meaningless there,
+ *   +tags are tags) read as a member to ADD and a stranger to REMOVE; the add came
+ *   back 409 and was swallowed, the remove succeeded, and the member sat off their
+ *   unit list until the next run. diffGroupMembership_() is pure and tested. A 409
+ *   now names the member instead of swallowing the address, and addresses Google
+ *   refuses outright are collected into one worklist rather than scattered through
+ *   the run one ERROR at a time. (Numbered assuming v1.6.0 and v1.7.0 from the
+ *   posting-permissions and resume branches land first.)
+ *   v1.7.0 — updateAllSquadronGroups() can be resumed, and
+ *   updateAllSquadronGroupsBatch() drives it in slices. The run gave up on time
+ *   without recording where it got to, so every execution restarted at the top of
+ *   the same list and died at the same place: on the CAWG cadet tenant the last 9
+ *   of 68 squadrons had never been reached, on any run, for weeks. Their lists kept
+ *   stale settings and their Cadet Lite members were never added. A stop is not a
+ *   finish, and the summary now says which one happened. No-argument behavior is
+ *   unchanged. (Assumes v1.6.0 from the posting-permissions branch lands first;
+ *   if it does not, this file simply skips that number.)
+ *   v1.6.0 — managed distribution lists are created at ANYONE_CAN_POST
+ *   with spamModerationLevel MODERATE, and applyGroupSettings() now enforces
+ *   whoCanPostMessage and spamModerationLevel alongside allowExternalMembers.
+ *   A senior on the wing tenant could not post to ca.all@cawgcadets.org: the
+ *   cadet-side all-hands lists sit at ALL_IN_DOMAIN_CAN_POST, which treats the
+ *   other tenant as external. Posting policy was previously left to console/GAM
+ *   (see v1.2.9), so nothing reconciled it. Widening the scope is safe now only
+ *   because the callers pass ANYONE_CAN_POST — see the comment in the body.
  *   v1.5.0 — command-staff DLs now follow what the unit's type actually
  *   establishes. Every cadet and composite squadron was getting a
  *   ca###.deputy-commander DL that no CAPWATCH duty can fill, because CAP
@@ -560,28 +586,60 @@ function createSquadronGroupsOnly(squadron) {
  * Main function to create and update all squadron groups
  * Should be scheduled to run daily after member sync
  *
- * Includes execution time protection to prevent timeout
+ * Includes execution time protection to prevent timeout.
  *
- * @returns {Object} Summary of actions taken
+ * **Stopping is not the same as finishing.** The loop below gives up when it runs
+ * out of time, and for a long while it gave up without recording where it got to,
+ * so every run restarted at the top of the same list and died at the same place.
+ * The units past that point were never reached — not once, on any run. On the CAWG
+ * cadet tenant that was the last 9 of 68 squadrons, starved for weeks: their lists
+ * kept whatever settings they had and their members, including the Cadet Lite ones
+ * added by personal email, were never reconciled. Nothing failed loudly enough to
+ * notice, because a run that stops early still reports success for what it did do.
+ *
+ * So a paused run now hands back its position, and updateAllSquadronGroupsBatch()
+ * parks it. No-argument behavior is unchanged: call it bare and it still runs from
+ * the beginning until its own time limit.
+ *
+ * @param {{deadlineMs?: number, resume?: Object}} [options] - deadlineMs stops the
+ *   run at a wall-clock instant; resume restarts from a parked position.
+ * @returns {Object} Summary of actions taken, including the resume position
  */
-function updateAllSquadronGroups() {
+function updateAllSquadronGroups(options) {
+  const opts = options || {};
+  const resume = opts.resume || null;
   const start = new Date();
-  const maxExecutionTime = SQUADRON_GROUP_CONFIG.MAX_EXECUTION_TIME_MS || 400000; // 5.5 minutes default
+  const maxExecutionTime = SQUADRON_GROUP_CONFIG.MAX_EXECUTION_TIME_MS || 400000;
+
+  // Two independent stops: the module's own budget, and a deadline handed down by
+  // the batch driver. Whichever comes first wins, so a caller can always ask for a
+  // shorter slice than the config allows but never a longer one.
+  const ownDeadline = start.getTime() + maxExecutionTime;
+  const callerDeadline = Number(opts.deadlineMs || 0);
+  const effectiveDeadline = callerDeadline > 0 ? Math.min(ownDeadline, callerDeadline) : ownDeadline;
 
   Logger.info('Starting squadron groups update', {
     maxExecutionTime: maxExecutionTime + 'ms',
-    timeoutProtection: 'enabled'
+    timeoutProtection: 'enabled',
+    resuming: resume ? `${resume.squadronIndex}` : 'no'
   });
 
   // Clear cache to ensure fresh CAPWATCH data
   clearCache();
+
+  // Per-execution tallies; a slice reports what IT was refused.
+  SQUADRON_REJECTED_MEMBERS_ = [];
+  SQUADRON_MEMBER_FAILURES_ = 0;
 
   const summary = {
     created: [],
     updated: [],
     errors: [],
     timedOut: false,
-    processedSquadrons: 0,
+    complete: false,
+    squadronIndex: 0,
+    charterAtIndex: '',
+    processedSquadrons: (resume && Number(resume.processedSquadrons)) || 0,
     totalSquadrons: 0,
     startTime: start.toISOString()
   };
@@ -596,21 +654,26 @@ function updateAllSquadronGroups() {
     const unitSquadrons = Object.values(squadrons).filter(sq => sq.scope === 'UNIT');
     summary.totalSquadrons = unitSquadrons.length;
 
+    let squadronIndex = resolveSquadronResumePosition_(unitSquadrons, resume);
+
     Logger.info('Processing squadron groups', {
       totalSquadrons: unitSquadrons.length,
+      startingAt: squadronIndex,
       maxExecutionTime: maxExecutionTime + 'ms'
     });
 
     // Process each squadron with timeout protection
-    for (const squadron of unitSquadrons) {
+    for (; squadronIndex < unitSquadrons.length; squadronIndex++) {
+      const squadron = unitSquadrons[squadronIndex];
+
       // Check execution time before processing each squadron
-      const elapsed = new Date() - start;
-      if (elapsed > maxExecutionTime) {
+      if (Date.now() >= effectiveDeadline) {
         Logger.warn('Execution time limit approaching - stopping gracefully', {
-          elapsed: elapsed + 'ms',
+          elapsed: (new Date() - start) + 'ms',
           maxExecutionTime: maxExecutionTime + 'ms',
+          pausedAt: `${squadronIndex}/${unitSquadrons.length}`,
           processedSquadrons: summary.processedSquadrons,
-          remainingSquadrons: unitSquadrons.length - summary.processedSquadrons
+          remainingSquadrons: unitSquadrons.length - squadronIndex
         });
         summary.timedOut = true;
         break;
@@ -649,6 +712,15 @@ function updateAllSquadronGroups() {
       Utilities.sleep(200);
     }
 
+    summary.squadronIndex = squadronIndex;
+    summary.complete = squadronIndex >= unitSquadrons.length;
+    // Parked alongside the index so a resume can tell whether the list still means
+    // what it meant last time — an index is only a position in an order, and the
+    // order comes from CAPWATCH, which changes when units charter or fold.
+    summary.charterAtIndex = summary.complete
+      ? ''
+      : String((unitSquadrons[squadronIndex] && unitSquadrons[squadronIndex].charter) || '');
+
   } catch (err) {
     Logger.error('Squadron groups update failed', err);
     summary.errors.push({
@@ -659,14 +731,24 @@ function updateAllSquadronGroups() {
 
   summary.endTime = new Date().toISOString();
   summary.duration = new Date() - start;
+  summary.rejectedAddresses = reportRejectedMemberAddresses_();
+  // 'errors' counts squadrons that threw. memberFailures counts individual adds
+  // and removes that failed underneath a squadron that otherwise succeeded — the
+  // two are not the same number, and reporting only the first reads as a clean
+  // run when members are missing from their lists.
+  summary.memberFailures = SQUADRON_MEMBER_FAILURES_;
 
   Logger.info('Squadron groups update completed', {
     duration: summary.duration + 'ms',
     created: summary.created.length,
     updated: summary.updated.length,
     errors: summary.errors.length,
+    memberFailures: summary.memberFailures,
+    rejectedAddresses: summary.rejectedAddresses.length,
     processedSquadrons: summary.processedSquadrons,
     totalSquadrons: summary.totalSquadrons,
+    position: `${summary.squadronIndex}/${summary.totalSquadrons}`,
+    complete: summary.complete,
     timedOut: summary.timedOut
   });
 
@@ -674,6 +756,302 @@ function updateAllSquadronGroups() {
   // Results are logged and can be reviewed in execution logs
 
   return summary;
+}
+
+/**
+ * Decides where a resumed run should pick up.
+ *
+ * The parked position is an index into the UNIT-scope squadron list, which is
+ * rebuilt from CAPWATCH on every execution. That is fine while the roster is
+ * stable and wrong the moment it is not: a unit chartering or folding shifts
+ * every index after it, and resuming on the old number would silently skip or
+ * repeat squadrons. So the charter that was sitting at the index is parked too,
+ * and disagreement is treated as "the list moved" — start over rather than
+ * resume into the wrong place. Re-processing squadrons is cheap and idempotent;
+ * skipping them is the bug this whole mechanism exists to fix.
+ *
+ * @param {Array<Object>} unitSquadrons - Current UNIT-scope squadrons, in order
+ * @param {Object|null} resume - Parked position, or null for a fresh run
+ * @returns {number} Index to start from
+ */
+function resolveSquadronResumePosition_(unitSquadrons, resume) {
+  if (!resume) return 0;
+
+  const index = Number(resume.squadronIndex);
+  if (!isFinite(index) || index <= 0) return 0;
+
+  if (index >= unitSquadrons.length) {
+    Logger.warn('Parked squadron position is past the end of the list; starting over', {
+      parkedIndex: index,
+      totalSquadrons: unitSquadrons.length
+    });
+    return 0;
+  }
+
+  const expected = String(resume.charterAtIndex || '');
+  const actual = String((unitSquadrons[index] && unitSquadrons[index].charter) || '');
+
+  if (expected && expected !== actual) {
+    Logger.warn('Squadron list changed since the run was parked; starting over', {
+      parkedIndex: index,
+      expectedCharter: expected,
+      actualCharter: actual
+    });
+    return 0;
+  }
+
+  return index;
+}
+
+/**
+ * Where a paused run's position lives.
+ *
+ * SQUADRON_BATCH_INDEX is NOT new — updateSquadronGroupsBatch() has parked its
+ * position there all along, in fixed slices of 10 squadrons. Reusing the same key
+ * is deliberate: two entry points walking one list must share one pointer, or a
+ * daily trigger on one and a manual run of the other would each advance a private
+ * cursor and leave units unvisited by both. Which is the bug, wearing a hat.
+ *
+ * The companions are new. The legacy mechanism parks a bare integer, with no way to
+ * tell whether the list still means what it meant — see
+ * resolveSquadronResumePosition_() for why that matters.
+ */
+const SQUADRON_BATCH_INDEX_PROP_ = 'SQUADRON_BATCH_INDEX';
+const SQUADRON_BATCH_CHARTER_PROP_ = 'SQUADRON_BATCH_CHARTER';
+const SQUADRON_BATCH_SAVED_AT_PROP_ = 'SQUADRON_BATCH_SAVED_AT';
+const SQUADRON_BATCH_TOTAL_PROP_ = 'SQUADRON_BATCH_TOTAL';
+const SQUADRON_BATCH_PROCESSED_PROP_ = 'SQUADRON_BATCH_PROCESSED';
+const SQUADRON_BATCH_STARTED_AT_PROP_ = 'SQUADRON_BATCH_STARTED_AT';
+
+/** Every key this module parks, so save and clear cannot drift out of step. */
+const SQUADRON_BATCH_PROPS_ = [
+  SQUADRON_BATCH_INDEX_PROP_,
+  SQUADRON_BATCH_CHARTER_PROP_,
+  SQUADRON_BATCH_SAVED_AT_PROP_,
+  SQUADRON_BATCH_TOTAL_PROP_,
+  SQUADRON_BATCH_PROCESSED_PROP_,
+  SQUADRON_BATCH_STARTED_AT_PROP_
+];
+
+/**
+ * Wall-clock budget for one slice, in minutes.
+ *
+ * These tenants allow a 30-minute execution. SQUADRON_GROUP_CONFIG's own budget is
+ * 29.2 minutes, which leaves 48 seconds of headroom — and the elapsed check happens
+ * only BETWEEN squadrons, so a single slow unit can carry the run past the hard cap
+ * and have it killed outright. A killed execution parks nothing, which is the state
+ * this mechanism exists to escape. 25 minutes leaves a real margin.
+ *
+ * A tenant on the 6-minute tier should pass 5 explicitly.
+ */
+const SQUADRON_GROUPS_BATCH_DEFAULT_BUDGET_MIN_ = 25;
+const SQUADRON_GROUPS_BATCH_STALE_HOURS_ = 12;
+
+/**
+ * updateAllSquadronGroups() in slices, for when one pass cannot finish inside the
+ * Apps Script execution limit.
+ *
+ * Point the daily trigger at this instead of updateAllSquadronGroups() and the tail
+ * of the squadron list stops being permanently starved: each run picks up where the
+ * last one stopped, so every unit is reached within a few days at worst, rather than
+ * never.
+ *
+ * Related, and NOT a second mechanism: updateSquadronGroupsBatch(batchSize) slices
+ * the same list by COUNT — 10 squadrons per call by default, so a 68-unit wing takes
+ * a week of daily runs to come round. This one slices by TIME, using whatever budget
+ * it is given, which on these tenants is most of the wing per run. They share the one
+ * SQUADRON_BATCH_INDEX position deliberately, so mixing them cannot strand a unit
+ * between two private cursors; pick whichever pace suits and let the other alone.
+ *
+ * Unlike updateEmailGroupsBatch(), this parks only the POSITION, not the computed
+ * data. Squadron rosters are rebuilt from CAPWATCH each slice — cheap next to the
+ * API calls, and it means a resumed slice acts on today's data rather than
+ * replaying a snapshot taken before the pause.
+ *
+ *   updateAllSquadronGroupsBatch()          // 25 minutes
+ *   updateAllSquadronGroupsBatch(5)         // a shorter slice, e.g. on the 6-minute tier
+ *   checkSquadronGroupsBatchStatus()        // how far along, without touching anything
+ *   resetSquadronGroupsBatchProgress()      // discard the parked run and start fresh
+ *
+ * @param {number} [budgetMinutes=25] - Wall-clock budget for THIS execution
+ * @returns {{complete: boolean, squadronIndex: number, totalSquadrons: number}}
+ */
+function updateAllSquadronGroupsBatch(budgetMinutes) {
+  const budgetMs = Math.max(1, Number(budgetMinutes || SQUADRON_GROUPS_BATCH_DEFAULT_BUDGET_MIN_)) * 60 * 1000;
+  const deadlineMs = Date.now() + budgetMs;
+
+  const saved = loadSquadronGroupsBatchState_();
+  let resume = null;
+
+  if (saved) {
+    resume = {
+      squadronIndex: saved.squadronIndex,
+      charterAtIndex: saved.charterAtIndex,
+      processedSquadrons: saved.processedSquadrons
+    };
+
+    // A legacy position carries no total, so say so rather than print "18/0" and
+    // leave someone reading the log to wonder which number is wrong.
+    Logger.info('Resuming parked squadron groups run', {
+      startedAt: saved.startedAt,
+      resumingAt: `${saved.squadronIndex}/${saved.totalSquadrons || '?'}`,
+      charter: saved.charterAtIndex || '(none parked)',
+      processedSoFar: saved.processedSquadrons
+    });
+  }
+
+  const summary = updateAllSquadronGroups({ deadlineMs: deadlineMs, resume: resume });
+
+  if (summary.complete) {
+    clearSquadronGroupsBatchState_();
+    Logger.info('Squadron groups batch finished', {
+      squadrons: summary.totalSquadrons,
+      created: summary.created.length,
+      updated: summary.updated.length,
+      errors: summary.errors.length
+    });
+    console.log(`✅ Complete — ${summary.totalSquadrons} squadrons, ` +
+      `${summary.created.length} created / ${summary.updated.length} updated, ` +
+      `${summary.errors.length} errors.`);
+  } else {
+    saveSquadronGroupsBatchState_({
+      startedAt: (saved && saved.startedAt) || new Date().toISOString(),
+      savedAt: new Date().toISOString(),
+      squadronIndex: summary.squadronIndex,
+      charterAtIndex: summary.charterAtIndex,
+      totalSquadrons: summary.totalSquadrons,
+      processedSquadrons: summary.processedSquadrons
+    });
+    console.log(`⏸ Paused at squadron ${summary.squadronIndex}/${summary.totalSquadrons} ` +
+      `(${summary.charterAtIndex}). Run updateAllSquadronGroupsBatch() again to continue.`);
+  }
+
+  return {
+    complete: summary.complete,
+    squadronIndex: summary.squadronIndex,
+    totalSquadrons: summary.totalSquadrons
+  };
+}
+
+/**
+ * Read-only: how far the parked squadron run got.
+ * @returns {void}
+ */
+function checkSquadronGroupsBatchStatus() {
+  const saved = loadSquadronGroupsBatchState_();
+  if (!saved) {
+    console.log('No parked squadron groups run. The next updateAllSquadronGroupsBatch() starts fresh.');
+    return;
+  }
+  console.log(`Parked run started ${saved.startedAt}, last saved ${saved.savedAt}`);
+  console.log(`  position: squadron ${saved.squadronIndex}/${saved.totalSquadrons || '?'} ` +
+    `(${saved.charterAtIndex || 'no charter parked — legacy position'})`);
+  console.log(`  processed so far: ${saved.processedSquadrons}`);
+}
+
+/**
+ * Discards a parked run so the next batch starts from the first squadron. Changes
+ * nothing in Workspace — groups already reconciled stay reconciled.
+ * @returns {void}
+ */
+function resetSquadronGroupsBatchProgress() {
+  clearSquadronGroupsBatchState_();
+  console.log('Parked squadron groups run discarded. The next updateAllSquadronGroupsBatch() starts fresh.');
+}
+
+/**
+ * Reads the shared batch position.
+ *
+ * A position parked by the legacy updateSquadronGroupsBatch() has an index and no
+ * companions; that is a valid state, not a corrupt one, and resolving it is left to
+ * resolveSquadronResumePosition_() — which trusts a bare index because an unverified
+ * position is still better than restarting a list that was probably fine.
+ *
+ * @returns {Object|null} Parked state, or null when there is none or it has gone stale
+ */
+function loadSquadronGroupsBatchState_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const raw = props.getProperty(SQUADRON_BATCH_INDEX_PROP_);
+    if (raw === null || raw === '') return null;
+
+    const squadronIndex = parseInt(raw, 10);
+    if (!isFinite(squadronIndex) || squadronIndex <= 0) return null;
+
+    const savedAt = props.getProperty(SQUADRON_BATCH_SAVED_AT_PROP_) || '';
+
+    // A run parked long enough ago has lost its claim on the roster it was walking.
+    // Starting over costs a re-walk of squadrons already done, which is idempotent;
+    // resuming into a stale order risks skipping units, which is not. A legacy
+    // position carries no timestamp, so it is taken at face value rather than
+    // discarded — it came from the same list and nothing suggests it is wrong.
+    if (savedAt) {
+      const ageHours = (Date.now() - new Date(savedAt).getTime()) / 3600000;
+      if (ageHours > SQUADRON_GROUPS_BATCH_STALE_HOURS_) {
+        Logger.warn('Parked squadron groups run is stale; starting over instead of resuming', {
+          savedAt: savedAt,
+          ageHours: Math.round(ageHours)
+        });
+        clearSquadronGroupsBatchState_();
+        return null;
+      }
+    }
+
+    // Counts are carried so progress reads cumulatively across slices. A run that
+    // reports only the current slice looks like it is starting over every time,
+    // which is precisely the appearance the starved tail hid behind. Legacy state
+    // has neither, and 0 is the honest answer there rather than a guess.
+    return {
+      squadronIndex: squadronIndex,
+      charterAtIndex: props.getProperty(SQUADRON_BATCH_CHARTER_PROP_) || '',
+      savedAt: savedAt,
+      startedAt: props.getProperty(SQUADRON_BATCH_STARTED_AT_PROP_) || savedAt,
+      totalSquadrons: parseInt(props.getProperty(SQUADRON_BATCH_TOTAL_PROP_) || '0', 10) || 0,
+      processedSquadrons: parseInt(props.getProperty(SQUADRON_BATCH_PROCESSED_PROP_) || '0', 10) || 0
+    };
+  } catch (e) {
+    Logger.warn('Could not read parked squadron groups run; starting fresh', { errorMessage: e.message });
+    return null;
+  }
+}
+
+/**
+ * @param {Object} state
+ * @returns {void}
+ */
+function saveSquadronGroupsBatchState_(state) {
+  try {
+    PropertiesService.getScriptProperties().setProperties({
+      [SQUADRON_BATCH_INDEX_PROP_]: String(state.squadronIndex),
+      [SQUADRON_BATCH_CHARTER_PROP_]: String(state.charterAtIndex || ''),
+      [SQUADRON_BATCH_SAVED_AT_PROP_]: String(state.savedAt || new Date().toISOString()),
+      [SQUADRON_BATCH_TOTAL_PROP_]: String(state.totalSquadrons || 0),
+      [SQUADRON_BATCH_PROCESSED_PROP_]: String(state.processedSquadrons || 0),
+      [SQUADRON_BATCH_STARTED_AT_PROP_]: String(state.startedAt || new Date().toISOString())
+    });
+
+    Logger.info('Parked squadron groups run saved', {
+      position: `${state.squadronIndex}/${state.totalSquadrons}`,
+      charter: state.charterAtIndex,
+      processedSquadrons: state.processedSquadrons
+    });
+  } catch (e) {
+    Logger.error('Failed to park the squadron groups run - the next call will start over', {
+      errorMessage: e.message
+    });
+  }
+}
+
+/**
+ * @returns {void}
+ */
+function clearSquadronGroupsBatchState_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    SQUADRON_BATCH_PROPS_.forEach(key => props.deleteProperty(key));
+  } catch (e) {
+    Logger.warn('Could not clear the parked squadron groups run', { errorMessage: e.message });
+  }
 }
 
 /**
@@ -753,6 +1131,7 @@ function updatePublicContactGroup(unitPrefix, squadron, squadronMembers) {
       allowExternalMembers: 'true',
       whoCanContactOwner: 'ANYONE_CAN_CONTACT',
       messageModerationLevel: 'MODERATE_NONE',
+      spamModerationLevel: 'MODERATE',
       enableCollaborativeInbox: 'true',
       includeInGlobalAddressList: SQUADRON_GROUP_CONFIG.DISTRIBUTION_LIST.INCLUDE_IN_GAL ? 'true' : 'false',
       replyTo: 'REPLY_TO_SENDER',
@@ -875,10 +1254,17 @@ function updateDistributionLists(unitPrefix, squadron, squadronMembers, allMembe
         whoCanJoin: 'INVITED_CAN_JOIN',
         whoCanViewMembership: 'ALL_MEMBERS_CAN_VIEW',
         whoCanViewGroup: 'ALL_MEMBERS_CAN_VIEW',
-        whoCanPostMessage: 'ALL_MEMBERS_CAN_POST',
+        // ANYONE_CAN_POST, not ALL_MEMBERS_CAN_POST: a distribution list has to
+        // accept mail from senders who are not members of it — the other tenant's
+        // members (a senior on the wing domain writing to ca.all@cawgcadets.org),
+        // and the original external sender on cross-tenant fan-out. Google has no
+        // "members plus my other domain" value, so the openness is paired with
+        // spam moderation below.
+        whoCanPostMessage: 'ANYONE_CAN_POST',
         allowExternalMembers: 'true',
         whoCanContactOwner: 'ALL_MEMBERS_CAN_CONTACT',
         messageModerationLevel: 'MODERATE_NONE',
+        spamModerationLevel: 'MODERATE',
         enableCollaborativeInbox: 'true',
         includeInGlobalAddressList: SQUADRON_GROUP_CONFIG.DISTRIBUTION_LIST.INCLUDE_IN_GAL ? 'true' : 'false',
         replyTo: 'REPLY_TO_SENDER'
@@ -1697,14 +2083,14 @@ function getOrCreateGroup(email, name, description, settings = {}) {
  * be patched separately through the AdminGroupsSettings advanced service
  * (enabled in appsscript.json; scope apps.groups.settings).
  *
- * Scope is intentionally limited to allowExternalMembers (see the comment in
- * the body): it is the only setting the reported cross-tenant delivery bug
- * requires, and enforcing the others would clobber live posting policy —
- * notably the ANYONE_CAN_POST on the cadet-tenant receive lists. Only patched
- * when the live value differs, so it is safe to run on every sync.
+ * Scope is limited to the three keys that decide whether a message from outside
+ * the group reaches it — allowExternalMembers, whoCanPostMessage and
+ * spamModerationLevel (see the comment in the body). Everything else the callers
+ * pass (visibility, collaborative inbox, reply-to) stays console/GAM territory.
+ * Only patched when the live value differs, so it is safe to run on every sync.
  *
  * @param {string} email - Group email address
- * @param {Object} settings - Settings to apply (only allowExternalMembers is enforced)
+ * @param {Object} settings - Settings to apply (only the managed keys are enforced)
  * @returns {void}
  */
 function applyGroupSettings(email, settings) {
@@ -1712,21 +2098,25 @@ function applyGroupSettings(email, settings) {
     const groupEmail = String(email || '').trim().toLowerCase();
     if (!groupEmail) return;
 
-    // Deliberately enforce ONLY allowExternalMembers.
+    // Enforce only the keys that govern inbound delivery from outside the group.
     //
-    // The caller's settings objects also carry whoCanPostMessage,
-    // whoCanViewMembership, enableCollaborativeInbox, etc., but those were never
-    // actually applied while this function was a stub, so live groups carry
-    // whatever posting/visibility policy they were given via console/GAM. In
-    // particular the cross-tenant cadet receive lists (ca###.cadets@cawgcadets.org)
-    // are live at ANYONE_CAN_POST, which is what lets them accept mail fanned out
-    // from the wing .all lists. The code passes ALL_MEMBERS_CAN_POST for every
-    // distribution list, so enforcing whoCanPostMessage here would flip those
-    // receivers to ALL_MEMBERS_CAN_POST and silently re-break cadet delivery.
-    // Only allowExternalMembers is needed to fix the reported bug (nesting the
-    // external cadet group into the wing .all list); leave posting policy alone.
+    // whoCanPostMessage was deliberately NOT enforced in v1.2.9, because the
+    // callers passed ALL_MEMBERS_CAN_POST for every distribution list and applying
+    // that would have flipped the cross-tenant cadet receive lists
+    // (ca###.cadets@cawgcadets.org, live at ANYONE_CAN_POST) into rejecting the
+    // fan-out, which carries the original external sender. The callers now pass
+    // ANYONE_CAN_POST for every managed list, so enforcing the key moves every
+    // group TOWARD accepting outside mail rather than away from it — the hazard
+    // that justified the narrow scope is gone.
+    //
+    // ANYONE_CAN_POST is genuinely open to the internet; Google has no value
+    // meaning "members plus my other tenant". spamModerationLevel is managed
+    // alongside it so the openness always arrives with moderation attached and
+    // cannot be widened by a caller that forgets it.
     const managedKeys = [
-      'allowExternalMembers'
+      'allowExternalMembers',
+      'whoCanPostMessage',
+      'spamModerationLevel'
     ];
 
     const desired = {};
@@ -1766,7 +2156,7 @@ function applyGroupSettings(email, settings) {
     if (Object.keys(patch).length === 0) {
       Logger.info('Group settings already correct', {
         email: groupEmail,
-        externalMembers: desired.allowExternalMembers
+        settings: desired
       });
       return;
     }
@@ -1786,6 +2176,61 @@ function applyGroupSettings(email, settings) {
 }
 
 /**
+ * Works out which members to add and which to remove.
+ *
+ * Membership is compared on Google ACCOUNT identity, not on string equality —
+ * see googleAccountKey() in utils.gs for why the two differ and what it cost.
+ * Both sides are keyed the same way, so an address the group already holds under
+ * another spelling of the same account is neither added again nor removed.
+ *
+ * Pure: no API calls, no logging. All the decisions live here so they can be
+ * tested without Google, and the caller is left with nothing but execution.
+ *
+ * @param {Array<string>} currentEmails - Addresses the group holds now
+ * @param {Object} desiredMembers - Map of address -> { role }
+ * @returns {{toAdd: Array<Object>, toRemove: Array<string>, duplicates: Array<Object>}}
+ */
+function diffGroupMembership_(currentEmails, desiredMembers) {
+  const current = (currentEmails || []).map(e => String(e || '').toLowerCase()).filter(Boolean);
+
+  const currentKeys = {};
+  current.forEach(email => { currentKeys[googleAccountKey(email)] = email; });
+
+  const toAdd = [];
+  const toRemove = [];
+  const duplicates = [];
+  const desiredKeys = {};
+
+  Object.keys(desiredMembers || {}).forEach(rawEmail => {
+    const email = String(rawEmail || '').trim().toLowerCase();
+    if (!email) return;
+
+    const key = googleAccountKey(email);
+
+    // Two desired addresses for one account: keep the first, and say so rather
+    // than firing a second insert that can only ever come back 409.
+    if (desiredKeys[key]) {
+      duplicates.push({ kept: desiredKeys[key], skipped: email });
+      return;
+    }
+    desiredKeys[key] = email;
+
+    if (!currentKeys[key]) {
+      toAdd.push({
+        email: email,
+        role: (desiredMembers[rawEmail] && desiredMembers[rawEmail].role) || 'MEMBER'
+      });
+    }
+  });
+
+  current.forEach(email => {
+    if (!desiredKeys[googleAccountKey(email)]) toRemove.push(email);
+  });
+
+  return { toAdd: toAdd, toRemove: toRemove, duplicates: duplicates };
+}
+
+/**
  * Updates group membership to match desired state
  * Adds missing members and removes members who shouldn't be in the group
  *
@@ -1800,59 +2245,161 @@ function updateGroupMembership(groupEmail, desiredMembers) {
     failed: 0
   };
 
-  // Get current members
   const currentMembers = getCurrentGroupMembers(groupEmail);
-  const currentEmailSet = new Set(currentMembers.map(m => m.toLowerCase()));
-  const desiredEmailSet = new Set(Object.keys(desiredMembers).map(e => e.toLowerCase()));
+  const plan = diffGroupMembership_(currentMembers, desiredMembers);
+
+  if (plan.duplicates.length > 0) {
+    Logger.info('Duplicate addresses for one Google account — extra copies skipped', {
+      groupEmail: groupEmail,
+      duplicates: plan.duplicates
+    });
+  }
 
   // Add missing members
-  for (const email in desiredMembers) {
-    const normalizedEmail = email.toLowerCase();
-    if (!currentEmailSet.has(normalizedEmail)) {
-      try {
-        executeWithRetry(() =>
-          AdminDirectory.Members.insert({
-            email: email,
-            role: desiredMembers[email].role || 'MEMBER'
-          }, groupEmail)
-        );
-        result.added++;
-      } catch (err) {
-        if (err.details?.code !== ERROR_CODES.CONFLICT) {
-          Logger.error('Failed to add member to squadron group', {
-            groupEmail: groupEmail,
-            member: email,
-            errorMessage: err.message,
-            errorCode: err.details?.code
-          });
-          result.failed++;
-        }
+  for (const entry of plan.toAdd) {
+    try {
+      executeWithRetry(
+        () => AdminDirectory.Members.insert({ email: entry.email, role: entry.role }, groupEmail),
+        undefined,
+        [ERROR_CODES.CONFLICT]
+      );
+      result.added++;
+    } catch (err) {
+      if (err.details?.code === ERROR_CODES.CONFLICT) {
+        // Already a member under an address the account key did not predict —
+        // a Workspace alias, say. Harmless, but record WHICH member: the two
+        // membership bugs found in July were both invisible in the log because
+        // this branch swallowed the address along with the error.
+        Logger.info('Member already in group under another address', {
+          groupEmail: groupEmail,
+          member: entry.email
+        });
+        continue;
       }
+
+      Logger.error('Failed to add member to squadron group', {
+        groupEmail: groupEmail,
+        member: entry.email,
+        errorMessage: err.message,
+        errorCode: err.details?.code
+      });
+      result.failed++;
+      recordRejectedMemberAddress_(groupEmail, entry.email, err);
     }
   }
 
   // Remove members who shouldn't be in the group
-  for (const currentEmail of currentMembers) {
-    const normalizedEmail = currentEmail.toLowerCase();
-    if (!desiredEmailSet.has(normalizedEmail)) {
-      try {
-        executeWithRetry(() =>
-          AdminDirectory.Members.remove(groupEmail, currentEmail)
-        );
-        result.removed++;
-      } catch (err) {
-        Logger.error('Failed to remove member from squadron group', {
-          groupEmail: groupEmail,
-          member: currentEmail,
-          errorMessage: err.message,
-          errorCode: err.details?.code
-        });
-        result.failed++;
-      }
+  for (const currentEmail of plan.toRemove) {
+    try {
+      executeWithRetry(() => AdminDirectory.Members.remove(groupEmail, currentEmail));
+      result.removed++;
+    } catch (err) {
+      Logger.error('Failed to remove member from squadron group', {
+        groupEmail: groupEmail,
+        member: currentEmail,
+        errorMessage: err.message,
+        errorCode: err.details?.code
+      });
+      result.failed++;
+      SQUADRON_MEMBER_FAILURES_++;
     }
   }
 
   return result;
+}
+
+/**
+ * Addresses Google refused during this execution.
+ *
+ * A 404 from members.insert on a gmail.com address means Google looked the
+ * account up in its own domain and did not find it — a typo or a closed account
+ * in CAPWATCH, not something code can correct. Those members simply never reach
+ * their unit's list, and one ERROR line per failure scattered through a run of
+ * thousands is not a thing anyone acts on. Collected here and reported once, they
+ * become a short worklist for the unit to fix in eServices.
+ */
+var SQUADRON_REJECTED_MEMBERS_ = [];
+
+/**
+ * Every member add or remove that failed this execution, for any reason.
+ *
+ * updateGroupMembership() has always counted these into result.failed, and
+ * NOTHING has ever read that field — so a run where twelve members could not be
+ * added still signed off with errors: 0. The run summary counts squadron-level
+ * throws only, and a per-member failure is not one of those. Counted here so the
+ * summary can stop overstating its own health.
+ */
+var SQUADRON_MEMBER_FAILURES_ = 0;
+
+/**
+ * @param {string} groupEmail
+ * @param {string} memberEmail
+ * @param {Error} err
+ * @returns {void}
+ */
+function recordRejectedMemberAddress_(groupEmail, memberEmail, err) {
+  SQUADRON_MEMBER_FAILURES_++;
+
+  // 404 — Google looked the address up in its own domain and found no account.
+  // 400 — Google would not parse it at all; the live example was a double dot in
+  //       the domain, which sanitizeEmail()'s format check happily accepts.
+  //
+  // Different messages from Google, one situation for the wing: an address in
+  // CAPWATCH that will never work, no matter how many times it is retried. The
+  // first pass reported only the 404s, so a malformed address failed every run
+  // and appeared in no worklist.
+  const code = (err && err.details && err.details.code) || 0;
+  if (code !== ERROR_CODES.NOT_FOUND && code !== ERROR_CODES.BAD_REQUEST) return;
+
+  SQUADRON_REJECTED_MEMBERS_.push({
+    group: groupEmail,
+    member: memberEmail,
+    reason: code === ERROR_CODES.BAD_REQUEST ? 'malformed' : 'no such account'
+  });
+}
+
+/**
+ * Logs the rejected-address worklist, if any, and clears it.
+ *
+ * Grouped by ADDRESS rather than listed per occurrence: one bad contact on a
+ * cadet's record reaches every list that cadet belongs to, and reading the same
+ * address three times invites someone to fix it once and assume they are done.
+ * The unit has one thing to correct in eServices, so it appears once.
+ *
+ * The per-failure ERROR lines are still emitted where they happen — a failed add
+ * IS an error and carries context this summary does not. This is the actionable
+ * rollup, not a replacement for them.
+ *
+ * @returns {Array<Object>} What was reported, one entry per address
+ */
+function reportRejectedMemberAddresses_() {
+  const raw = SQUADRON_REJECTED_MEMBERS_.slice();
+  SQUADRON_REJECTED_MEMBERS_ = [];
+
+  if (raw.length === 0) return [];
+
+  const byMember = {};
+  raw.forEach(row => {
+    if (!byMember[row.member]) {
+      byMember[row.member] = { member: row.member, reason: row.reason, groups: [] };
+    }
+    if (byMember[row.member].groups.indexOf(row.group) === -1) {
+      byMember[row.member].groups.push(row.group);
+    }
+  });
+
+  const rejected = Object.keys(byMember).sort().map(m => byMember[m]);
+
+  Logger.warn('Addresses Google would not accept as group members — fix these in eServices', {
+    addresses: rejected.length,
+    occurrences: raw.length,
+    hint: 'no such account = Google checked gmail.com and found nothing (typo, or a closed ' +
+      'account); malformed = the address is not valid at all. Plus-addressing is refused ' +
+      'outright, and Gmail usernames allow only letters, digits and dots.',
+    rejected: rejected.slice(0, 100)
+  });
+
+  return rejected;
 }
 
 /**
@@ -2983,7 +3530,9 @@ function updateSquadronGroupsBatch(batchSize = 10) {
     // Check if complete
     if (currentIndex >= unitSquadrons.length) {
       summary.complete = true;
-      scriptProperties.deleteProperty('SQUADRON_BATCH_INDEX');
+      // Clears the companions too, not just the index — both entry points share
+      // this position, and a leftover charter would outlive the run that set it.
+      clearSquadronGroupsBatchState_();
       Logger.info('Batch processing complete - resetting to start');
     } else {
       scriptProperties.setProperty('SQUADRON_BATCH_INDEX', currentIndex.toString());
@@ -3018,7 +3567,7 @@ function updateSquadronGroupsBatch(batchSize = 10) {
  * Use this if you want to force a full re-run
  */
 function resetBatchProgress() {
-  PropertiesService.getScriptProperties().deleteProperty('SQUADRON_BATCH_INDEX');
+  clearSquadronGroupsBatchState_();
   Logger.info('Batch progress reset to start');
   console.log('✓ Batch progress reset - next run will start from beginning');
 }
@@ -3459,8 +4008,9 @@ function testGroupSettings() {
         whoCanJoin: 'INVITED_CAN_JOIN',
         whoCanViewMembership: 'ALL_MEMBERS_CAN_VIEW',
         whoCanViewGroup: 'ALL_MEMBERS_CAN_VIEW',
-        whoCanPostMessage: 'ALL_MEMBERS_CAN_POST',
+        whoCanPostMessage: 'ANYONE_CAN_POST',
         allowExternalMembers: 'true',
+        spamModerationLevel: 'MODERATE',
         enableCollaborativeInbox: 'true',
         includeInGlobalAddressList: 'true'
       }
