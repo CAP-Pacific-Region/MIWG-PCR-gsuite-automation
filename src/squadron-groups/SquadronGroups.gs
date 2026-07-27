@@ -13,7 +13,7 @@
  *   through to "Sqdn <n> <full name>", which says squadron twice and is longer
  *   than what it replaced. fitGroupName_() trims the UNIT at a word boundary and
  *   never the label, and only when the limit is exceeded, so no existing group
- *   is renamed. (Numbered assuming v1.6.0-v1.8.0 land first.)
+ *   is renamed.
  *   v1.8.0 — membership is diffed on Google ACCOUNT identity, not string
  *   equality. Two spellings of one gmail.com address (dots are meaningless there,
  *   +tags are tags) read as a member to ADD and a stranger to REMOVE; the add came
@@ -21,8 +21,7 @@
  *   unit list until the next run. diffGroupMembership_() is pure and tested. A 409
  *   now names the member instead of swallowing the address, and addresses Google
  *   refuses outright are collected into one worklist rather than scattered through
- *   the run one ERROR at a time. (Numbered assuming v1.6.0 and v1.7.0 from the
- *   posting-permissions and resume branches land first.)
+ *   the run one ERROR at a time.
  *   v1.7.0 — updateAllSquadronGroups() can be resumed, and
  *   updateAllSquadronGroupsBatch() drives it in slices. The run gave up on time
  *   without recording where it got to, so every execution restarted at the top of
@@ -30,8 +29,7 @@
  *   of 68 squadrons had never been reached, on any run, for weeks. Their lists kept
  *   stale settings and their Cadet Lite members were never added. A stop is not a
  *   finish, and the summary now says which one happened. No-argument behavior is
- *   unchanged. (Assumes v1.6.0 from the posting-permissions branch lands first;
- *   if it does not, this file simply skips that number.)
+ *   unchanged.
  *   v1.6.0 — managed distribution lists are created at ANYONE_CAN_POST
  *   with spamModerationLevel MODERATE, and applyGroupSettings() now enforces
  *   whoCanPostMessage and spamModerationLevel alongside allowExternalMembers.
