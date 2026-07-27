@@ -56,6 +56,13 @@ are new; a legacy bare index is still honoured rather than discarded.
 `updateAllSquadronGroups()`, which is exactly the entry point that cannot resume. The Admin
 Guide now says so at the trigger table.
 
+**Progress counts are cumulative, and that is not cosmetic.** First live test parked correctly
+but logged `resumingAt: "18/0"` and a per-slice `processedSquadrons`, because neither the total
+nor the running count was persisted. A progress line that resets every slice looks exactly like
+a run starting over — which is the appearance the starved tail hid behind for two weeks. The
+total, the running count and the original start time are now parked alongside the position, and
+a legacy position with no total prints `?` rather than `0`.
+
 **The fix has the same failure mode as the bug, and that is the interesting part.** A parked
 index is a position in an order, and the order comes from CAPWATCH; one unit chartering or
 folding shifts every index after it, and resuming on the stale number would skip squadrons

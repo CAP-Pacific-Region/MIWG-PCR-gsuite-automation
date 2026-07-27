@@ -724,6 +724,19 @@ function resolveSquadronResumePosition_(unitSquadrons, resume) {
 const SQUADRON_BATCH_INDEX_PROP_ = 'SQUADRON_BATCH_INDEX';
 const SQUADRON_BATCH_CHARTER_PROP_ = 'SQUADRON_BATCH_CHARTER';
 const SQUADRON_BATCH_SAVED_AT_PROP_ = 'SQUADRON_BATCH_SAVED_AT';
+const SQUADRON_BATCH_TOTAL_PROP_ = 'SQUADRON_BATCH_TOTAL';
+const SQUADRON_BATCH_PROCESSED_PROP_ = 'SQUADRON_BATCH_PROCESSED';
+const SQUADRON_BATCH_STARTED_AT_PROP_ = 'SQUADRON_BATCH_STARTED_AT';
+
+/** Every key this module parks, so save and clear cannot drift out of step. */
+const SQUADRON_BATCH_PROPS_ = [
+  SQUADRON_BATCH_INDEX_PROP_,
+  SQUADRON_BATCH_CHARTER_PROP_,
+  SQUADRON_BATCH_SAVED_AT_PROP_,
+  SQUADRON_BATCH_TOTAL_PROP_,
+  SQUADRON_BATCH_PROCESSED_PROP_,
+  SQUADRON_BATCH_STARTED_AT_PROP_
+];
 
 /**
  * Wall-clock budget for one slice, in minutes.
@@ -782,10 +795,13 @@ function updateAllSquadronGroupsBatch(budgetMinutes) {
       processedSquadrons: saved.processedSquadrons
     };
 
+    // A legacy position carries no total, so say so rather than print "18/0" and
+    // leave someone reading the log to wonder which number is wrong.
     Logger.info('Resuming parked squadron groups run', {
       startedAt: saved.startedAt,
-      resumingAt: `${saved.squadronIndex}/${saved.totalSquadrons}`,
-      charter: saved.charterAtIndex
+      resumingAt: `${saved.squadronIndex}/${saved.totalSquadrons || '?'}`,
+      charter: saved.charterAtIndex || '(none parked)',
+      processedSoFar: saved.processedSquadrons
     });
   }
 
@@ -833,7 +849,8 @@ function checkSquadronGroupsBatchStatus() {
     return;
   }
   console.log(`Parked run started ${saved.startedAt}, last saved ${saved.savedAt}`);
-  console.log(`  position: squadron ${saved.squadronIndex}/${saved.totalSquadrons} (${saved.charterAtIndex})`);
+  console.log(`  position: squadron ${saved.squadronIndex}/${saved.totalSquadrons || '?'} ` +
+    `(${saved.charterAtIndex || 'no charter parked — legacy position'})`);
   console.log(`  processed so far: ${saved.processedSquadrons}`);
 }
 
@@ -885,13 +902,17 @@ function loadSquadronGroupsBatchState_() {
       }
     }
 
+    // Counts are carried so progress reads cumulatively across slices. A run that
+    // reports only the current slice looks like it is starting over every time,
+    // which is precisely the appearance the starved tail hid behind. Legacy state
+    // has neither, and 0 is the honest answer there rather than a guess.
     return {
       squadronIndex: squadronIndex,
       charterAtIndex: props.getProperty(SQUADRON_BATCH_CHARTER_PROP_) || '',
       savedAt: savedAt,
-      startedAt: savedAt,
-      totalSquadrons: 0,
-      processedSquadrons: 0
+      startedAt: props.getProperty(SQUADRON_BATCH_STARTED_AT_PROP_) || savedAt,
+      totalSquadrons: parseInt(props.getProperty(SQUADRON_BATCH_TOTAL_PROP_) || '0', 10) || 0,
+      processedSquadrons: parseInt(props.getProperty(SQUADRON_BATCH_PROCESSED_PROP_) || '0', 10) || 0
     };
   } catch (e) {
     Logger.warn('Could not read parked squadron groups run; starting fresh', { errorMessage: e.message });
@@ -908,12 +929,16 @@ function saveSquadronGroupsBatchState_(state) {
     PropertiesService.getScriptProperties().setProperties({
       [SQUADRON_BATCH_INDEX_PROP_]: String(state.squadronIndex),
       [SQUADRON_BATCH_CHARTER_PROP_]: String(state.charterAtIndex || ''),
-      [SQUADRON_BATCH_SAVED_AT_PROP_]: String(state.savedAt || new Date().toISOString())
+      [SQUADRON_BATCH_SAVED_AT_PROP_]: String(state.savedAt || new Date().toISOString()),
+      [SQUADRON_BATCH_TOTAL_PROP_]: String(state.totalSquadrons || 0),
+      [SQUADRON_BATCH_PROCESSED_PROP_]: String(state.processedSquadrons || 0),
+      [SQUADRON_BATCH_STARTED_AT_PROP_]: String(state.startedAt || new Date().toISOString())
     });
 
     Logger.info('Parked squadron groups run saved', {
       position: `${state.squadronIndex}/${state.totalSquadrons}`,
-      charter: state.charterAtIndex
+      charter: state.charterAtIndex,
+      processedSquadrons: state.processedSquadrons
     });
   } catch (e) {
     Logger.error('Failed to park the squadron groups run - the next call will start over', {
@@ -928,9 +953,7 @@ function saveSquadronGroupsBatchState_(state) {
 function clearSquadronGroupsBatchState_() {
   try {
     const props = PropertiesService.getScriptProperties();
-    props.deleteProperty(SQUADRON_BATCH_INDEX_PROP_);
-    props.deleteProperty(SQUADRON_BATCH_CHARTER_PROP_);
-    props.deleteProperty(SQUADRON_BATCH_SAVED_AT_PROP_);
+    SQUADRON_BATCH_PROPS_.forEach(key => props.deleteProperty(key));
   } catch (e) {
     Logger.warn('Could not clear the parked squadron groups run', { errorMessage: e.message });
   }
