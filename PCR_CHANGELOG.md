@@ -278,6 +278,38 @@ keys are reconciled, everything else the callers pass is left to console/GAM. Th
 setting has been wrong twice, once by applying nothing and once by nearly applying too
 much, so which keys are in the set is a decision worth holding still. 17 assertions.
 
+## [2026-07-27] — the trigger repoint, as one call instead of three panel steps
+
+Merging the resume fix changed nothing on its own: the daily trigger still pointed at
+`updateAllSquadronGroups()`, the entry point that **cannot** resume. Repointing it by hand is
+three steps in the Triggers panel — delete the old handler, add the new one, do not leave both —
+with a wrong outcome available at each, and the wrong outcome is **silent**. The sync goes on
+reporting success while never reaching the end of the list. That is precisely how nine CAWG
+cadet units went unvisited for weeks.
+
+### Added — `SquadronGroups.gs` 1.10.0
+
+```
+installSquadronGroupsBatchTrigger()     // daily at 06:00
+installSquadronGroupsBatchTrigger(4)    // or whatever hour suits
+```
+
+Removes any trigger on `updateAllSquadronGroups` **and** on the batch handler itself, then
+installs one daily trigger on `updateAllSquadronGroupsBatch`. Leaving both installed would mean
+two schedules walking one shared `SQUADRON_BATCH_INDEX` position.
+
+**Deletes before it creates**, so the swap needs no free slot — which matters, because the cadets
+project sits at the Apps Script ceiling of 20 triggers per script per user. If the create still
+fails, the error names what was already removed: the operator is one trigger down at that point
+and needs to know it rather than discover it later.
+
+> Found while installing the parent-email trigger: the cadets project was at 20, and one of them
+> was `cleanupLegacyCrossTenantContacts` — a **one-time manual migration tool** that lives in
+> `config-tenants/`, never in `src/`. Someone pasted it into the project and put a time-based
+> trigger on it; a later `clasp push` removed the pasted file, since `.claspignore` ships only
+> `src/**`. It had been firing at a function that no longer existed, at a 100% error rate, for
+> long enough to be background noise.
+
 ## [2026-07-27] — units get told which parent addresses Google refuses
 
 A unit's parents list silently fails to reach some families, and the unit has no way to know.
