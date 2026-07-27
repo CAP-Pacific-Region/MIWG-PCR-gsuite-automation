@@ -383,12 +383,14 @@ function checkMemberStatus() {
 4. **External Email Issues**
    - Group settings may prevent external members
    - Check group settings in Admin Console
-   - Squadron distribution lists auto-apply `allowExternalMembers=true` via
+   - Squadron distribution lists auto-apply `allowExternalMembers=true`,
+     `whoCanPostMessage=ANYONE_CAN_POST` and `spamModerationLevel=MODERATE` via
      `applyGroupSettings()` (SquadronGroups.gs) on each `updateAllSquadronGroups()`
      run. If a cross-tenant nested group (e.g. `ca###.cadets@cawgcadets.org`) still
      won't add, confirm the `AdminGroupsSettings` advanced service is enabled and
      check the log for "Group settings applied".
 
+<<<<<<< HEAD
 ### A member keeps disappearing from their unit list
 
 **Symptom:** a member is on the list one day and gone the next, then back again. Or the log
@@ -420,6 +422,30 @@ patterns are impossible regardless of whether the account exists:
 **Fix:** none available in code — the address is wrong in CAPWATCH. `sanitizeEmail()` cannot
 catch these; they are all well-formed. Take the run's worklist to the unit and have the contact
 corrected in eServices.
+=======
+### A member on the other tenant cannot post to a list
+
+**Symptom:** a senior on `@cawgcap.org` mails a cadet-side list such as
+`ca.all@cawgcadets.org` and the message bounces or is held for moderation. Members of
+the list's own domain can post fine.
+
+**Cause:** the two tenants are separate Workspace accounts, so **every sender on the
+other one is external.** A list at `ALL_IN_DOMAIN_CAN_POST` (or
+`ALL_MEMBERS_CAN_POST`, for a sender who is not a member) rejects them. This is also
+what blocks cross-tenant fan-out, where the forwarded message still carries the
+*original* wing sender.
+
+**Fix:** `whoCanPostMessage` must be `ANYONE_CAN_POST` — Google has no value meaning
+"members plus my other domain". Since SquadronGroups.gs 1.6.0 the sync enforces this
+on every managed list, so the repair is to run `updateAllSquadronGroups()` on the
+tenant that owns the list. Verify first, and after, with
+`groupAdministration_auditReceiveListPosting()` (read-only).
+
+**On the openness:** `ANYONE_CAN_POST` accepts mail from anywhere on the internet, not
+just the sibling tenant. It is paired with `spamModerationLevel=MODERATE` for that
+reason. A list that genuinely must stay closed should be left out of the managed set
+rather than hand-set in the console, where the next sync will overwrite it.
+>>>>>>> origin/master
 
 ### Too Many Members Removed
 

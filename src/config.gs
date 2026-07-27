@@ -1188,9 +1188,16 @@ const SQUADRON_GROUP_CONFIG = {
   },
   
   /**
-   * Maximum execution time in milliseconds before stopping
-   * Google Apps Script has a 6-minute execution limit
-   * Set to 5.5 minutes (330 seconds) to allow graceful shutdown
+   * Maximum execution time in milliseconds before stopping.
+   *
+   * 1,750,000 ms is 29.2 minutes, sized for the 30-minute limit these Workspace
+   * tenants get — NOT the 5.5 minutes the comment here used to claim, which
+   * described the 6-minute consumer tier and had not matched this value for a
+   * long time. The gap between the two readings matters: at 29.2 minutes the
+   * headroom before a hard kill is 48 seconds, and the elapsed check runs only
+   * between squadrons, so one slow unit can carry a run past the cap and have it
+   * killed rather than stopped. Prefer updateAllSquadronGroupsBatch(), which
+   * takes a shorter budget and parks its position either way.
    */
   MAX_EXECUTION_TIME_MS: 1750000,
   

@@ -10,6 +10,46 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-27] — two groups that could never be created, and nobody could tell
+
+`groups.insert` refuses a name over **73 characters** outright — 400 "Invalid Input: groupName"
+— and creates nothing. On the CAWG senior tenant, `ca404.deputy-commander-cadets` and
+`ca404.deputy-commander-seniors` had therefore never existed.
+
+**It stayed invisible because the name is only sent on CREATE.** Sixty-six other units looked
+healthy for the simple reason that their groups already existed, so the over-long name was never
+re-submitted. The two that failed were the only ones in the whole run that needed creating.
+
+The offending name came from the **abbreviation** path, which is supposed to shorten:
+
+| | |
+|---|---|
+| Unit name | `California Aerospace Composite Squadron` |
+| Matches a shortening pattern? | no — the patterns want a trailing number or a leading ordinal |
+| Falls through to | `Sqdn 404 California Aerospace Composite Squadron` — squadron, twice |
+| With the label | **78 characters.** Refused. |
+
+Measured across the wing, those two names were the only ones over the limit; the next longest
+was 70.
+
+### Changed — `SquadronGroups.gs` 1.9.0
+
+`fitGroupName_()` joins the unit and the label within the limit. **The label never gives way** —
+it is what tells one of a unit's lists from another, and two groups whose names differ only past
+the cut are the same name to anyone reading the console. The unit is trimmed at a **word
+boundary**, and if the cut would leave only a fragment of a word the unit is dropped entirely
+rather than shipping `W - Deputy Commander for Cadets`.
+
+**Trimming happens only when the limit is exceeded, so no existing group is renamed** — the
+70-character `ca404.parents` name is untouched. For ca404 the trim removes the duplicated
+"Squadron" and lands at 69: `Sqdn 404 California Aerospace Composite - Deputy Commander for Cadets`.
+
+### Added — `test/SquadronGroups.groupName.test.js`
+
+25 assertions. The last one is the point of the exercise: across every combination of unit and
+label, including absurd ones, nothing the function returns can be refused for length. Caught a
+real defect during development — the word-boundary rule was not applied when the cut left a
+single mid-word character. All unit names synthetic.
 ## [2026-07-27] — two spellings, one mailbox, one member quietly dropped
 
 `first.last@gmail.com` and `firstlast@gmail.com` are the same Google account. Dots carry no
@@ -97,6 +137,146 @@ because they are different numbers and only one of them was being told.
 
 38 assertions, weighted toward **not merging people who merely look alike** as much as matching
 the ones who are the same. All addresses synthetic.
+## [2026-07-27] — a run that stops is not a run that finished
+
+`updateAllSquadronGroups()` had timeout protection and no memory. It gave up gracefully when
+it ran out of time — and recorded nothing about where it got to, so the next execution
+started at the top of the same list and gave up in the same place.
+
+The units past that line were never reached. **Not "reached late" — never, on any run.**
+
+On the CAWG cadet tenant that was the last **9 of 68** squadrons. Their `.all` lists still
+carried `allowExternalMembers: false` two weeks after the sync began enforcing `true`, which
+is how they were found: the setting is a fossil recording that no run ever arrived. Their
+Cadet Lite members — added by personal email, since those cadets hold no account — had never
+been added either. Nothing raised an error the entire time, because a run that stops early
+still reports success for the part it did.
+
+Confirmed rather than assumed: the nine were exactly the **last nine in iteration order**.
+
+### Changed — `SquadronGroups.gs` 1.7.0
+
+`updateAllSquadronGroups(options)` accepts `{deadlineMs, resume}` and returns its position and
+a `complete` flag. **No-argument behavior is unchanged.** New:
+
+```
+updateAllSquadronGroupsBatch()        // 25-minute slice; point the daily trigger here
+updateAllSquadronGroupsBatch(5)       // shorter slice, e.g. the 6-minute tier
+checkSquadronGroupsBatchStatus()      // read-only
+resetSquadronGroupsBatchProgress()    // discard the parked run
+```
+
+Only the **position** is parked, not the computed rosters — those are rebuilt from CAPWATCH
+each slice. Cheap next to the API calls, and a resumed slice then acts on today's data instead
+of replaying a snapshot from before the pause.
+
+**It shares `SQUADRON_BATCH_INDEX` with the batch driver that already existed.** This nearly
+shipped as a second, parallel mechanism with its own state file. `updateSquadronGroupsBatch()`
+has been slicing the same list by count — 10 squadrons a run, a week to come round on a 68-unit
+wing — and parking its position in that Script Property all along. Two entry points walking one
+list with two private cursors is the original bug wearing a hat: a daily trigger on one and a
+manual run of the other would each advance their own, and units would fall between. One pointer,
+two paces (count or time), and mixing them is safe. The companion keys (`_CHARTER`, `_SAVED_AT`)
+are new; a legacy bare index is still honoured rather than discarded.
+
+**So the operative fix is a trigger change, not just code.** The daily trigger points at
+`updateAllSquadronGroups()`, which is exactly the entry point that cannot resume. The Admin
+Guide now says so at the trigger table.
+
+**Progress counts are cumulative, and that is not cosmetic.** First live test parked correctly
+but logged `resumingAt: "18/0"` and a per-slice `processedSquadrons`, because neither the total
+nor the running count was persisted. A progress line that resets every slice looks exactly like
+a run starting over — which is the appearance the starved tail hid behind for two weeks. The
+total, the running count and the original start time are now parked alongside the position, and
+a legacy position with no total prints `?` rather than `0`.
+
+**The fix has the same failure mode as the bug, and that is the interesting part.** A parked
+index is a position in an order, and the order comes from CAPWATCH; one unit chartering or
+folding shifts every index after it, and resuming on the stale number would skip squadrons
+silently — precisely what this exists to stop. So the charter sitting at that index is parked
+alongside it, and any disagreement means start over. Re-walking squadrons is idempotent and
+cheap; skipping them is the whole bug. `resolveSquadronResumePosition_()` never returns a
+mid-list guess — every rejection lands on 0.
+
+### Changed — `config.gs` (comment only)
+
+`MAX_EXECUTION_TIME_MS` is 1,750,000 ms — **29.2 minutes**, not the "5.5 minutes" the comment
+above it claimed. That text described the 6-minute consumer tier and had been wrong for a long
+time. The real number leaves 48 seconds before a hard kill, and the elapsed check runs only
+between squadrons, so one slow unit can carry a run past the cap and have it killed outright —
+which parks nothing. Hence the batch driver's shorter default.
+
+### Added — `test/SquadronGroups.resume.test.js`
+
+20 assertions on the resolver, weighted toward the ways a resume could silently skip: a list
+that grew, a list that shrank, an index past the end, and malformed state. Redundant work is
+always preferred to a possible skip.
+## [2026-07-27] — the other tenant is external, and the lists were told to reject external
+
+A senior on the wing domain could not post to `ca.all@cawgcadets.org`. Nothing was broken
+about the account or the address; the cadet-side all-hands lists sit at
+`ALL_IN_DOMAIN_CAN_POST`, and **`@cawgcap.org` is not that domain.** Two Workspace tenants
+means every sender on the far side is external, however much the same wing they are.
+
+`ANYONE_CAN_POST` is the only setting that admits them. Google has no value meaning
+"members plus my other domain", so this is the whole menu.
+
+### Changed — `SquadronGroups.gs` 1.6.0
+
+Managed distribution lists are now created at `ANYONE_CAN_POST` with
+`spamModerationLevel=MODERATE`, and `applyGroupSettings()` reconciles
+`whoCanPostMessage` and `spamModerationLevel` alongside `allowExternalMembers` on every
+sync. Running `updateAllSquadronGroups()` on a tenant repairs its existing lists.
+
+**Why this is now safe to enforce, having been unsafe in 1.2.9.** That version narrowed
+the managed keys to `allowExternalMembers` alone, because the callers passed
+`ALL_MEMBERS_CAN_POST` for every list and applying it would have dragged the cadet
+receive lists *down* from `ANYONE_CAN_POST` and silently re-broken the fan-out — which
+carries the original external sender and so fails for exactly the same reason this bug
+does. The callers now pass `ANYONE_CAN_POST`, so enforcement only ever moves a group
+toward accepting outside mail. The hazard was the value, not the key.
+
+**The openness is real and is not free.** `ANYONE_CAN_POST` accepts mail from anywhere on
+the internet, including cadet-facing lists. `spamModerationLevel` is managed in the same
+key list so the two cannot drift apart and no caller can widen posting while forgetting
+moderation. A list that must genuinely stay closed belongs outside the managed set, not
+hand-set in the console — the next sync overwrites that.
+
+### Changed — `UpdateGroups.gs` 1.8.1, `groupAdministration.gs` (comment only)
+
+The sheet-driven path already enforced `ANYONE_CAN_POST`; it now manages
+`spamModerationLevel` too, so the two paths agree about a group they both touch. The
+receive-list audit's docs no longer describe cross-tenant fan-out as the only victim —
+a person writing across directly hits the identical wall.
+
+### Added — `groupAdministration_repairReceiveListPosting(dryRun)`
+
+Enforcing a setting on every sync only helps groups the sync visits. It reaches a list through
+`shouldCreateDistributionLists()`, which returns false for anything that is not **UNIT** scope,
+so three populations are permanently out of reach however often it runs:
+
+| | Why the sync never sees it |
+|---|---|
+| `ca.all@...` — the wing all-hands | no CAPWATCH org at all; the loop iterates orgs |
+| `ca006.all`, `ca006.dty.all` — group HQ | `scope=GROUP`, excluded by the UNIT filter |
+| lists whose unit left CAPWATCH | the group outlived the org that justified it |
+
+Confirmed on both tenants: the cadet-side blocking set was `ca.all` plus the eight group HQs
+(006, 008, 070, 188, 205, 213, 303, 445), and the wing side showed the same eight orgs across
+`.cadets`/`.parents`/`.dty.all`. **The wing all-hands is in this population** — which is to say
+the group a member actually writes to was the one nothing would ever fix.
+
+DRY RUN by default. Scope is whatever the audit flags, so the audit stays the single definition
+of "should accept outside mail" and the two cannot drift apart. **Settings only — it never
+changes membership**, because the orgs involved are precisely the ones the sync does not model,
+and inventing a roster for them is a policy question, not a repair.
+
+### Added — `test/SquadronGroups.groupSettings.test.js`
+
+The managed key list is now pinned by test, in both directions: the delivery-governing
+keys are reconciled, everything else the callers pass is left to console/GAM. This
+setting has been wrong twice, once by applying nothing and once by nearly applying too
+much, so which keys are in the set is a decision worth holding still. 17 assertions.
 
 ## [2026-07-27] — units get told which parent addresses Google refuses
 
