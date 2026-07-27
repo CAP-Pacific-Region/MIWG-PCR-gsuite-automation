@@ -10,6 +10,62 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-27] — two spellings, one mailbox, one member quietly dropped
+
+`first.last@gmail.com` and `firstlast@gmail.com` are the same Google account. Dots carry no
+meaning on gmail.com and everything after a `+` is a tag. Google resolves all of it. String
+equality does not.
+
+So a group holding one spelling while CAPWATCH supplied another looked, to the diff, like a
+member to **add** and a stranger to **remove**. The add came back 409 "Member already exists"
+and was swallowed. The remove succeeded. **The member was dropped from their unit's list and
+only restored on the next run** — a day off the list, once per address change, with nothing in
+the log naming who it happened to.
+
+Found on the cadet tenant while chasing something else, and it has two shapes:
+
+| | What happens |
+|---|---|
+| Group holds one spelling, CAPWATCH sends the other | member removed, absent until the next run |
+| Both spellings in the desired set | one added, the other 409s **every run, forever** |
+
+### Changed — `utils.gs`
+
+`googleAccountKey()` reduces an address to the account it identifies. **Only gmail.com and
+googlemail.com are folded** — dots are significant everywhere else, and treating
+`a.member@example.org` and `amember@example.org` as one person would delete a real member. The
+result is a comparison key, never a deliverable address. Input that is not an address comes back
+unchanged rather than collapsing onto a shared key.
+
+`executeWithRetry()` gains an optional `quietCodes` list: statuses the **caller** handles as an
+expected outcome are still thrown, but no longer logged as errors on the way out. A 409 from a
+membership add means "already a member", which the caller treats as success — logging it at
+ERROR while the summary reported `errors: 0` taught readers that ERROR lines here are noise.
+
+### Changed — `SquadronGroups.gs` 1.8.0
+
+`diffGroupMembership_()` decides adds and removes, keyed on account identity, on both sides.
+Pure — no API calls, no logging — so the decisions are testable without Google. Add-before-remove
+ordering is unchanged; it is the safer order when the input data is suspect, and identity
+matching removes the need to reorder.
+
+A 409 now records **which member**, at INFO. Both membership bugs found this month were
+invisible in the log because this branch swallowed the address along with the error.
+
+### Added — a worklist for addresses Google refuses
+
+A 404 from `members.insert` on a gmail.com address means Google checked its own domain and found
+no such account: a typo or closed account in CAPWATCH. Code cannot fix those, and one ERROR line
+per failure buried in a run of thousands is not something anyone acts on. They are now collected
+per execution and reported once, as a short list a unit can take to eServices. Plus-addressed
+addresses are refused by the Directory API outright, and Gmail usernames permit only letters,
+digits and dots — two of the seven found on cadets were structurally impossible.
+
+### Added — `test/GroupMembership.identity.test.js`
+
+38 assertions, weighted toward **not merging people who merely look alike** as much as matching
+the ones who are the same. All addresses synthetic.
+
 ## [2026-07-26] — a missing welcome email is now detected, not stumbled over
 
 The resend below repairs a member you already know about. This is how you find out.
