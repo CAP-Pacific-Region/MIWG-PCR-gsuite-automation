@@ -722,6 +722,11 @@ no-ops elsewhere). State lives in the `Transitions` sheet. See the
   wing `.all` list); run it on the tenant that owns them (e.g. cadets). Since SquadronGroups.gs
   1.6.0 `updateAllSquadronGroups()` reconciles these to `ANYONE_CAN_POST` itself, so this is now a
   before/after check rather than a worklist.
+  `..._repairReceiveListPosting(dryRun)` — **DRY RUN by default**; fixes what that audit flags.
+  Needed because the sync only iterates **UNIT-scope** orgs, so it will never reach the wing
+  all-hands (`ca.all`), group-HQ lists (`ca006.all`, `ca006.dty.all`), or lists left behind by units
+  no longer in CAPWATCH. Settings only — it never changes who is in a group. Review with `()`,
+  apply with `(false)`.
   `..._stageOrphanedSquadronGroups()` — writes squadron groups whose list type is disabled for this
   tenant (via `SQUADRON_DISTRIBUTION_TOGGLES`) to the "Delete Groups" tab for review before deletion.
 - Destructive (double-check before running): `..._deleteGroup()`, `..._bulkDeleteGroupsFromSheet()`,

@@ -48,6 +48,28 @@ The sheet-driven path already enforced `ANYONE_CAN_POST`; it now manages
 receive-list audit's docs no longer describe cross-tenant fan-out as the only victim —
 a person writing across directly hits the identical wall.
 
+### Added — `groupAdministration_repairReceiveListPosting(dryRun)`
+
+Enforcing a setting on every sync only helps groups the sync visits. It reaches a list through
+`shouldCreateDistributionLists()`, which returns false for anything that is not **UNIT** scope,
+so three populations are permanently out of reach however often it runs:
+
+| | Why the sync never sees it |
+|---|---|
+| `ca.all@...` — the wing all-hands | no CAPWATCH org at all; the loop iterates orgs |
+| `ca006.all`, `ca006.dty.all` — group HQ | `scope=GROUP`, excluded by the UNIT filter |
+| lists whose unit left CAPWATCH | the group outlived the org that justified it |
+
+Confirmed on both tenants: the cadet-side blocking set was `ca.all` plus the eight group HQs
+(006, 008, 070, 188, 205, 213, 303, 445), and the wing side showed the same eight orgs across
+`.cadets`/`.parents`/`.dty.all`. **The wing all-hands is in this population** — which is to say
+the group a member actually writes to was the one nothing would ever fix.
+
+DRY RUN by default. Scope is whatever the audit flags, so the audit stays the single definition
+of "should accept outside mail" and the two cannot drift apart. **Settings only — it never
+changes membership**, because the orgs involved are precisely the ones the sync does not model,
+and inventing a roster for them is a policy question, not a repair.
+
 ### Added — `test/SquadronGroups.groupSettings.test.js`
 
 The managed key list is now pinned by test, in both directions: the delivery-governing
