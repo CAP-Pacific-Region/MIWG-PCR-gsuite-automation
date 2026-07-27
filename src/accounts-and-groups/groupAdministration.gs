@@ -554,11 +554,16 @@ function groupAdministration_deleteConfiguredGroups() {
 /**
  * Read-only audit of "receive-list" posting permissions.
  *
- * Cross-tenant fan-out (wing ca###.all -> cadet ca###.cadets@cawgcadets.org)
- * only delivers if the RECEIVING group accepts mail from the original, external
- * sender. A receiving sublist set to ALL_MEMBERS_CAN_POST or
- * ALL_IN_DOMAIN_CAN_POST silently rejects/holds forwarded wing mail; it
- * generally needs ANYONE_CAN_POST (ideally paired with spam moderation).
+ * The tenants are separate Workspace accounts, so a sender on the other one is
+ * external no matter that they are the same wing. A group set to
+ * ALL_MEMBERS_CAN_POST or ALL_IN_DOMAIN_CAN_POST therefore rejects/holds both a
+ * person writing across directly (a senior on the wing domain mailing
+ * ca.all@cawgcadets.org) and cross-tenant fan-out (wing ca###.all -> cadet
+ * ca###.cadets@cawgcadets.org), which arrives carrying the original sender.
+ * Either way the group needs ANYONE_CAN_POST, paired with spam moderation.
+ *
+ * SquadronGroups.gs 1.6.0 reconciles both settings on every
+ * updateAllSquadronGroups() run, so this is a before/after check on that.
  *
  * Run this on the tenant that OWNS the receiving groups (e.g. the cadets
  * tenant). It reads, per managed .cadets/.parents/.all group:

@@ -10,6 +10,51 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-27] — the other tenant is external, and the lists were told to reject external
+
+A senior on the wing domain could not post to `ca.all@cawgcadets.org`. Nothing was broken
+about the account or the address; the cadet-side all-hands lists sit at
+`ALL_IN_DOMAIN_CAN_POST`, and **`@cawgcap.org` is not that domain.** Two Workspace tenants
+means every sender on the far side is external, however much the same wing they are.
+
+`ANYONE_CAN_POST` is the only setting that admits them. Google has no value meaning
+"members plus my other domain", so this is the whole menu.
+
+### Changed — `SquadronGroups.gs` 1.6.0
+
+Managed distribution lists are now created at `ANYONE_CAN_POST` with
+`spamModerationLevel=MODERATE`, and `applyGroupSettings()` reconciles
+`whoCanPostMessage` and `spamModerationLevel` alongside `allowExternalMembers` on every
+sync. Running `updateAllSquadronGroups()` on a tenant repairs its existing lists.
+
+**Why this is now safe to enforce, having been unsafe in 1.2.9.** That version narrowed
+the managed keys to `allowExternalMembers` alone, because the callers passed
+`ALL_MEMBERS_CAN_POST` for every list and applying it would have dragged the cadet
+receive lists *down* from `ANYONE_CAN_POST` and silently re-broken the fan-out — which
+carries the original external sender and so fails for exactly the same reason this bug
+does. The callers now pass `ANYONE_CAN_POST`, so enforcement only ever moves a group
+toward accepting outside mail. The hazard was the value, not the key.
+
+**The openness is real and is not free.** `ANYONE_CAN_POST` accepts mail from anywhere on
+the internet, including cadet-facing lists. `spamModerationLevel` is managed in the same
+key list so the two cannot drift apart and no caller can widen posting while forgetting
+moderation. A list that must genuinely stay closed belongs outside the managed set, not
+hand-set in the console — the next sync overwrites that.
+
+### Changed — `UpdateGroups.gs` 1.8.1, `groupAdministration.gs` (comment only)
+
+The sheet-driven path already enforced `ANYONE_CAN_POST`; it now manages
+`spamModerationLevel` too, so the two paths agree about a group they both touch. The
+receive-list audit's docs no longer describe cross-tenant fan-out as the only victim —
+a person writing across directly hits the identical wall.
+
+### Added — `test/SquadronGroups.groupSettings.test.js`
+
+The managed key list is now pinned by test, in both directions: the delivery-governing
+keys are reconciled, everything else the callers pass is left to console/GAM. This
+setting has been wrong twice, once by applying nothing and once by nearly applying too
+much, so which keys are in the set is a decision worth holding still. 17 assertions.
+
 ## [2026-07-26] — a missing welcome email is now detected, not stumbled over
 
 The resend below repairs a member you already know about. This is how you find out.
