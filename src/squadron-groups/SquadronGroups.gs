@@ -519,8 +519,9 @@ function updateAllSquadronGroups() {
   // Clear cache to ensure fresh CAPWATCH data
   clearCache();
 
-  // Per-execution worklist; a slice reports the addresses IT was refused.
+  // Per-execution tallies; a slice reports what IT was refused.
   SQUADRON_REJECTED_MEMBERS_ = [];
+  SQUADRON_MEMBER_FAILURES_ = 0;
 
   const summary = {
     created: [],
@@ -606,12 +607,18 @@ function updateAllSquadronGroups() {
   summary.endTime = new Date().toISOString();
   summary.duration = new Date() - start;
   summary.rejectedAddresses = reportRejectedMemberAddresses_();
+  // 'errors' counts squadrons that threw. memberFailures counts individual adds
+  // and removes that failed underneath a squadron that otherwise succeeded — the
+  // two are not the same number, and reporting only the first reads as a clean
+  // run when members are missing from their lists.
+  summary.memberFailures = SQUADRON_MEMBER_FAILURES_;
 
   Logger.info('Squadron groups update completed', {
     duration: summary.duration + 'ms',
     created: summary.created.length,
     updated: summary.updated.length,
     errors: summary.errors.length,
+    memberFailures: summary.memberFailures,
     rejectedAddresses: summary.rejectedAddresses.length,
     processedSquadrons: summary.processedSquadrons,
     totalSquadrons: summary.totalSquadrons,
@@ -1859,6 +1866,7 @@ function updateGroupMembership(groupEmail, desiredMembers) {
         errorCode: err.details?.code
       });
       result.failed++;
+      SQUADRON_MEMBER_FAILURES_++;
     }
   }
 
@@ -1878,12 +1886,25 @@ function updateGroupMembership(groupEmail, desiredMembers) {
 var SQUADRON_REJECTED_MEMBERS_ = [];
 
 /**
+ * Every member add or remove that failed this execution, for any reason.
+ *
+ * updateGroupMembership() has always counted these into result.failed, and
+ * NOTHING has ever read that field — so a run where twelve members could not be
+ * added still signed off with errors: 0. The run summary counts squadron-level
+ * throws only, and a per-member failure is not one of those. Counted here so the
+ * summary can stop overstating its own health.
+ */
+var SQUADRON_MEMBER_FAILURES_ = 0;
+
+/**
  * @param {string} groupEmail
  * @param {string} memberEmail
  * @param {Error} err
  * @returns {void}
  */
 function recordRejectedMemberAddress_(groupEmail, memberEmail, err) {
+  SQUADRON_MEMBER_FAILURES_++;
+
   const code = (err && err.details && err.details.code) || 0;
   if (code !== ERROR_CODES.NOT_FOUND) return;
 
@@ -1896,16 +1917,36 @@ function recordRejectedMemberAddress_(groupEmail, memberEmail, err) {
 /**
  * Logs the rejected-address worklist, if any, and clears it.
  *
- * @returns {Array<Object>} What was reported
+ * Grouped by ADDRESS rather than listed per occurrence: one bad contact on a
+ * cadet's record reaches every list that cadet belongs to, and reading the same
+ * address three times invites someone to fix it once and assume they are done.
+ * The unit has one thing to correct in eServices, so it appears once.
+ *
+ * The per-failure ERROR lines are still emitted where they happen — a failed add
+ * IS an error and carries context this summary does not. This is the actionable
+ * rollup, not a replacement for them.
+ *
+ * @returns {Array<Object>} What was reported, one entry per address
  */
 function reportRejectedMemberAddresses_() {
-  const rejected = SQUADRON_REJECTED_MEMBERS_.slice();
+  const raw = SQUADRON_REJECTED_MEMBERS_.slice();
   SQUADRON_REJECTED_MEMBERS_ = [];
 
-  if (rejected.length === 0) return rejected;
+  if (raw.length === 0) return [];
+
+  const byMember = {};
+  raw.forEach(row => {
+    if (!byMember[row.member]) byMember[row.member] = { member: row.member, groups: [] };
+    if (byMember[row.member].groups.indexOf(row.group) === -1) {
+      byMember[row.member].groups.push(row.group);
+    }
+  });
+
+  const rejected = Object.keys(byMember).sort().map(m => byMember[m]);
 
   Logger.warn('Addresses Google would not accept as group members — fix these in eServices', {
-    count: rejected.length,
+    addresses: rejected.length,
+    occurrences: raw.length,
     hint: 'Google verifies gmail.com addresses against real accounts; plus-addressing ' +
       'is refused outright and Gmail usernames allow only letters, digits and dots.',
     rejected: rejected.slice(0, 100)

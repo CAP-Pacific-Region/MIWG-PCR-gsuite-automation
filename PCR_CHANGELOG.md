@@ -56,10 +56,25 @@ invisible in the log because this branch swallowed the address along with the er
 
 A 404 from `members.insert` on a gmail.com address means Google checked its own domain and found
 no such account: a typo or closed account in CAPWATCH. Code cannot fix those, and one ERROR line
-per failure buried in a run of thousands is not something anyone acts on. They are now collected
-per execution and reported once, as a short list a unit can take to eServices. Plus-addressed
-addresses are refused by the Directory API outright, and Gmail usernames permit only letters,
-digits and dots — two of the seven found on cadets were structurally impossible.
+per failure buried in a run of thousands is not something anyone acts on. They are now also
+collected per execution and reported once, as a short list a unit can take to eServices —
+**alongside** the per-failure ERROR lines, not instead of them; a failed add is a real error and
+carries context the rollup does not. Grouped by address rather than per occurrence, because one
+bad contact on a cadet's record reaches every list that cadet belongs to, and reading the same
+address three times invites someone to fix it once and assume they are done.
+
+First live run on cadets found **12 occurrences across 11 addresses** — one plus-addressed, one
+with underscores in a Gmail username (structurally impossible), the rest well-formed but not
+resolving.
+
+### Fixed — a run that could not add twelve members still reported `errors: 0`
+
+`updateGroupMembership()` has always counted failures into `result.failed`, and **nothing has
+ever read that field.** The run summary's `errors` counts squadrons that threw; a member add
+failing underneath a squadron that otherwise succeeded is not one of those. So the first run of
+the worklist above sat next to `errors: 0` — the same shape of dishonest log that hid the starved
+squadron tail for two weeks. `memberFailures` is now carried in the summary beside `errors`,
+because they are different numbers and only one of them was being told.
 
 ### Added — `test/GroupMembership.identity.test.js`
 
