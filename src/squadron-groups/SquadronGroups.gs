@@ -11,8 +11,15 @@
  *   of 68 squadrons had never been reached, on any run, for weeks. Their lists kept
  *   stale settings and their Cadet Lite members were never added. A stop is not a
  *   finish, and the summary now says which one happened. No-argument behavior is
- *   unchanged. (Assumes v1.6.0 from the posting-permissions branch lands first;
- *   if it does not, this file simply skips that number.)
+ *   unchanged.
+ *   v1.6.0 — managed distribution lists are created at ANYONE_CAN_POST
+ *   with spamModerationLevel MODERATE, and applyGroupSettings() now enforces
+ *   whoCanPostMessage and spamModerationLevel alongside allowExternalMembers.
+ *   A senior on the wing tenant could not post to ca.all@cawgcadets.org: the
+ *   cadet-side all-hands lists sit at ALL_IN_DOMAIN_CAN_POST, which treats the
+ *   other tenant as external. Posting policy was previously left to console/GAM
+ *   (see v1.2.9), so nothing reconciled it. Widening the scope is safe now only
+ *   because the callers pass ANYONE_CAN_POST — see the comment in the body.
  *   v1.5.0 — command-staff DLs now follow what the unit's type actually
  *   establishes. Every cadet and composite squadron was getting a
  *   ca###.deputy-commander DL that no CAPWATCH duty can fill, because CAP
@@ -1013,6 +1020,7 @@ function updatePublicContactGroup(unitPrefix, squadron, squadronMembers) {
       allowExternalMembers: 'true',
       whoCanContactOwner: 'ANYONE_CAN_CONTACT',
       messageModerationLevel: 'MODERATE_NONE',
+      spamModerationLevel: 'MODERATE',
       enableCollaborativeInbox: 'true',
       includeInGlobalAddressList: SQUADRON_GROUP_CONFIG.DISTRIBUTION_LIST.INCLUDE_IN_GAL ? 'true' : 'false',
       replyTo: 'REPLY_TO_SENDER',
@@ -1135,10 +1143,17 @@ function updateDistributionLists(unitPrefix, squadron, squadronMembers, allMembe
         whoCanJoin: 'INVITED_CAN_JOIN',
         whoCanViewMembership: 'ALL_MEMBERS_CAN_VIEW',
         whoCanViewGroup: 'ALL_MEMBERS_CAN_VIEW',
-        whoCanPostMessage: 'ALL_MEMBERS_CAN_POST',
+        // ANYONE_CAN_POST, not ALL_MEMBERS_CAN_POST: a distribution list has to
+        // accept mail from senders who are not members of it — the other tenant's
+        // members (a senior on the wing domain writing to ca.all@cawgcadets.org),
+        // and the original external sender on cross-tenant fan-out. Google has no
+        // "members plus my other domain" value, so the openness is paired with
+        // spam moderation below.
+        whoCanPostMessage: 'ANYONE_CAN_POST',
         allowExternalMembers: 'true',
         whoCanContactOwner: 'ALL_MEMBERS_CAN_CONTACT',
         messageModerationLevel: 'MODERATE_NONE',
+        spamModerationLevel: 'MODERATE',
         enableCollaborativeInbox: 'true',
         includeInGlobalAddressList: SQUADRON_GROUP_CONFIG.DISTRIBUTION_LIST.INCLUDE_IN_GAL ? 'true' : 'false',
         replyTo: 'REPLY_TO_SENDER'
@@ -1957,14 +1972,14 @@ function getOrCreateGroup(email, name, description, settings = {}) {
  * be patched separately through the AdminGroupsSettings advanced service
  * (enabled in appsscript.json; scope apps.groups.settings).
  *
- * Scope is intentionally limited to allowExternalMembers (see the comment in
- * the body): it is the only setting the reported cross-tenant delivery bug
- * requires, and enforcing the others would clobber live posting policy —
- * notably the ANYONE_CAN_POST on the cadet-tenant receive lists. Only patched
- * when the live value differs, so it is safe to run on every sync.
+ * Scope is limited to the three keys that decide whether a message from outside
+ * the group reaches it — allowExternalMembers, whoCanPostMessage and
+ * spamModerationLevel (see the comment in the body). Everything else the callers
+ * pass (visibility, collaborative inbox, reply-to) stays console/GAM territory.
+ * Only patched when the live value differs, so it is safe to run on every sync.
  *
  * @param {string} email - Group email address
- * @param {Object} settings - Settings to apply (only allowExternalMembers is enforced)
+ * @param {Object} settings - Settings to apply (only the managed keys are enforced)
  * @returns {void}
  */
 function applyGroupSettings(email, settings) {
@@ -1972,21 +1987,25 @@ function applyGroupSettings(email, settings) {
     const groupEmail = String(email || '').trim().toLowerCase();
     if (!groupEmail) return;
 
-    // Deliberately enforce ONLY allowExternalMembers.
+    // Enforce only the keys that govern inbound delivery from outside the group.
     //
-    // The caller's settings objects also carry whoCanPostMessage,
-    // whoCanViewMembership, enableCollaborativeInbox, etc., but those were never
-    // actually applied while this function was a stub, so live groups carry
-    // whatever posting/visibility policy they were given via console/GAM. In
-    // particular the cross-tenant cadet receive lists (ca###.cadets@cawgcadets.org)
-    // are live at ANYONE_CAN_POST, which is what lets them accept mail fanned out
-    // from the wing .all lists. The code passes ALL_MEMBERS_CAN_POST for every
-    // distribution list, so enforcing whoCanPostMessage here would flip those
-    // receivers to ALL_MEMBERS_CAN_POST and silently re-break cadet delivery.
-    // Only allowExternalMembers is needed to fix the reported bug (nesting the
-    // external cadet group into the wing .all list); leave posting policy alone.
+    // whoCanPostMessage was deliberately NOT enforced in v1.2.9, because the
+    // callers passed ALL_MEMBERS_CAN_POST for every distribution list and applying
+    // that would have flipped the cross-tenant cadet receive lists
+    // (ca###.cadets@cawgcadets.org, live at ANYONE_CAN_POST) into rejecting the
+    // fan-out, which carries the original external sender. The callers now pass
+    // ANYONE_CAN_POST for every managed list, so enforcing the key moves every
+    // group TOWARD accepting outside mail rather than away from it — the hazard
+    // that justified the narrow scope is gone.
+    //
+    // ANYONE_CAN_POST is genuinely open to the internet; Google has no value
+    // meaning "members plus my other tenant". spamModerationLevel is managed
+    // alongside it so the openness always arrives with moderation attached and
+    // cannot be widened by a caller that forgets it.
     const managedKeys = [
-      'allowExternalMembers'
+      'allowExternalMembers',
+      'whoCanPostMessage',
+      'spamModerationLevel'
     ];
 
     const desired = {};
@@ -2026,7 +2045,7 @@ function applyGroupSettings(email, settings) {
     if (Object.keys(patch).length === 0) {
       Logger.info('Group settings already correct', {
         email: groupEmail,
-        externalMembers: desired.allowExternalMembers
+        settings: desired
       });
       return;
     }
@@ -3721,8 +3740,9 @@ function testGroupSettings() {
         whoCanJoin: 'INVITED_CAN_JOIN',
         whoCanViewMembership: 'ALL_MEMBERS_CAN_VIEW',
         whoCanViewGroup: 'ALL_MEMBERS_CAN_VIEW',
-        whoCanPostMessage: 'ALL_MEMBERS_CAN_POST',
+        whoCanPostMessage: 'ANYONE_CAN_POST',
         allowExternalMembers: 'true',
+        spamModerationLevel: 'MODERATE',
         enableCollaborativeInbox: 'true',
         includeInGlobalAddressList: 'true'
       }

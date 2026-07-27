@@ -1,10 +1,14 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.8.0
+ * Version: 1.8.1
  * Filename: UpdateGroups.gs
- * Saved: 2026-07-26
- * Changes: 1.8.0: updateEmailGroups() takes an optional deadline and resume
+ * Saved: 2026-07-27
+ * Changes: 1.8.1: managed groups also get spamModerationLevel MODERATE. This
+ *   path already enforced ANYONE_CAN_POST; the moderation setting is what makes
+ *   that openness defensible, and SquadronGroups.gs 1.6.0 now manages the same
+ *   pair, so the two paths no longer disagree about a group they both touch.
+ *   1.8.0: updateEmailGroups() takes an optional deadline and resume
  *   position, and new updateEmailGroupsBatch() drives it in slices that fit
  *   inside the Apps Script execution limit. A run's length tracks the number of
  *   membership CHANGES, so the day a rule changes and thousands of memberships
@@ -147,7 +151,8 @@ function updateEmailGroups(options) {
         applyManagedGroupSettings_(groupEmail, {
           allowExternalMembers: !!groupAllowExternalByName[baseGroupName],
           whoCanViewMembership: 'ALL_IN_DOMAIN_CAN_VIEW',
-          whoCanPostMessage: 'ANYONE_CAN_POST'
+          whoCanPostMessage: 'ANYONE_CAN_POST',
+          spamModerationLevel: 'MODERATE'
         });
       }
 
@@ -3008,7 +3013,8 @@ function applyAllowExternalMembersSetting_(groupEmail, allowExternalMembers) {
  * preserving the per-group allowExternalMembers behavior from the Groups sheet.
  *
  * @param {string} groupEmail
- * @param {{allowExternalMembers?: boolean, whoCanViewMembership?: string}} settings
+ * @param {{allowExternalMembers?: boolean, whoCanViewMembership?: string,
+ *          whoCanPostMessage?: string, spamModerationLevel?: string}} settings
  * @returns {void}
  */
 function applyManagedGroupSettings_(groupEmail, settings) {
@@ -3023,6 +3029,10 @@ function applyManagedGroupSettings_(groupEmail, settings) {
     }
     if (settings.whoCanPostMessage) {
       desired.whoCanPostMessage = settings.whoCanPostMessage;
+    }
+    // ANYONE_CAN_POST is open to the internet, so it travels with moderation.
+    if (settings.spamModerationLevel) {
+      desired.spamModerationLevel = settings.spamModerationLevel;
     }
 
     if (Object.keys(desired).length === 0) return;

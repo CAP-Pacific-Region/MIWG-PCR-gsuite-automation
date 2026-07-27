@@ -77,6 +77,72 @@ which parks nothing. Hence the batch driver's shorter default.
 20 assertions on the resolver, weighted toward the ways a resume could silently skip: a list
 that grew, a list that shrank, an index past the end, and malformed state. Redundant work is
 always preferred to a possible skip.
+## [2026-07-27] — the other tenant is external, and the lists were told to reject external
+
+A senior on the wing domain could not post to `ca.all@cawgcadets.org`. Nothing was broken
+about the account or the address; the cadet-side all-hands lists sit at
+`ALL_IN_DOMAIN_CAN_POST`, and **`@cawgcap.org` is not that domain.** Two Workspace tenants
+means every sender on the far side is external, however much the same wing they are.
+
+`ANYONE_CAN_POST` is the only setting that admits them. Google has no value meaning
+"members plus my other domain", so this is the whole menu.
+
+### Changed — `SquadronGroups.gs` 1.6.0
+
+Managed distribution lists are now created at `ANYONE_CAN_POST` with
+`spamModerationLevel=MODERATE`, and `applyGroupSettings()` reconciles
+`whoCanPostMessage` and `spamModerationLevel` alongside `allowExternalMembers` on every
+sync. Running `updateAllSquadronGroups()` on a tenant repairs its existing lists.
+
+**Why this is now safe to enforce, having been unsafe in 1.2.9.** That version narrowed
+the managed keys to `allowExternalMembers` alone, because the callers passed
+`ALL_MEMBERS_CAN_POST` for every list and applying it would have dragged the cadet
+receive lists *down* from `ANYONE_CAN_POST` and silently re-broken the fan-out — which
+carries the original external sender and so fails for exactly the same reason this bug
+does. The callers now pass `ANYONE_CAN_POST`, so enforcement only ever moves a group
+toward accepting outside mail. The hazard was the value, not the key.
+
+**The openness is real and is not free.** `ANYONE_CAN_POST` accepts mail from anywhere on
+the internet, including cadet-facing lists. `spamModerationLevel` is managed in the same
+key list so the two cannot drift apart and no caller can widen posting while forgetting
+moderation. A list that must genuinely stay closed belongs outside the managed set, not
+hand-set in the console — the next sync overwrites that.
+
+### Changed — `UpdateGroups.gs` 1.8.1, `groupAdministration.gs` (comment only)
+
+The sheet-driven path already enforced `ANYONE_CAN_POST`; it now manages
+`spamModerationLevel` too, so the two paths agree about a group they both touch. The
+receive-list audit's docs no longer describe cross-tenant fan-out as the only victim —
+a person writing across directly hits the identical wall.
+
+### Added — `groupAdministration_repairReceiveListPosting(dryRun)`
+
+Enforcing a setting on every sync only helps groups the sync visits. It reaches a list through
+`shouldCreateDistributionLists()`, which returns false for anything that is not **UNIT** scope,
+so three populations are permanently out of reach however often it runs:
+
+| | Why the sync never sees it |
+|---|---|
+| `ca.all@...` — the wing all-hands | no CAPWATCH org at all; the loop iterates orgs |
+| `ca006.all`, `ca006.dty.all` — group HQ | `scope=GROUP`, excluded by the UNIT filter |
+| lists whose unit left CAPWATCH | the group outlived the org that justified it |
+
+Confirmed on both tenants: the cadet-side blocking set was `ca.all` plus the eight group HQs
+(006, 008, 070, 188, 205, 213, 303, 445), and the wing side showed the same eight orgs across
+`.cadets`/`.parents`/`.dty.all`. **The wing all-hands is in this population** — which is to say
+the group a member actually writes to was the one nothing would ever fix.
+
+DRY RUN by default. Scope is whatever the audit flags, so the audit stays the single definition
+of "should accept outside mail" and the two cannot drift apart. **Settings only — it never
+changes membership**, because the orgs involved are precisely the ones the sync does not model,
+and inventing a roster for them is a policy question, not a repair.
+
+### Added — `test/SquadronGroups.groupSettings.test.js`
+
+The managed key list is now pinned by test, in both directions: the delivery-governing
+keys are reconciled, everything else the callers pass is left to console/GAM. This
+setting has been wrong twice, once by applying nothing and once by nearly applying too
+much, so which keys are in the set is a decision worth holding still. 17 assertions.
 
 ## [2026-07-26] — a missing welcome email is now detected, not stumbled over
 
