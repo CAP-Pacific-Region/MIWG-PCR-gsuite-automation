@@ -709,10 +709,21 @@ Carries a converting cadet's mail, Drive, and contacts to their new seniors-tena
 account before the cadet account is deleted (`TRANSITION_CONFIG.ROLE === 'source'`;
 no-ops elsewhere). State lives in the `Transitions` sheet. See the
 [module README](../src/accounts-and-groups/README.md#4-cadettransitiongs---cadet--senior-account-transition).
-- `armTransitionTriggers()` — install the six daily lifecycle triggers (detect →
-  migrate → remind, 3–8 AM). **Run as `automation@cawgcadets.org`** — triggers are owned by
-  their creator and the completion email's Send-As is that account.
-  `disarmTransitionTriggers()` / `listTransitionTriggers()` manage/inspect them.
+- `armTransitionPipelineTrigger(hour)` — **preferred.** Installs **one** daily trigger
+  (`runCadetTransitionPipeline`, 03:00 by default) that runs all six phases in order,
+  replacing the six separate ones and **freeing five of the 20 trigger slots**. Deletes before
+  creating, so it needs no free slot. **Run as `automation@cawgcadets.org`.**
+  - Safe to collapse: the phases were never an hour apart for duration — each acts only on rows
+    the previous made ready, and Gmail/Drive/Contacts already self-limit and schedule their own
+    continuation triggers. Those continuations are untouched.
+  - A failing phase is logged and the rest still run, exactly as six triggers behaved.
+  - The phase it stopped at is parked and resumed next run, so a short run cannot starve the
+    late phases. `checkTransitionPipelineStatus()` shows where it will start.
+- `armTransitionTriggers()` — the original **six** daily lifecycle triggers (detect →
+  migrate → remind, 3–8 AM), if you want them back. **Run as `automation@cawgcadets.org`** —
+  triggers are owned by their creator and the completion email's Send-As is that account.
+  `disarmTransitionTriggers()` / `listTransitionTriggers()` manage/inspect them; `list` shows
+  the consolidated driver too.
 - `detectCadetTransitions()`, `resolveTransitionDestinations()` — open rows, resolve destinations.
 - `migrateCadetTransitions(notify)`, `migrateAllTransitionDrives()`, `migrateAllTransitionContacts()` — the three migration phases (resumable).
 - `previewCadetTransitions()`, `previewCadetTransitionMigration()`, `previewSingleTransitionDrive(capid)`, `previewSingleTransitionContacts(capid)` — **preview** the queue and prove credentials without copying.

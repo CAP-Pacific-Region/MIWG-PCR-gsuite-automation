@@ -1,9 +1,19 @@
 /**
  * Cadet → senior tenant transition.
  *
- * Version: 1.1.0
- * Date: 2026-07-17
- * Changes: 1.1.0 — added the six-trigger scheduler (armTransitionTriggers /
+ * Version: 1.2.0
+ * Date: 2026-07-27
+ * Changes: 1.2.0 — runCadetTransitionPipeline() runs all six phases from ONE
+ *   trigger, freeing five of the twenty Apps Script allows per script. Safe to
+ *   collapse because the phases were never an hour apart for duration — each
+ *   acts only on rows the previous made ready, and the three expensive ones
+ *   already self-limit and schedule their own continuations. Preserves the two
+ *   properties six triggers gave for free: a failing phase does not stop the
+ *   others, and order is kept. Parks the phase it stopped at so a short run
+ *   cannot starve the late phases. armTransitionPipelineTrigger() swaps the six
+ *   for the one; armTransitionTriggers() still installs the six for anyone who
+ *   wants them back.
+ *   1.1.0 — added the six-trigger scheduler (armTransitionTriggers /
  *   disarm / list) and the daily close reminder wiring; 1.0.0 — initial release.
  *   Detection + state for the cadet→senior lifecycle; the Transitions sheet is
  *   authoritative for who is mid-flight.
@@ -891,13 +901,271 @@ function disarmTransitionTriggers() {
   return { removed: removed };
 }
 
+// ============================================================================
+// ONE-TRIGGER PIPELINE
+// ============================================================================
+
+/**
+ * The pipeline handler, and where its position is parked between runs.
+ *
+ * Apps Script allows 20 triggers per script per user, and the six lifecycle
+ * phases were six of them. Running them from one driver returns five slots
+ * without changing what any phase does.
+ */
+const TRANSITION_PIPELINE_FN_ = 'runCadetTransitionPipeline';
+const TRANSITION_PIPELINE_PHASE_PROP_ = 'TRANSITION_PIPELINE_PHASE';
+const TRANSITION_PIPELINE_SAVED_AT_PROP_ = 'TRANSITION_PIPELINE_SAVED_AT';
+
+/**
+ * Wall-clock budget for one pipeline run, in minutes. These tenants allow 30;
+ * 25 leaves room to park the position and log.
+ */
+const TRANSITION_PIPELINE_BUDGET_MIN_ = 25;
+
+/**
+ * Runs the transition lifecycle phases in order, from one trigger.
+ *
+ * WHY THIS IS SAFE TO COLLAPSE. The six phases were never an hour apart because
+ * each takes an hour — they are a pipeline where every phase acts only on rows
+ * the previous one made ready, and the schedule comment has always said a member
+ * who misses a phase today is picked up tomorrow, well inside the 14/90-day
+ * windows. The three expensive phases (Gmail, Drive, Contacts) additionally
+ * self-limit and schedule their OWN continuation triggers a minute out, so none
+ * of them needs a private 30-minute window to make progress.
+ *
+ * THREE BEHAVIOURS OF THE SIX-TRIGGER SETUP THAT ARE PRESERVED DELIBERATELY:
+ *
+ *   1. A failing phase does not stop the others. Six separate triggers meant a
+ *      3 a.m. exception never prevented the 4 a.m. run. Each phase here is
+ *      caught and logged, and the pipeline carries on — aborting the rest would
+ *      quietly make the system less resilient than the thing it replaced.
+ *
+ *   2. Order is kept. detect → resolve → Gmail → Drive → Contacts → remind.
+ *
+ *   3. Continuation triggers are untouched. They belong to the phases, not to
+ *      this driver, and are how the heavy work actually drains.
+ *
+ * AND ONE THAT IS NEW. The run parks the phase it stopped at and resumes there
+ * next time, wrapping when the cycle completes. Without that, a day where the
+ * budget ran out mid-list would run the same early phases and never reach the
+ * late ones — which is exactly how nine squadrons went unvisited for weeks in
+ * the group sync. A phase list is short enough that it would have taken far
+ * longer to notice.
+ *
+ * @param {number} [budgetMinutes=25] - Wall-clock budget for THIS execution
+ * @returns {Object} Summary of the run
+ */
+function runCadetTransitionPipeline(budgetMinutes) {
+  const summary = { ran: [], failed: [], skipped: [], complete: false, startedAtPhase: 0 };
+
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    Logger.info('Transition pipeline skipped — not the source tenant', {
+      role: TRANSITION_CONFIG.ROLE || '(off)'
+    });
+    return summary;
+  }
+
+  // Each phase is dispatched by name so the parked position survives a deploy:
+  // an index into a list of names means the same thing after a push, where a
+  // parked function reference would not.
+  const phases = {
+    detectCadetTransitions: detectCadetTransitions,
+    resolveTransitionDestinations: resolveTransitionDestinations,
+    // Called with no argument, exactly as a time-driven trigger effectively
+    // does: migrateCadetTransitions coerces anything that is not false to
+    // "notify on", so this preserves the notification behaviour it had.
+    migrateCadetTransitions: migrateCadetTransitions,
+    migrateAllTransitionDrives: migrateAllTransitionDrives,
+    migrateAllTransitionContacts: migrateAllTransitionContacts,
+    remindPendingTransitionCloses: remindPendingTransitionCloses
+  };
+
+  const order = TRANSITION_TRIGGER_FUNCTIONS_;
+  const budgetMs = Math.max(1, Number(budgetMinutes || TRANSITION_PIPELINE_BUDGET_MIN_)) * 60 * 1000;
+  const deadline = Date.now() + budgetMs;
+
+  let index = loadTransitionPipelinePhase_(order.length);
+  summary.startedAtPhase = index;
+
+  if (index > 0) {
+    Logger.info('Resuming transition pipeline', {
+      atPhase: index,
+      phase: order[index],
+      note: 'A previous run stopped here on time.'
+    });
+  }
+
+  for (; index < order.length; index++) {
+    const name = order[index];
+
+    if (Date.now() >= deadline) {
+      Logger.warn('Transition pipeline out of time — parking position', {
+        stoppedBefore: name,
+        phase: index,
+        remaining: order.length - index
+      });
+      summary.skipped = order.slice(index);
+      break;
+    }
+
+    try {
+      phases[name]();
+      summary.ran.push(name);
+    } catch (e) {
+      // Deliberately not rethrown: see behaviour (1) above.
+      Logger.error('Transition phase failed — continuing with the next', {
+        phase: name,
+        errorMessage: e.message
+      });
+      summary.failed.push({ phase: name, errorMessage: e.message });
+    }
+  }
+
+  summary.complete = index >= order.length;
+  saveTransitionPipelinePhase_(summary.complete ? 0 : index);
+
+  Logger.info('Transition pipeline run complete', {
+    ran: summary.ran.length,
+    failed: summary.failed.length,
+    skipped: summary.skipped.length,
+    complete: summary.complete,
+    nextPhase: summary.complete ? 0 : index
+  });
+
+  return summary;
+}
+
+/**
+ * @param {number} phaseCount - Length of the phase list, to reject stale indices
+ * @returns {number} Phase to start from
+ */
+function loadTransitionPipelinePhase_(phaseCount) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const raw = props.getProperty(TRANSITION_PIPELINE_PHASE_PROP_);
+    const index = parseInt(raw, 10);
+    if (!isFinite(index) || index <= 0) return 0;
+
+    // A position parked before the phase list changed shape means nothing.
+    // Starting over re-runs phases that are idempotent; resuming into the wrong
+    // one skips work silently.
+    if (index >= phaseCount) {
+      Logger.warn('Parked transition phase is past the end of the list — starting over', {
+        parked: index,
+        phases: phaseCount
+      });
+      return 0;
+    }
+
+    return index;
+  } catch (e) {
+    Logger.warn('Could not read the parked transition phase; starting over', {
+      errorMessage: e.message
+    });
+    return 0;
+  }
+}
+
+/**
+ * @param {number} index - Phase to resume at; 0 when the cycle completed
+ * @returns {void}
+ */
+function saveTransitionPipelinePhase_(index) {
+  try {
+    PropertiesService.getScriptProperties().setProperties({
+      [TRANSITION_PIPELINE_PHASE_PROP_]: String(index),
+      [TRANSITION_PIPELINE_SAVED_AT_PROP_]: new Date().toISOString()
+    });
+  } catch (e) {
+    Logger.warn('Could not park the transition pipeline position', { errorMessage: e.message });
+  }
+}
+
+/**
+ * Installs ONE daily trigger for the whole lifecycle, replacing the six.
+ *
+ * Deletes before it creates, so the swap needs no free slot on a project at the
+ * 20-trigger ceiling — which is the reason to do this at all. Continuation
+ * triggers are left alone: they belong to the phases.
+ *
+ * ⚠ RUN THIS AS THE AUTOMATION ACCOUNT. Triggers are owned by whoever creates
+ * them, and the completion mail sends under the automation account's Send-As.
+ *
+ * @param {number} [hour=3] - Hour of day to run, 0-23, script timezone
+ * @returns {{removed: number, installed: string, hour: number}}
+ */
+function armTransitionPipelineTrigger(hour) {
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    throw new Error('Transition triggers belong only on the source (cadets) tenant');
+  }
+
+  const atHour = (hour === undefined || hour === null) ? 3 : Number(hour);
+  if (!isFinite(atHour) || atHour < 0 || atHour > 23) {
+    throw new Error('hour must be 0-23; got ' + hour);
+  }
+
+  let removed = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    const handler = t.getHandlerFunction();
+    if (TRANSITION_TRIGGER_FUNCTIONS_.indexOf(handler) > -1 ||
+        handler === TRANSITION_PIPELINE_FN_) {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
+  });
+
+  try {
+    ScriptApp.newTrigger(TRANSITION_PIPELINE_FN_)
+      .timeBased().everyDays(1).atHour(atHour).create();
+  } catch (e) {
+    Logger.error('Could not install the transition pipeline trigger', {
+      errorMessage: e.message,
+      removed: removed,
+      warning: 'The transition lifecycle now has NO trigger. Free a slot and re-run this.'
+    });
+    throw e;
+  }
+
+  Logger.info('Armed the single transition pipeline trigger', {
+    handler: TRANSITION_PIPELINE_FN_,
+    atHour: atHour,
+    removed: removed,
+    note: 'Confirm in the Triggers panel that the owner is the automation account'
+  });
+
+  console.log('✅ One daily trigger now runs the whole lifecycle (replaced ' + removed + ').');
+  console.log('Freed ' + Math.max(0, removed - 1) + ' trigger slot(s).');
+  console.log('Close/delete is still NOT automated — closeCompletedTransitions(false) stays manual.');
+
+  return { removed: removed, installed: TRANSITION_PIPELINE_FN_, hour: atHour };
+}
+
+/**
+ * Read-only: which phase the next pipeline run will start from.
+ * @returns {void}
+ */
+function checkTransitionPipelineStatus() {
+  const props = PropertiesService.getScriptProperties();
+  const index = parseInt(props.getProperty(TRANSITION_PIPELINE_PHASE_PROP_), 10) || 0;
+  const savedAt = props.getProperty(TRANSITION_PIPELINE_SAVED_AT_PROP_) || '(never)';
+  console.log('Next run starts at phase ' + index + ' of ' + TRANSITION_TRIGGER_FUNCTIONS_.length +
+    ' (' + TRANSITION_TRIGGER_FUNCTIONS_[index] + ')');
+  console.log('Position last written: ' + savedAt);
+  if (index === 0) console.log('0 means the last run completed the full cycle.');
+}
+
 /**
  * Read-only: lists the transition triggers currently installed and who would
  * own them. Run to confirm state after arming.
  */
 function listTransitionTriggers() {
+  // Includes the consolidated driver: filtering on the six phase handlers alone
+  // would report "none installed" on a project running the pipeline, which is
+  // the opposite of true.
   const mine = ScriptApp.getProjectTriggers().filter(function (t) {
-    return TRANSITION_TRIGGER_FUNCTIONS_.indexOf(t.getHandlerFunction()) > -1;
+    const handler = t.getHandlerFunction();
+    return TRANSITION_TRIGGER_FUNCTIONS_.indexOf(handler) > -1 ||
+      handler === TRANSITION_PIPELINE_FN_;
   });
   if (!mine.length) {
     console.log('No transition lifecycle triggers installed.');

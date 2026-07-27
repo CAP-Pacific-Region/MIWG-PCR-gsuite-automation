@@ -278,6 +278,43 @@ keys are reconciled, everything else the callers pass is left to console/GAM. Th
 setting has been wrong twice, once by applying nothing and once by nearly applying too
 much, so which keys are in the set is a decision worth holding still. 17 assertions.
 
+## [2026-07-27] — six transition triggers become one, freeing five slots
+
+Apps Script allows **20 triggers per script per user**, and the cadets project was at 20 — six of
+them the cadet→senior lifecycle, one per phase. Adding anything meant displacing something.
+
+### Added — `CadetTransition.gs` 1.2.0
+
+```
+armTransitionPipelineTrigger()      // one daily trigger, 03:00; replaces the six
+runCadetTransitionPipeline()        // the driver; run by hand to test
+checkTransitionPipelineStatus()     // which phase the next run starts from
+```
+
+**Collapsing them is safe, and the existing scheduler said why.** The phases were never an hour
+apart because each takes an hour — the comment in `armTransitionTriggers()` has always read
+*"each phase only acts on rows the previous one made ready, so a member who does not finish one
+phase in a day is simply picked up the next day."* And the three expensive phases — Gmail, Drive,
+Contacts — already self-limit and schedule their **own** continuation triggers a minute out, so
+none of them ever needed a private 30-minute window to make progress. Those continuations are
+untouched; they belong to the phases.
+
+**Two properties six triggers gave for free, kept deliberately:**
+
+| | |
+|---|---|
+| A failing phase does not stop the others | Six triggers meant a 3 a.m. exception never prevented the 4 a.m. run. Each phase is caught and logged and the pipeline carries on — aborting would quietly make this *less* resilient than what it replaces. |
+| Order is preserved | detect → resolve → Gmail → Drive → Contacts → remind |
+
+**And one that is new.** The run parks the phase it stopped at and resumes there, wrapping when
+the cycle completes. Without it, a day that ran out of budget mid-list would re-run the early
+phases and never reach the late ones — which is precisely how nine squadrons went unvisited for
+weeks in the group sync. On a six-item list that would have taken far longer to notice.
+
+`armTransitionTriggers()` still installs the original six for anyone who wants them back, and
+`listTransitionTriggers()` now reports the consolidated driver too — filtering on the six phase
+handlers alone would have said "none installed" on a project running the pipeline.
+
 ## [2026-07-27] — the trigger repoint, as one call instead of three panel steps
 
 Merging the resume fix changed nothing on its own: the daily trigger still pointed at
