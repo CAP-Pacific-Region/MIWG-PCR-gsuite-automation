@@ -634,6 +634,10 @@ inserting and updates the existing account in place instead (see `UpdateMembers.
 - `updateAllSquadronGroupsBatch(budgetMinutes)` / `checkSquadronGroupsBatchStatus()` /
   `resetSquadronGroupsBatchProgress()` — **time-sliced** (25 min default); uses the whole budget,
   so a 68-unit wing comes round in a day or two. **This is what the daily trigger should call.**
+- `installSquadronGroupsBatchTrigger(hour)` — points the daily trigger at the batch entry point
+  and **removes any trigger on `updateAllSquadronGroups`**, which cannot resume. Defaults to
+  06:00. Deletes before creating, so the swap needs no free slot on a project at the 20-trigger
+  ceiling. **Run as the automation account** — triggers are owned by whoever creates them.
 - `updateSquadronGroupsBatch(batchSize)` / `checkBatchStatus()` / `resetBatchProgress()` —
   **count-sliced** (10 per run); a 68-unit wing takes a week to come round. Older, still supported.
   Both batch entry points share the one `SQUADRON_BATCH_INDEX` position, so mixing them cannot

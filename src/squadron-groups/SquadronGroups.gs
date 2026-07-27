@@ -1,10 +1,17 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.9.0
+ * Version: 1.10.0
  * Filename: SquadronGroups.gs
  * Saved: 2026-07-27
- * Changes: v1.9.0 — group names are fitted to the Directory API's 73-character
+ * Changes: v1.10.0 — installSquadronGroupsBatchTrigger() points the daily
+ *   trigger at the entry point that can resume, and removes any trigger on the
+ *   one that cannot. Doing it by hand is three steps in the Triggers panel with
+ *   a wrong outcome available at each, and the wrong outcome is silent: the sync
+ *   keeps reporting success while never reaching the end of the list. Deletes
+ *   before it creates, so a swap needs no free slot on a project at the
+ *   20-trigger ceiling.
+ *   v1.9.0 — group names are fitted to the Directory API's 73-character
  *   limit. Over it, groups.insert refuses the whole call with 400 "Invalid
  *   Input: groupName" and creates nothing; on the CAWG senior tenant two lists
  *   for one squadron had never existed for that reason, invisibly, because the
@@ -929,6 +936,87 @@ function updateAllSquadronGroupsBatch(budgetMinutes) {
     squadronIndex: summary.squadronIndex,
     totalSquadrons: summary.totalSquadrons
   };
+}
+
+/**
+ * Handlers this installer takes over from.
+ *
+ * updateAllSquadronGroups is the entry point that CANNOT resume: it stops when
+ * it runs out of time and the next run starts from the first squadron again, so
+ * a wing too large to finish in one pass never reaches its tail. A daily trigger
+ * pointed there is the exact configuration that starved nine CAWG cadet units
+ * for weeks, and leaving it installed alongside the batch driver would mean two
+ * schedules walking one shared position.
+ */
+const SQUADRON_TRIGGER_HANDLERS_REPLACED_ = [
+  'updateAllSquadronGroups',
+  'updateAllSquadronGroupsBatch'
+];
+
+/**
+ * Installs the daily squadron-groups trigger, pointed at the entry point that
+ * can resume — and removes any trigger on the one that cannot.
+ *
+ * Doing this by hand is three steps in the Triggers panel with a wrong outcome
+ * available at each: delete the old handler, add the new one, and do not leave
+ * both. The failure mode of getting it wrong is silent — the sync keeps
+ * reporting success while never reaching the end of the list.
+ *
+ * ⚠ RUN THIS AS THE AUTOMATION ACCOUNT. Triggers are owned by whoever creates
+ * them, and the run sends mail under the automation account's identity.
+ *
+ * ⚠ Apps Script allows 20 triggers per script per user. This one deletes before
+ * it creates, so it never needs a free slot of its own — but if the project is
+ * already at the ceiling for other reasons, the create still fails and the log
+ * says so rather than leaving you with nothing installed.
+ *
+ * @param {number} [hour=6] - Hour of day to run, 0-23, script timezone
+ * @returns {{removed: Array<string>, installed: string, hour: number}}
+ */
+function installSquadronGroupsBatchTrigger(hour) {
+  const atHour = (hour === undefined || hour === null) ? 6 : Number(hour);
+  if (!isFinite(atHour) || atHour < 0 || atHour > 23) {
+    throw new Error('hour must be 0-23; got ' + hour);
+  }
+
+  const removed = [];
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    const handler = t.getHandlerFunction();
+    if (SQUADRON_TRIGGER_HANDLERS_REPLACED_.indexOf(handler) > -1) {
+      ScriptApp.deleteTrigger(t);
+      removed.push(handler);
+    }
+  });
+
+  try {
+    ScriptApp.newTrigger('updateAllSquadronGroupsBatch')
+      .timeBased()
+      .everyDays(1)
+      .atHour(atHour)
+      .create();
+  } catch (e) {
+    // Deleting first means a swap needs no spare slot, so reaching here means
+    // the project is genuinely full. Say what was removed — the operator is now
+    // one trigger down and needs to know it.
+    Logger.error('Could not install the squadron-groups batch trigger', {
+      errorMessage: e.message,
+      removed: removed,
+      warning: 'Squadron groups now have NO trigger. Free a slot and re-run this.'
+    });
+    throw e;
+  }
+
+  Logger.info('Installed daily squadron-groups batch trigger', {
+    handler: 'updateAllSquadronGroupsBatch',
+    schedule: 'daily, ~' + atHour + ':00 script timezone',
+    removed: removed.length ? removed : 'none',
+    note: 'Confirm in the Triggers panel that the owner is the automation account'
+  });
+
+  console.log('✅ Daily trigger now points at updateAllSquadronGroupsBatch()' +
+    (removed.length ? ' (replaced: ' + removed.join(', ') + ')' : '') + '.');
+
+  return { removed: removed, installed: 'updateAllSquadronGroupsBatch', hour: atHour };
 }
 
 /**
