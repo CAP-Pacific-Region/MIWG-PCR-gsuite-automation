@@ -660,3 +660,99 @@ function installParentEmailMonthlyTrigger() {
     note: 'Confirm in the Triggers panel that the owner is the automation account'
   });
 }
+
+// ============================================================================
+// TEST
+// ============================================================================
+
+/**
+ * Renders ONE unit's REAL digest — exactly the rows the next run would report
+ * for that unit — and mails it to a test recipient, and nobody else.
+ *
+ * The alternative to having this is discovering how the email reads by sending
+ * it to ten commanders.
+ *
+ * Reads the suppression state, so what you see is what the unit's command staff
+ * would get — an address inside its window is excluded here exactly as the real
+ * send excludes it — but WRITES NOTHING. Nobody enters the cooldown, so the real
+ * run afterwards still reports everything shown here.
+ *
+ * The greeting renders against the REAL addressee, so you see what the commander
+ * would see, while the mail goes only to the test recipient with no Cc.
+ *
+ * Sends WITHOUT the automation `from` override, deliberately: this is run by
+ * hand while reviewing, and must work from whatever account is signed in rather
+ * than requiring the automation account's Send-As alias.
+ *
+ * The editor's Run dropdown cannot pass arguments — call it from a scratch.gs
+ * wrapper, e.g.:
+ *   function myParentDigestTest() { testParentEmailDigestForOrg('1054'); }
+ *
+ * @param {string} orgid - Unit ORGID to render
+ * @param {string} [recipient] - Where to send it; defaults to TEST_EMAIL
+ * @returns {Object} { orgid, reportable, sent }
+ */
+function testParentEmailDigestForOrg(orgid, recipient) {
+  const targetOrg = String(orgid || '').trim();
+  if (!targetOrg) {
+    throw new Error(
+      'Pass a unit ORGID — run from a scratch.gs wrapper, e.g. ' +
+      "function myParentDigestTest() { testParentEmailDigestForOrg('1054'); }");
+  }
+  const to = String(recipient || TEST_EMAIL || '').trim();
+  if (!to) throw new Error('No recipient: pass one, or set TENANT_TEST_EMAIL.');
+
+  if (!PROFILE_.RUN_PARENT_EMAIL_NOTIFICATIONS) {
+    Logger.info('Parent-email notifications disabled for this tenant profile', {
+      profile: TENANT_PROFILE
+    });
+    return { skipped: true };
+  }
+
+  clearCache();
+
+  const ledger = peLoadLedger_();
+  if (ledger.length === 0) {
+    Logger.info('Test digest: no rejected addresses on record', {
+      note: 'Run updateAllSquadronGroups() first — it writes the ledger this reads.'
+    });
+    return { orgid: targetOrg, reportable: 0, sent: 0 };
+  }
+
+  const counters = { resolved: 0, unresolved: 0 };
+  const byOrg = peResolveToUnits_(ledger, counters);
+  const todayIso = peIsoDate_(new Date());
+  const state = peLoadState_();
+
+  // The same suppression the real run applies, so a row inside its window does
+  // not reappear merely because this is a test.
+  const rows = (byOrg[targetOrg] || []).filter(r => !peIsSuppressed_(state[r.key], todayIso));
+
+  if (!rows.length) {
+    Logger.info('Test digest: nothing reportable for this unit right now', {
+      orgid: targetOrg,
+      inLedgerForUnit: (byOrg[targetOrg] || []).length
+    });
+    return { orgid: targetOrg, reportable: 0, sent: 0 };
+  }
+
+  const recipients = peBuildRecipients_()[targetOrg] || [];
+  const addressee = recipients.length
+    ? rcSelectAddressees_(recipients).addressee
+    : { rank: '', lastName: '(no command staff found)' };
+
+  GmailApp.sendEmail(to,
+    'TEST — ' + PARENT_EMAIL_NOTIFY_CONFIG.SUBJECT + ' — ' + rows[0].charter,
+    'See the HTML version of this message.',
+    { htmlBody: peBuildDigestHtml_(addressee, rows), name: SENDER_NAME });
+
+  Logger.info('Test parent-email digest sent for one unit — state NOT written', {
+    orgid: targetOrg,
+    charter: rows[0].charter,
+    to: to,
+    wouldHaveGoneTo: recipients.map(r => r.email),
+    addresses: rows.map(r => r.address)
+  });
+
+  return { orgid: targetOrg, reportable: rows.length, sent: 1 };
+}

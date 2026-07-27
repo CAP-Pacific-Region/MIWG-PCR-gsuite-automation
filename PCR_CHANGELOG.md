@@ -286,11 +286,19 @@ The addresses are wrong in eServices; only the automation ever finds out, in a l
 ### Added — `ParentEmailNotify.gs` 1.0.0
 
 ```
-previewBadParentEmails()             // read-only; sends nothing, records nothing
-notifyBadParentEmails()              // sends, and records who was told
-installParentEmailMonthlyTrigger()   // 1st of each month, ~08:00
-resetParentEmailNotifyState()        // discard the cooldown; re-reports everything
+previewBadParentEmails()                        // read-only; sends nothing, records nothing
+testParentEmailDigestForOrg(orgid, recipient)   // one unit's REAL digest, to a test address
+notifyBadParentEmails()                         // sends, and records who was told
+installParentEmailMonthlyTrigger()              // 1st of each month, ~08:00
+resetParentEmailNotifyState()                   // discard the cooldown; re-reports everything
 ```
+
+`testParentEmailDigestForOrg()` exists because the alternative to having it is discovering how
+the email reads by sending it to ten commanders. It applies the same suppression the real run
+does — so what you see is what they would get — but **writes nothing**, leaving everything shown
+still reportable afterwards. It renders against the real addressee so the greeting is honest,
+while the mail goes only to the test recipient with no Cc, and sends without the automation
+`from` override so it works from whoever is signed in.
 
 Recipients are the unit **Commander and Deputy Commander for Cadets**, and nobody else — a
 parent contact hangs off a cadet's record, so the cadet-side command staff are the ones who act

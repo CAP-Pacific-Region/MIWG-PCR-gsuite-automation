@@ -774,6 +774,10 @@ owned by the automation account (see the warning in [Section 8](#8-what-runs-whe
     on the tenant, this correctly reports nothing. Run the sync first, then the preview.
   - A complete sync **replaces** the ledger, so corrected addresses drop out on their own. A
     **paused** slice only merges into it — it has not seen the whole wing.
+  - `testParentEmailDigestForOrg(orgid, recipient)` — renders **one unit's real digest** and
+    sends it to a test address only. Applies the same suppression as the real run but **writes
+    nothing**, so everything shown is still reported afterwards. Run this before the first real
+    send; the Run dropdown cannot pass arguments, so call it from a `scratch.gs` wrapper.
   - An issue reported once is not reported again for **3 months**, even if uncorrected. The
     window runs **per issue category** (email record / 2SV / never signed in), so a member
     already inside the email window is still reported when a 2SV gap appears. A fixed issue
