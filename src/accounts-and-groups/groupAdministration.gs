@@ -2,8 +2,12 @@
  * Group Administration Utilities
  *
  * Filename: groupAdministration.gs
- * Saved: 2026-07-17
- * Changes: Added groupAdministration_stageLegacyDlGroups() (read-only bulk scan
+ * Saved: 2026-07-27
+ * Changes: Added groupAdministration_repairReceiveListPosting(dryRun) — the
+ *   repair counterpart to the receive-list audit, for the groups no sync owns
+ *   (wing all-hands, group-HQ lists, lists outliving their unit). DRY RUN by
+ *   default; settings only. See PCR_CHANGELOG.md.
+ *   Added groupAdministration_stageLegacyDlGroups() (read-only bulk scan
  *   for legacy 'DL-CAWG-*' migration groups/aliases -> review sheet) and
  *   groupAdministration_resolveLegacyAddress() (definitive single-address
  *   group/alias/not-a-group check). Neither touches per-user Gmail autocomplete
@@ -82,8 +86,15 @@
  * - groupAdministration_auditReceiveListPosting()
  *   Read-only audit of whoCanPostMessage / allowExternalMembers on managed
  *   .cadets/.parents/.all "receive lists". Run it on the tenant that OWNS those
- *   groups (e.g. the cadets tenant) to find sublists that would silently reject
+ *   groups (e.g. the cadets tenant) to find lists that would silently reject
+ *   a sender on the other tenant — both a person writing across directly and
  *   cross-tenant fan-out from a wing .all list.
+ *
+ * - groupAdministration_repairReceiveListPosting(dryRun)
+ *   Fixes what that audit flags. DRY RUN by default. For the lists no sync
+ *   owns — the wing all-hands, group-headquarters lists, and groups outliving
+ *   their unit — which updateAllSquadronGroups() will never reach because it
+ *   only iterates UNIT-scope orgs. Settings only; never changes membership.
  *
  * - groupAdministration_stageOrphanedSquadronGroups(sheetName)
  *   Finds existing squadron groups whose list type is now DISABLED for this
@@ -554,11 +565,16 @@ function groupAdministration_deleteConfiguredGroups() {
 /**
  * Read-only audit of "receive-list" posting permissions.
  *
- * Cross-tenant fan-out (wing ca###.all -> cadet ca###.cadets@cawgcadets.org)
- * only delivers if the RECEIVING group accepts mail from the original, external
- * sender. A receiving sublist set to ALL_MEMBERS_CAN_POST or
- * ALL_IN_DOMAIN_CAN_POST silently rejects/holds forwarded wing mail; it
- * generally needs ANYONE_CAN_POST (ideally paired with spam moderation).
+ * The tenants are separate Workspace accounts, so a sender on the other one is
+ * external no matter that they are the same wing. A group set to
+ * ALL_MEMBERS_CAN_POST or ALL_IN_DOMAIN_CAN_POST therefore rejects/holds both a
+ * person writing across directly (a senior on the wing domain mailing
+ * ca.all@cawgcadets.org) and cross-tenant fan-out (wing ca###.all -> cadet
+ * ca###.cadets@cawgcadets.org), which arrives carrying the original sender.
+ * Either way the group needs ANYONE_CAN_POST, paired with spam moderation.
+ *
+ * SquadronGroups.gs 1.6.0 reconciles both settings on every
+ * updateAllSquadronGroups() run, so this is a before/after check on that.
  *
  * Run this on the tenant that OWNS the receiving groups (e.g. the cadets
  * tenant). It reads, per managed .cadets/.parents/.all group:
@@ -623,6 +639,103 @@ function groupAdministration_auditReceiveListPosting() {
   });
 
   return { checked: groups.length, blocking: blocking, ok: ok };
+}
+
+/**
+ * Repairs the posting permissions the audit above flags. DRY RUN by default.
+ *
+ * updateAllSquadronGroups() reconciles these settings (SquadronGroups.gs 1.6.0),
+ * but only for lists it owns, and it reaches a list only through
+ * shouldCreateDistributionLists() — which returns false for any org that is not
+ * UNIT scope. So three populations exist that no sync will ever visit, however
+ * many times it is run:
+ *
+ *   1. The wing all-hands (ca.all@...). No CAPWATCH org at all; the sync
+ *      iterates orgs, and wing scope is not one of them.
+ *   2. Group-headquarters lists (ca006.all, ca006.dty.all, ...). scope=GROUP,
+ *      excluded by the UNIT filter in updateAllSquadronGroups().
+ *   3. Lists left behind by units that no longer appear in this tenant's
+ *      CAPWATCH — the group outlived the org that justified it.
+ *
+ * Those are exactly the groups a member notices, because the wing all-hands is
+ * the one people actually write to. This closes them without inventing
+ * membership semantics for orgs the sync does not model: it changes posting
+ * policy only, never who is in a group.
+ *
+ * Scope is whatever groupAdministration_auditReceiveListPosting() flags, so the
+ * audit stays the single definition of "should accept outside mail" and the two
+ * cannot disagree. Re-running is harmless — a group already correct is not
+ * flagged, so there is nothing left to patch.
+ *
+ *   groupAdministration_repairReceiveListPosting()        // preview, writes nothing
+ *   groupAdministration_repairReceiveListPosting(false)   // apply
+ *
+ * @param {boolean} [dryRun=true] - false to actually write.
+ * @returns {{examined:number, repaired:Array<Object>, failed:Array<Object>, dryRun:boolean}}
+ */
+function groupAdministration_repairReceiveListPosting(dryRun) {
+  const isDryRun = (dryRun !== false);
+
+  if (typeof AdminGroupsSettings === 'undefined' || !AdminGroupsSettings.Groups || !AdminGroupsSettings.Groups.patch) {
+    throw new Error('AdminGroupsSettings advanced service is not enabled');
+  }
+
+  // The same three keys SquadronGroups.applyGroupSettings() manages. Posting is
+  // opened to the internet, so moderation travels with it — see that function.
+  const desired = {
+    whoCanPostMessage: 'ANYONE_CAN_POST',
+    allowExternalMembers: 'true',
+    spamModerationLevel: 'MODERATE'
+  };
+
+  const blocking = groupAdministration_auditReceiveListPosting().blocking;
+  const repaired = [];
+  const failed = [];
+
+  for (let i = 0; i < blocking.length; i++) {
+    const row = blocking[i];
+    const patch = {};
+    for (const key in desired) {
+      if (String(row[key] || '') !== desired[key]) patch[key] = desired[key];
+    }
+
+    if (Object.keys(patch).length === 0) continue;
+
+    if (isDryRun) {
+      Logger.info('💡 [Dry-Run] Would repair receive-list posting', {
+        group: row.email,
+        patch: patch
+      });
+      repaired.push({ email: row.email, patch: patch });
+      continue;
+    }
+
+    try {
+      executeWithRetry(() => AdminGroupsSettings.Groups.patch(patch, row.email));
+      repaired.push({ email: row.email, patch: patch });
+      Logger.info('Receive-list posting repaired', { group: row.email, patch: patch });
+    } catch (e) {
+      failed.push({ email: row.email, error: e.message });
+      Logger.warn('Failed to repair receive-list posting', {
+        group: row.email,
+        errorMessage: e.message
+      });
+    }
+  }
+
+  Logger.info('Receive-list posting repair complete', {
+    dryRun: isDryRun,
+    examined: blocking.length,
+    repairedCount: repaired.length,
+    failedCount: failed.length
+  });
+
+  console.log(isDryRun
+    ? `💡 Dry run — ${repaired.length} of ${blocking.length} would be repaired. ` +
+      'Run groupAdministration_repairReceiveListPosting(false) to apply.'
+    : `✅ Repaired ${repaired.length} of ${blocking.length}; ${failed.length} failed.`);
+
+  return { examined: blocking.length, repaired: repaired, failed: failed, dryRun: isDryRun };
 }
 
 /**
