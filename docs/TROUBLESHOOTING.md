@@ -390,7 +390,6 @@ function checkMemberStatus() {
      won't add, confirm the `AdminGroupsSettings` advanced service is enabled and
      check the log for "Group settings applied".
 
-<<<<<<< HEAD
 ### A member keeps disappearing from their unit list
 
 **Symptom:** a member is on the list one day and gone the next, then back again. Or the log
@@ -422,7 +421,6 @@ patterns are impossible regardless of whether the account exists:
 **Fix:** none available in code — the address is wrong in CAPWATCH. `sanitizeEmail()` cannot
 catch these; they are all well-formed. Take the run's worklist to the unit and have the contact
 corrected in eServices.
-=======
 ### A member on the other tenant cannot post to a list
 
 **Symptom:** a senior on `@cawgcap.org` mails a cadet-side list such as
@@ -445,7 +443,6 @@ tenant that owns the list. Verify first, and after, with
 just the sibling tenant. It is paired with `spamModerationLevel=MODERATE` for that
 reason. A list that genuinely must stay closed should be left out of the managed set
 rather than hand-set in the console, where the next sync will overwrite it.
->>>>>>> origin/master
 
 ### Too Many Members Removed
 
