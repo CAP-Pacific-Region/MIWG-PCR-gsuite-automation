@@ -1,10 +1,20 @@
 /*******************************************************
  * Squadron-Level Group Management Module
  *
- * Version: 1.8.0
+ * Version: 1.9.0
  * Filename: SquadronGroups.gs
  * Saved: 2026-07-27
- * Changes: v1.8.0 — membership is diffed on Google ACCOUNT identity, not string
+ * Changes: v1.9.0 — group names are fitted to the Directory API's 73-character
+ *   limit. Over it, groups.insert refuses the whole call with 400 "Invalid
+ *   Input: groupName" and creates nothing; on the CAWG senior tenant two lists
+ *   for one squadron had never existed for that reason, invisibly, because the
+ *   name is only sent on CREATE. The offender came from the ABBREVIATION path —
+ *   a "... Composite Squadron" unit matches no shortening pattern and falls
+ *   through to "Sqdn <n> <full name>", which says squadron twice and is longer
+ *   than what it replaced. fitGroupName_() trims the UNIT at a word boundary and
+ *   never the label, and only when the limit is exceeded, so no existing group
+ *   is renamed. (Numbered assuming v1.6.0-v1.8.0 land first.)
+ *   v1.8.0 — membership is diffed on Google ACCOUNT identity, not string
  *   equality. Two spellings of one gmail.com address (dots are meaningless there,
  *   +tags are tags) read as a member to ADD and a stranger to REMOVE; the add came
  *   back 409 and was swallowed, the remove succeeded, and the member sat off their
@@ -119,13 +129,69 @@ function getSquadronDistributionToggles_() {
   return SQUADRON_DISTRIBUTION_TOGGLES_DEFAULT_;
 }
 
+/**
+ * Longest group NAME the Directory API will accept.
+ *
+ * Exceeding it does not truncate — groups.insert refuses the whole call with
+ * 400 "Invalid Input: groupName", so the group is simply never created. That
+ * failure is invisible in normal operation because it only fires on CREATE: an
+ * over-long name on a group that already exists is never re-sent.
+ *
+ * Descriptions have a far larger allowance and are left alone.
+ */
+const GROUP_NAME_MAX_LEN_ = 73;
+
+/**
+ * Joins a unit name and a list label into a name Google will accept.
+ *
+ * When the two do not fit, the UNIT part gives way, never the label: the label
+ * is what distinguishes one of a unit's lists from another, and two groups whose
+ * names differ only past the cut would be indistinguishable in the console. The
+ * unit is trimmed at a word boundary rather than mid-word, and only when the
+ * limit is actually exceeded — so no existing group gets renamed by this.
+ *
+ * @param {string} unitPart - Abbreviated unit display name
+ * @param {string} label - List label ("All", "Deputy Commander for Cadets", ...)
+ * @returns {string} A name of at most GROUP_NAME_MAX_LEN_ characters
+ */
+function fitGroupName_(unitPart, label) {
+  const unit = String(unitPart || '').trim();
+  const text = String(label || '').trim();
+
+  if (!unit) return text.slice(0, GROUP_NAME_MAX_LEN_);
+  if (!text) return unit.slice(0, GROUP_NAME_MAX_LEN_);
+
+  const separator = ' - ';
+  const full = `${unit}${separator}${text}`;
+  if (full.length <= GROUP_NAME_MAX_LEN_) return full;
+
+  const room = GROUP_NAME_MAX_LEN_ - separator.length - text.length;
+  if (room <= 0) return text.slice(0, GROUP_NAME_MAX_LEN_);
+
+  let trimmed = unit.slice(0, room);
+
+  if (trimmed.length < unit.length) {
+    // The cut landed inside the unit name. Retreat to the last word boundary;
+    // if there isn't one, the only thing that would survive is a fragment of a
+    // word, which tells a reader less than nothing. Drop the unit and let the
+    // label stand alone rather than ship "W - Deputy Commander for Cadets".
+    const lastSpace = trimmed.lastIndexOf(' ');
+    if (lastSpace <= 0) return text.slice(0, GROUP_NAME_MAX_LEN_);
+    trimmed = trimmed.slice(0, lastSpace);
+  }
+
+  trimmed = trimmed.replace(/[\s,\-]+$/, '');
+
+  return trimmed ? `${trimmed}${separator}${text}` : text.slice(0, GROUP_NAME_MAX_LEN_);
+}
+
 function getSquadronGroupMetadata_(squadron, label) {
   const rawUnitName = ((squadron && squadron.name) || (squadron && squadron.charter) || '').toString().trim();
   const unitName = toSentenceCaseSquadronGroups_(rawUnitName);
   const shortUnitName = abbreviateManagedSquadronGroupOrgDisplayName_(squadron) || unitName;
   const groupLabel = (label || '').toString().trim();
   return {
-    name: shortUnitName && groupLabel ? `${shortUnitName} - ${groupLabel}` : (shortUnitName || groupLabel || ''),
+    name: fitGroupName_(shortUnitName, groupLabel),
     description: unitName && groupLabel ? `${unitName} - ${groupLabel}` : (unitName || groupLabel || '')
   };
 }

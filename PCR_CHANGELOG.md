@@ -10,6 +10,46 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-27] — two groups that could never be created, and nobody could tell
+
+`groups.insert` refuses a name over **73 characters** outright — 400 "Invalid Input: groupName"
+— and creates nothing. On the CAWG senior tenant, `ca404.deputy-commander-cadets` and
+`ca404.deputy-commander-seniors` had therefore never existed.
+
+**It stayed invisible because the name is only sent on CREATE.** Sixty-six other units looked
+healthy for the simple reason that their groups already existed, so the over-long name was never
+re-submitted. The two that failed were the only ones in the whole run that needed creating.
+
+The offending name came from the **abbreviation** path, which is supposed to shorten:
+
+| | |
+|---|---|
+| Unit name | `California Aerospace Composite Squadron` |
+| Matches a shortening pattern? | no — the patterns want a trailing number or a leading ordinal |
+| Falls through to | `Sqdn 404 California Aerospace Composite Squadron` — squadron, twice |
+| With the label | **78 characters.** Refused. |
+
+Measured across the wing, those two names were the only ones over the limit; the next longest
+was 70.
+
+### Changed — `SquadronGroups.gs` 1.9.0
+
+`fitGroupName_()` joins the unit and the label within the limit. **The label never gives way** —
+it is what tells one of a unit's lists from another, and two groups whose names differ only past
+the cut are the same name to anyone reading the console. The unit is trimmed at a **word
+boundary**, and if the cut would leave only a fragment of a word the unit is dropped entirely
+rather than shipping `W - Deputy Commander for Cadets`.
+
+**Trimming happens only when the limit is exceeded, so no existing group is renamed** — the
+70-character `ca404.parents` name is untouched. For ca404 the trim removes the duplicated
+"Squadron" and lands at 69: `Sqdn 404 California Aerospace Composite - Deputy Commander for Cadets`.
+
+### Added — `test/SquadronGroups.groupName.test.js`
+
+25 assertions. The last one is the point of the exercise: across every combination of unit and
+label, including absurd ones, nothing the function returns can be refused for length. Caught a
+real defect during development — the word-boundary rule was not applied when the cut left a
+single mid-word character. All unit names synthetic.
 ## [2026-07-27] — two spellings, one mailbox, one member quietly dropped
 
 `first.last@gmail.com` and `firstlast@gmail.com` are the same Google account. Dots carry no
