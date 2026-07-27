@@ -278,6 +278,66 @@ label, including absurd ones, nothing the function returns can be refused for le
 real defect during development — the word-boundary rule was not applied when the cut left a
 single mid-word character. All unit names synthetic.
 
+## [2026-07-27] — units get told which parent addresses Google refuses
+
+A unit's parents list silently fails to reach some families, and the unit has no way to know.
+The addresses are wrong in eServices; only the automation ever finds out, in a log nobody reads.
+
+### Added — `ParentEmailNotify.gs` 1.0.0
+
+```
+previewBadParentEmails()             // read-only; sends nothing, records nothing
+notifyBadParentEmails()              // sends, and records who was told
+installParentEmailMonthlyTrigger()   // 1st of each month, ~08:00
+resetParentEmailNotifyState()        // discard the cooldown; re-reports everything
+```
+
+Recipients are the unit **Commander and Deputy Commander for Cadets**, and nobody else — a
+parent contact hangs off a cadet's record, so the cadet-side command staff are the ones who act
+on it. Recipient resolution is shared with `RecoveryEmailNotify.gs`, which already solves the
+awkward part: on the cadets tenant both of those people are **seniors**, absent from
+`getMembers()` and holding accounts on the other domain.
+
+**The data has to come from a ledger, and that is not an implementation detail.** An address is
+only ever discovered to be bad by asking Google — a well-formed `gmail.com` address that does not
+exist is indistinguishable from a good one until `members.insert` refuses it. There is no
+read-only check. So the squadron sync writes what it learned to
+`RejectedMemberAddresses.json` (`SquadronGroups.gs`), and this module reports only what was
+actually observed. It invents no validation rules of its own and so cannot accuse a working
+address.
+
+Three consequences, all deliberate:
+
+- **Until `updateAllSquadronGroups()` has run, this reports nothing.** An absent ledger means
+  "not yet looked", which is not the same as "nothing wrong", and the two must not be conflated.
+- Only addresses on lists the sync manages are ever tested.
+- A corrected address stops being refused, drops out of the ledger on the next complete run, and
+  stops being reported — with nobody pruning anything.
+
+**Suppression is per member AND per address**, not per member. A cadet with two bad parent
+addresses who gets one corrected must still be told about the other; keying on the member alone
+would hide it for three months. Three calendar months, matching the other digests — reported on
+the 3rd, eligible again on the 3rd.
+
+**The person is rebuilt from the current extract, not stored.** The ledger holds an address; the
+cadet is re-resolved through `MbrContact` at send time. A cadet who has left, or whose record was
+corrected, resolves to nothing — so a commander is never mailed about someone who is not theirs.
+Siblings sharing one address produce one row each.
+
+### Changed — `SquadronGroups.gs`
+
+`reportRejectedMemberAddresses_()` now writes the ledger. A run that saw every squadron
+**replaces** it; a **paused slice only merges**, because treating a partial run's findings as the
+whole picture would delete what earlier slices found and leave the digest reporting a fraction of
+the problem while looking complete.
+
+### Added — `test/ParentEmailNotify.test.js`
+
+25 assertions on the two decisions that can hurt someone: the cooldown boundary (a day short,
+exactly on it, across a year end, and never-reported treated as reportable rather than
+suppressed), and resolution refusing to produce a row for a cadet who is not in the extract. All
+names, CAPIDs and addresses synthetic.
+
 ## [2026-07-26] — a missing welcome email is now detected, not stumbled over
 
 The resend below repairs a member you already know about. This is how you find out.

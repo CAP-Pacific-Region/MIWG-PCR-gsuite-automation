@@ -728,7 +728,7 @@ function updateAllSquadronGroups(options) {
 
   summary.endTime = new Date().toISOString();
   summary.duration = new Date() - start;
-  summary.rejectedAddresses = reportRejectedMemberAddresses_();
+  summary.rejectedAddresses = reportRejectedMemberAddresses_(summary.complete);
   // 'errors' counts squadrons that threw. memberFailures counts individual adds
   // and removes that failed underneath a squadron that otherwise succeeded — the
   // two are not the same number, and reporting only the first reads as a clean
@@ -2367,9 +2367,11 @@ function recordRejectedMemberAddress_(groupEmail, memberEmail, err) {
  * IS an error and carries context this summary does not. This is the actionable
  * rollup, not a replacement for them.
  *
+ * @param {boolean} complete - True when this run covered every squadron; only
+ *   then may the ledger prune addresses it did not see this time.
  * @returns {Array<Object>} What was reported, one entry per address
  */
-function reportRejectedMemberAddresses_() {
+function reportRejectedMemberAddresses_(complete) {
   const raw = SQUADRON_REJECTED_MEMBERS_.slice();
   SQUADRON_REJECTED_MEMBERS_ = [];
 
@@ -2396,7 +2398,94 @@ function reportRejectedMemberAddresses_() {
     rejected: rejected.slice(0, 100)
   });
 
+  writeRejectedAddressLedger_(rejected, complete);
+
   return rejected;
+}
+
+/** Where the rejected addresses outlive the run that found them. */
+const REJECTED_ADDRESS_LEDGER_FILE_ = 'RejectedMemberAddresses.json';
+
+/**
+ * Records this run's rejected addresses so something other than a log can read
+ * them.
+ *
+ * An address is only ever discovered to be bad by ASKING GOOGLE — a well-formed
+ * gmail.com address that simply does not exist is indistinguishable from a good
+ * one until members.insert refuses it. That makes the squadron sync the only
+ * place the truth is known, and a log line the only place it was recorded. A
+ * monthly digest cannot re-derive it without attempting the same writes, so the
+ * finding is written down here instead.
+ *
+ * The ledger describes what is wrong *now*: an address corrected in eServices
+ * stops being rejected and should stop being reported, without anyone pruning a
+ * growing file. So a run that saw every squadron REPLACES it.
+ *
+ * A PAUSED slice must not. It looked at part of the wing, and treating its
+ * findings as the whole picture would delete every address the earlier slices
+ * found — the digest would then report a fraction of the problem and call it
+ * complete. A partial run therefore only merges, and prunes nothing.
+ *
+ * firstSeen is carried forward either way, so a long-standing problem still
+ * reads as one.
+ *
+ * A failure here is logged and swallowed. The sync's job is group membership;
+ * bookkeeping for a downstream digest must not turn a successful sync into a
+ * failed one.
+ *
+ * @param {Array<Object>} rejected - Output of reportRejectedMemberAddresses_()
+ * @param {boolean} complete - True when this run covered every squadron
+ * @returns {void}
+ */
+function writeRejectedAddressLedger_(rejected, complete) {
+  try {
+    const folder = DriveApp.getFolderById(CONFIG.CAPWATCH_DATA_FOLDER_ID);
+    const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+    const previous = {};
+    const existing = folder.getFilesByName(REJECTED_ADDRESS_LEDGER_FILE_);
+    let file = null;
+    if (existing.hasNext()) {
+      file = existing.next();
+      try {
+        const parsed = JSON.parse(file.getBlob().getDataAsString() || '{}');
+        (parsed.addresses || []).forEach(a => { previous[String(a.member || '')] = a; });
+      } catch (e) {
+        // A corrupt ledger costs firstSeen dates, nothing more. Rebuild it.
+        Logger.warn('Rejected-address ledger unreadable — rebuilding', { errorMessage: e.message });
+      }
+    }
+
+    const merged = {};
+    if (!complete) {
+      // Keep what earlier slices found; this one only adds to it.
+      Object.keys(previous).forEach(k => { merged[k] = previous[k]; });
+    }
+
+    rejected.forEach(row => {
+      merged[row.member] = {
+        member: row.member,
+        reason: row.reason,
+        groups: row.groups,
+        firstSeen: (previous[row.member] && previous[row.member].firstSeen) || today,
+        lastSeen: today
+      };
+    });
+
+    const addresses = Object.keys(merged).sort().map(k => merged[k]);
+    const content = JSON.stringify({ version: 1, written: today, complete: !!complete, addresses: addresses });
+    if (file) file.setContent(content);
+    else folder.createFile(REJECTED_ADDRESS_LEDGER_FILE_, content);
+
+    Logger.info('Rejected-address ledger written', {
+      addresses: addresses.length,
+      thisRun: rejected.length,
+      pruned: !!complete,
+      fileName: REJECTED_ADDRESS_LEDGER_FILE_
+    });
+  } catch (e) {
+    Logger.warn('Could not write the rejected-address ledger', { errorMessage: e.message });
+  }
 }
 
 /**
