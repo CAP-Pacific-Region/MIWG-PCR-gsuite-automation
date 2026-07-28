@@ -1,10 +1,19 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.9.0
+ * Version: 1.9.1
  * Filename: UpdateGroups.gs
  * Saved: 2026-07-27
- * Changes: 1.9.0: a new "Add Lite" column in the Groups sheet lets a row include
+ * Changes: 1.9.1: the "Add Lite" gate now works. 1.9.0 gated on a member having
+ *   no address until one was supplied — but addContactInfo() fills .email from
+ *   the CAPWATCH PRIMARY contact for EVERY member, cadet-lite included, so the
+ *   gate never engaged and cadet-lite members were eligible for every group
+ *   whose criteria they matched rather than the rows that asked. Eligibility is
+ *   now decided by CAPID against the same cadet-lite definition SquadronGroups
+ *   uses: rows without the opt-in are handed a member set with them removed.
+ *   A membership rule must not rest on a field another module populates for its
+ *   own reasons.
+ *   1.9.0: a new "Add Lite" column in the Groups sheet lets a row include
  *   cadet-lite members, addressed by their personal CAPWATCH address. Without it
  *   this path could not see them at all — getMembers() filtered them out before
  *   the desired set was built — so SquadronGroups added them to every unit .all
@@ -985,33 +994,55 @@ for (let r = 1; r < groupsConfig.length; r++) {
     Logger.error('Failed to build Workspace user map', { error: err.message });
   }
 
-  // Personal addresses, built once and only if some row actually asked for them.
-  // Reuses the squadron module's map so both paths reach a cadet-lite member at
-  // the same address — two writers disagreeing about which address is "theirs"
-  // is how a member ends up added and removed on a loop.
+  // WHICH members a row may see, decided by IDENTITY rather than by whether an
+  // address happens to be present.
+  //
+  // The first cut of this gated on `.email` being null, on the belief that an
+  // accountless member has no address until one is supplied. That is false:
+  // addContactInfo() fills .email from the CAPWATCH PRIMARY contact for every
+  // member, cadet-lite included. So the gate never engaged, and cadet-lite
+  // members were silently eligible for EVERY group whose criteria they match —
+  // achievements, duty positions, any other row keyed on type — rather than the
+  // ones that opted in. A membership rule must not depend on a field that
+  // something else populates for its own reasons.
+  //
+  // membersAll is the full set; membersCore excludes cadet-lite by CAPID, using
+  // the same definition SquadronGroups.gs uses so the two paths cannot disagree
+  // about who is cadet-lite.
+  const membersAll = members;
+  const cadetLiteByOrgid = buildCadetLiteExcludedCadetsByOrgid_();
+  const cadetLiteCapids = {};
+  Object.keys(cadetLiteByOrgid).forEach(function (orgid) {
+    cadetLiteByOrgid[orgid].forEach(function (c) {
+      cadetLiteCapids[String(c.capsn)] = true;
+    });
+  });
+
+  const membersCore = {};
+  Object.keys(membersAll).forEach(function (capid) {
+    if (!cadetLiteCapids[capid]) membersCore[capid] = membersAll[capid];
+  });
+
   const anyRowWantsCadetLite = Object.keys(groupIncludeCadetLiteByName)
     .some(function (n) { return groupIncludeCadetLiteByName[n]; });
-  const capwatchEmailByCapid = anyRowWantsCadetLite
-    ? buildSquadronCapwatchPrimaryEmailByCapidMap_()
-    : {};
-  let membersWithCadetLite = null;
 
-  if (anyRowWantsCadetLite) {
-    membersWithCadetLite = withCadetLiteAddresses_(members, capwatchEmailByCapid);
-    const reachable = Object.keys(membersWithCadetLite)
-      .filter(function (c) { return !members[c].email && membersWithCadetLite[c].email; }).length;
-    Logger.info('Cadet-lite members addressable for opted-in groups', {
-      reachable: reachable,
-      note: 'Accountless members with a CAPWATCH address. Groups without "Add Lite" are unaffected.'
-    });
-  }
+  Logger.info('Cadet-lite gating for this run', {
+    membersAll: Object.keys(membersAll).length,
+    membersCore: Object.keys(membersCore).length,
+    cadetLite: Object.keys(cadetLiteCapids).length,
+    rowsOptedIn: Object.keys(groupIncludeCadetLiteByName)
+      .filter(function (n) { return groupIncludeCadetLiteByName[n]; }),
+    note: anyRowWantsCadetLite
+      ? 'Only the listed rows see cadet-lite members; every other row sees membersCore.'
+      : 'No row opted in — every row sees membersCore, exactly as before this feature.'
+  });
 
   // Build desired group membership state
   for(let i = 1; i < groupsConfig.length; i++) {
     const groupName = groupsConfig[i][1];
-    const rowMembers = (membersWithCadetLite && groupIncludeCadetLiteByName[String(groupName || '').trim()])
-      ? membersWithCadetLite
-      : members;
+    const rowMembers = groupIncludeCadetLiteByName[String(groupName || '').trim()]
+      ? membersAll
+      : membersCore;
     const generatedGroups = getGroupMembers(
       groupName,
       groupsConfig[i][2],
@@ -1140,40 +1171,6 @@ for (let r = 1; r < groupsConfig.length; r++) {
  * @param {Object<string, Object>} members - Members object indexed by CAPID
  * @returns {Object<string, string>} The CAPID -> email map
  */
-/**
- * Returns a copy of `members` in which the accountless ones carry their CAPWATCH
- * personal address, so a group can actually reach them.
- *
- * WHY A COPY. The result is handed to one Groups-sheet row and thrown away.
- * Mutating the shared member map would leak these addresses into every row
- * processed afterwards, quietly adding 1,600-odd external members to groups
- * nobody opted in — the kind of change that looks fine in a diff and is
- * discovered in a mailbox.
- *
- * A member with no Workspace account and no CAPWATCH address stays addressless
- * and reaches no group. That is the honest outcome: there is nowhere to send.
- *
- * @param {Object} members - CAPID -> member object
- * @param {Object} capwatchEmailByCapid - CAPID -> personal address
- * @returns {Object} Copy with accountless members addressed where possible
- */
-function withCadetLiteAddresses_(members, capwatchEmailByCapid) {
-  const out = {};
-  Object.keys(members).forEach(function (capid) {
-    const member = members[capid];
-    if (member && !member.email) {
-      const fallback = capwatchEmailByCapid[capid];
-      if (fallback) {
-        // Shallow copy: only the address differs, and the original must not.
-        out[capid] = Object.assign({}, member, { email: fallback });
-        return;
-      }
-    }
-    out[capid] = member;
-  });
-  return out;
-}
-
 function buildWorkspaceEmailMapForGroups_(members) {
   workspaceEmailMap = {};
   let token = '';
