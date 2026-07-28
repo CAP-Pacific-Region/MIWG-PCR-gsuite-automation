@@ -316,10 +316,26 @@ opt-in.** `createMemberObject` sets `email: null` and only the Workspace directo
 they arrive addressless and every group's `isMatch && .email` test skips them — exactly as when
 they were filtered out entirely. Nothing changes for any row that does not ask.
 
-The addressed member map is a **copy**, handed to one row and discarded. Mutating the shared map
-would leak 1,600-odd external addresses into every row processed afterwards — a change that looks
-small in a diff and is discovered in a mailbox. `test/UpdateGroups.cadetLite.test.js` spends four
-of its 20 assertions on that one property.
+### Fixed — the gate, in 1.9.1, before it reached a mailbox
+
+The first cut gated on **a member having no address until one was supplied**, reasoning that a
+row which had not opted in would skip cadet-lite members naturally. That belief was wrong:
+`addContactInfo()` fills `.email` from the CAPWATCH PRIMARY contact for **every** member,
+cadet-lite included. The gate never engaged — and cadet-lite members were eligible for *every*
+group whose criteria they matched, not the two rows that asked for them.
+
+The live preview said so plainly: `reachable: 0` from the helper that was supposed to be doing
+the work, next to removals dropping from 1,643 to 12. The fix appeared to work while doing
+nothing it was designed to do.
+
+Eligibility is now decided by **CAPID**, against the same cadet-lite definition
+`SquadronGroups.gs` uses, so the two paths cannot disagree about who is cadet-lite. Rows without
+the opt-in are handed a member set with them removed.
+
+**A membership rule must not rest on a field another module populates for its own reasons.**
+That is what the tests now pin: the first assertion is that a cadet-lite member *does* carry an
+address, so an address-based gate would leak — and the fourth is that the same person with the
+same address is in the group or not purely according to whether the caller included them.
 
 ## [2026-07-27] — six transition triggers become one, freeing five slots
 

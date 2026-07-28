@@ -1,22 +1,26 @@
 /**
- * UpdateGroups.gs — giving accountless members an address, and only where asked.
+ * UpdateGroups.gs — which members a Groups-sheet row is allowed to see.
  *
- * WHAT WENT WRONG
- * Two writers disagreed about what a unit's `.all` group contains. SquadronGroups
- * added cadet-lite members by their personal CAPWATCH address; the sheet-driven
- * path could not see them at all, because getMembers() filtered them out before
- * the desired set was built — so every one of those addresses looked like a
- * stranger and was marked for removal. On the CAWG cadet tenant that was 1,643
- * removals a night at 05:24, undone at 06:01. Members were off their unit's
- * all-hands for roughly half an hour, daily, and the wing-wide ca.all never had
- * them at all.
+ * WHAT WENT WRONG, TWICE
  *
- * THE RISK IN FIXING IT
- * Handing every accountless member an address makes them eligible for every
- * group whose criteria they match. That is 1,600-odd external addresses arriving
- * in groups nobody opted into — a change that looks small in a diff and is
- * discovered in a mailbox. So the addressed copy must be exactly that: a copy,
- * handed to one opted-in Groups row and thrown away.
+ * First: the sheet path could not see cadet-lite members at all, because
+ * getMembers() filtered them out before the desired set was built. SquadronGroups
+ * added them to every unit `.all` by their CAPWATCH address; this path saw
+ * strangers and removed them. 1,643 removals a night on the CAWG cadet tenant,
+ * undone an hour later.
+ *
+ * Then, fixing it: the opt-in gate was written as "a cadet-lite member has no
+ * address until we supply one", so rows that had not opted in would skip them
+ * naturally. That belief was wrong — addContactInfo() fills .email from the
+ * CAPWATCH PRIMARY contact for every member, cadet-lite included. The gate never
+ * engaged. Cadet-lite members were eligible for EVERY group whose criteria they
+ * matched, not the two rows that asked.
+ *
+ * THE LESSON THESE ASSERTIONS ENCODE
+ * Eligibility is decided by WHO A MEMBER IS, never by whether some field happens
+ * to be populated. A membership rule resting on a field that another module fills
+ * for its own reasons is a rule that can be switched off by a change nowhere near
+ * it.
  *
  * All CAPIDs and addresses here are synthetic.
  *
@@ -32,101 +36,102 @@ const m = loadModule(MODULE, {
   CONFIG: { EMAIL_DOMAIN: '@example.org', WING: 'CA' },
   Logger: { info: () => {}, warn: () => {}, error: () => {} },
   Utilities: { sleep: () => {} }
-}, ['withCadetLiteAddresses_']);
+}, ['getGroupMembers']);
 
-const addr = m.withCadetLiteAddresses_;
-
-/** An account holder: the directory already gave them an address. */
-function withAccount(capid, email) {
-  return { capsn: capid, orgid: '900', type: 'CADET', email: email };
-}
-
-/** Accountless: createMemberObject leaves email null and nothing filled it. */
-function accountless(capid) {
-  return { capsn: capid, orgid: '900', type: 'CADET', email: null };
-}
-
-// ---------------------------------------------------------------------------
-section('1. The accountless get their CAPWATCH address');
-{
-  const members = { '100001': accountless('100001') };
-  const out = addr(members, { '100001': 'lite.one@example.org' });
-
-  check('addressed', out['100001'].email, 'lite.one@example.org');
-  check('everything else about them is intact', out['100001'].orgid, '900');
-  check('and their type still drives group matching', out['100001'].type, 'CADET');
-}
-
-// ---------------------------------------------------------------------------
-section('2. Account holders are never re-addressed');
-{
-  const members = { '100002': withAccount('100002', 'real@example.org') };
-  // A CAPWATCH personal address exists for them too — it must lose.
-  const out = addr(members, { '100002': 'personal@example.org' });
-
-  check('the Workspace address wins', out['100002'].email, 'real@example.org');
-  check('and the object is passed through untouched',
-    out['100002'] === members['100002'], true);
-}
-
-// ---------------------------------------------------------------------------
-section('3. The original map is never mutated');
-{
-  // This is the assertion that matters most. A mutation here leaks these
-  // addresses into every Groups row processed afterwards.
-  const members = {
-    '100003': accountless('100003'),
-    '100004': withAccount('100004', 'real@example.org')
+/**
+ * A member as the pipeline actually presents one: addContactInfo has already
+ * supplied an address, whether or not they hold a Workspace account.
+ */
+function member(capid, orgid, opts) {
+  const o = opts || {};
+  return {
+    capsn: capid,
+    orgid: orgid,
+    group: o.group || '',
+    type: o.type || 'CADET',
+    // `||` would override an explicit null, which is the one case section 6 is
+    // about. Honour the key when it is present, defaulted or not.
+    email: Object.prototype.hasOwnProperty.call(o, 'email') ? o.email : (capid + '@example.org')
   };
-  const before = members['100003'].email;
-  const out = addr(members, { '100003': 'lite@example.org' });
+}
 
-  check('the source member is still addressless', members['100003'].email, before);
-  check('and is still null specifically', members['100003'].email, null);
-  check('while the copy is addressed', out['100003'].email, 'lite@example.org');
-  check('the copy is a different object', out['100003'] === members['100003'], false);
+const squadrons = {
+  '900': { wing: 'CA', unit: '101', scope: 'UNIT', charter: 'PCR-CA-101' }
+};
+
+/** Runs one Groups-sheet row against a member set, as getEmailGroupDeltas does. */
+function generate(members) {
+  return m.getGroupMembers('all', 'type', 'CADET', members, squadrons);
 }
 
 // ---------------------------------------------------------------------------
-section('4. No address means no group, which is the honest outcome');
+section('1. A cadet-lite member is addressable, which is why identity must gate');
 {
-  const members = { '100005': accountless('100005') };
-  const out = addr(members, {});          // nothing on file for them
-
-  check('still addressless', out['100005'].email, null);
-  check('so every group\'s `isMatch && .email` test skips them',
-    !!out['100005'].email, false);
+  // The exact condition the broken gate tested for. If this is ever false again,
+  // the "no address means no group" reasoning is back, and it is still wrong.
+  const lite = member('100001', '900');
+  check('they carry a CAPWATCH address like everyone else', !!lite.email, true);
+  check('so an address-based gate would let them through everywhere',
+    Object.keys(generate({ '100001': lite })['ca.all']).length, 1);
 }
 
 // ---------------------------------------------------------------------------
-section('5. Everyone survives the copy');
+section('2. A row that did not opt in never sees them');
 {
-  const members = {
-    '100006': accountless('100006'),
-    '100007': withAccount('100007', 'a@example.org'),
-    '100008': accountless('100008')
+  // membersCore: the caller removed cadet-lite by CAPID before calling.
+  const core = { '100002': member('100002', '900') };
+  const out = generate(core);
+  check('only the core member is present',
+    Object.keys(out['ca.all']), ['100002@example.org']);
+}
+
+// ---------------------------------------------------------------------------
+section('3. A row that opted in sees both');
+{
+  const all = {
+    '100003': member('100003', '900'),
+    '100004': member('100004', '900')     // cadet-lite, kept in the map
   };
-  const out = addr(members, { '100006': 'six@example.org' });
-
-  check('same population', Object.keys(out).sort(), ['100006', '100007', '100008']);
-  check('one newly addressed', out['100006'].email, 'six@example.org');
-  check('one already addressed', out['100007'].email, 'a@example.org');
-  check('one still unreachable', out['100008'].email, null);
+  const out = generate(all);
+  check('both reach the wing group',
+    Object.keys(out['ca.all']).sort(),
+    ['100003@example.org', '100004@example.org']);
+  check('and the unit group', Object.keys(out['ca101.all']).sort(),
+    ['100003@example.org', '100004@example.org']);
 }
 
 // ---------------------------------------------------------------------------
-section('6. Malformed input does not become a wrong address');
+section('4. Membership follows the member set, not the address');
 {
-  check('an empty member map yields an empty map',
-    Object.keys(addr({}, { '1': 'x@example.org' })), []);
+  // Same person, same address, present in one call and absent from the other.
+  // The ONLY difference is whether the caller included them — which is the
+  // property the fix depends on.
+  const lite = member('100005', '900');
+  const withThem = generate({ '100005': lite });
+  const withoutThem = generate({});
 
-  const nullMember = { '100009': null };
-  check('a null member is passed through, not crashed on',
-    addr(nullMember, {})['100009'], null);
+  check('included → in the group', Object.keys(withThem['ca.all']).length, 1);
+  check('excluded → not in the group', Object.keys(withoutThem['ca.all']).length, 0);
+  check('their address was identical in both cases', !!lite.email, true);
+}
 
-  const blankFallback = { '100010': accountless('100010') };
-  check('a blank CAPWATCH address is not an address',
-    addr(blankFallback, { '100010': '' })['100010'].email, null);
+// ---------------------------------------------------------------------------
+section('5. Criteria still apply to whoever is in the set');
+{
+  const mixed = {
+    '100006': member('100006', '900', { type: 'CADET' }),
+    '100007': member('100007', '900', { type: 'SENIOR' })
+  };
+  const out = generate(mixed);   // row asks for CADET only
+  check('a senior does not join a cadet row',
+    Object.keys(out['ca.all']), ['100006@example.org']);
+}
+
+// ---------------------------------------------------------------------------
+section('6. A member with no address still reaches nothing');
+{
+  const out = generate({ '100008': member('100008', '900', { email: null }) });
+  check('nowhere to send, so no group', Object.keys(out['ca.all']).length, 0);
 }
 
 done();
