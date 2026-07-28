@@ -1,10 +1,17 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.9.1
+ * Version: 1.10.0
  * Filename: UpdateGroups.gs
  * Saved: 2026-07-27
- * Changes: 1.9.1: the "Add Lite" gate now works. 1.9.0 gated on a member having
+ * Changes: 1.10.0: the apply loop can finally ADD an external member. It allowed
+ *   off-domain addresses for exactly one case — Attribute 'contact' — and
+ *   skipped every other with a bare `continue`: no log, no counter, no error. So
+ *   ca.all could want 1,644 cadet-lite members, the delta could say so, and the
+ *   run could report success having added one. Permission now comes from the
+ *   Groups sheet ("Add EXT", or implied by "Add Lite"), with 'contact' kept as
+ *   an alias, and declined adds are counted into the per-group log line.
+ *   1.9.1: the "Add Lite" gate now works. 1.9.0 gated on a member having
  *   no address until one was supplied — but addContactInfo() fills .email from
  *   the CAPWATCH PRIMARY contact for EVERY member, cadet-lite included, so the
  *   gate never engaged and cadet-lite members were eligible for every group
@@ -164,6 +171,7 @@ function updateEmailGroups(options) {
     {
       let added = 0;
       let removed = 0;
+      let skippedExternal = 0;
       const groupEmail = group + CONFIG.EMAIL_DOMAIN;
       const baseGroupName = group.includes('.') ? group.split('.').slice(1).join('.') : group;
 
@@ -246,8 +254,11 @@ function updateEmailGroups(options) {
             try {
               const finalEmail = workspaceEmailMap[email.replace(/\D/g, '')] || email;
 
-              // Skip external emails except for groups whose Attribute is 'contact'
-              if (!finalEmail.endsWith(CONFIG.EMAIL_DOMAIN) && groupAttributeByName[category] !== 'contact') continue;
+              if (!finalEmail.endsWith(CONFIG.EMAIL_DOMAIN) &&
+                  !externalMemberAllowedForGroup_(category)) {
+                skippedExternal++;
+                continue;
+              }
 
               if (DRY_RUN) {
                 Logger.info('💡 [Dry-Run] Would add member', {
@@ -401,6 +412,10 @@ function updateEmailGroups(options) {
         description: meta.description || '',
         added: added,
         removed: removed,
+        // Zero is the normal case, so only say it when something was declined —
+        // an add that vanishes without a number is how 1,644 of them went
+        // unnoticed.
+        skippedExternal: skippedExternal || undefined,
         membersDone: pausedInGroup ? `${memberIndex}/${memberEmails.length}` : undefined
       });
 
@@ -1171,6 +1186,33 @@ for (let r = 1; r < groupsConfig.length; r++) {
  * @param {Object<string, Object>} members - Members object indexed by CAPID
  * @returns {Object<string, string>} The CAPID -> email map
  */
+/**
+ * Whether a group may take a member whose address is not on this tenant's domain.
+ *
+ * The apply loop used to allow this for exactly one case — a row whose Attribute
+ * is 'contact' — and skip every other external address with a bare `continue`:
+ * no log, no counter, no error. So a group could want 1,644 external members,
+ * the delta could say so, and the run could report success having added none of
+ * them. That is what happened to ca.all the first time cadet-lite members were
+ * opted in, and nothing in the output said otherwise.
+ *
+ * The Groups sheet already states the intent per row. "Add EXT" means the group
+ * takes external members; "Add Lite" implies it, because a cadet-lite member IS
+ * an external address. Reading that here makes the sheet the single answer to
+ * "may this group hold outside addresses", rather than one hardcoded attribute
+ * value deciding it for everyone.
+ *
+ * 'contact' is kept as an alias so rows that never set the column behave as they
+ * always have.
+ *
+ * @param {string} groupName - Base group name from the Groups sheet
+ * @returns {boolean} True if an off-domain address may be added
+ */
+function externalMemberAllowedForGroup_(groupName) {
+  const name = String(groupName || '').trim();
+  return groupAttributeByName[name] === 'contact' || !!groupAllowExternalByName[name];
+}
+
 function buildWorkspaceEmailMapForGroups_(members) {
   workspaceEmailMap = {};
   let token = '';

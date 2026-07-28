@@ -316,6 +316,31 @@ opt-in.** `createMemberObject` sets `email: null` and only the Workspace directo
 they arrive addressless and every group's `isMatch && .email` test skips them — exactly as when
 they were filtered out entirely. Nothing changes for any row that does not ask.
 
+### Fixed — 1.10.0: the apply loop could not add an external member at all
+
+With the gate working and the delta correct, `ca.all` still gained **one** member out of 1,644
+pending. The delta was right — `desired=2649 add=1644 drop=0` — so the fault was downstream:
+
+```javascript
+// Skip external emails except for groups whose Attribute is 'contact'
+if (!finalEmail.endsWith(CONFIG.EMAIL_DOMAIN) && groupAttributeByName[category] !== 'contact') continue;
+```
+
+Every off-domain address was dropped by a bare `continue` unless the row's Attribute was literally
+`contact`. **No log, no counter, no error.** The run reported `totalAdded: 2, totalErrors: 0` while
+declining 1,644 adds it had just computed. The two that succeeded were the only internal ones.
+
+The unit `.all` groups hid it: SquadronGroups had already put those members there, so the delta
+said *keep* rather than *add* and the skip never fired.
+
+Permission now comes from the Groups sheet — `Add EXT`, or implied by `Add Lite` — with `contact`
+kept as an alias so untouched rows behave as they always have. **Declined adds are counted and
+reported** in the per-group log line, because an add that vanishes without a number is how 1,644
+of them went unnoticed.
+
+This was never specific to cadet-lite. Any row marked `Add EXT` has been unable to add an
+external member for as long as that line has existed.
+
 ### Fixed — the gate, in 1.9.1, before it reached a mailbox
 
 The first cut gated on **a member having no address until one was supplied**, reasoning that a

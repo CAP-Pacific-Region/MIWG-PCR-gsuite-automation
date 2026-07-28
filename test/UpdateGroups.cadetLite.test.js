@@ -36,7 +36,8 @@ const m = loadModule(MODULE, {
   CONFIG: { EMAIL_DOMAIN: '@example.org', WING: 'CA' },
   Logger: { info: () => {}, warn: () => {}, error: () => {} },
   Utilities: { sleep: () => {} }
-}, ['getGroupMembers']);
+}, ['getGroupMembers', 'externalMemberAllowedForGroup_',
+    'groupAttributeByName', 'groupAllowExternalByName']);
 
 /**
  * A member as the pipeline actually presents one: addContactInfo has already
@@ -132,6 +133,35 @@ section('6. A member with no address still reaches nothing');
 {
   const out = generate({ '100008': member('100008', '900', { email: null }) });
   check('nowhere to send, so no group', Object.keys(out['ca.all']).length, 0);
+}
+
+// ---------------------------------------------------------------------------
+section('7. Whether a group may take an off-domain address');
+{
+  // The apply loop allowed external members for exactly one Attribute value and
+  // skipped every other case with a bare `continue` — no log, no counter. So a
+  // group could want 1,644 external members, the delta could say so, and the run
+  // could report success having added none. That is what happened to ca.all.
+  const attr = m.groupAttributeByName;
+  const ext = m.groupAllowExternalByName;
+  const allowed = m.externalMemberAllowedForGroup_;
+
+  Object.keys(attr).forEach(k => delete attr[k]);
+  Object.keys(ext).forEach(k => delete ext[k]);
+
+  attr['contact-row'] = 'contact';
+  attr['all'] = 'type';
+  ext['all'] = true;              // set by Add EXT or implied by Add Lite
+  attr['achievements'] = 'achievements';
+  ext['achievements'] = false;
+
+  check('the legacy contact row still works', allowed('contact-row'), true);
+  check('a row the sheet marks external is allowed', allowed('all'), true);
+  check('a row that asked for neither is not', allowed('achievements'), false);
+  check('an unknown row is not', allowed('no-such-row'), false);
+  check('whitespace in the name does not defeat the lookup', allowed('  all  '), true);
+  check('a blank name is not allowed', allowed(''), false);
+  check('null is not allowed', allowed(null), false);
 }
 
 done();
