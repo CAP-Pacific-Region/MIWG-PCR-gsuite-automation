@@ -390,6 +390,33 @@ function checkMemberStatus() {
      won't add, confirm the `AdminGroupsSettings` advanced service is enabled and
      check the log for "Group settings applied".
 
+### Cadet-lite members are missing from a group, or vanish and come back
+
+**Symptom:** a wing- or unit-level `.all` list holds only the members who have accounts. Or the
+membership count changes depending on when you look.
+
+**Cause:** two paths manage `.all` groups and only one of them can see cadet-lite members.
+`SquadronGroups.gs` adds them by personal CAPWATCH address; `UpdateGroups.gs` builds its desired
+set from `getMembers()`, which on a `CADET_LITE=true` tenant filters them out — so it marks every
+one of those addresses for removal. On CAWG that was 1,643 removals at 05:24, undone at 06:01.
+
+**Fix:** set **`Add Lite`** = `Y` on the Groups-sheet row (column beside `Add EXT`). That row's
+groups then include cadet-lite members, and both paths agree. `Add Lite` also implies
+`allowExternalMembers=true`, so the flag stops being flipped nightly.
+
+**Check it before and after:**
+
+```javascript
+// Read-only. Lists what the sheet path currently wants to remove.
+var d = getEmailGroupDeltas();
+Object.keys(d).forEach(c => Object.keys(d[c]).forEach(g => {
+  var r = Object.keys(d[c][g]).filter(e => d[c][g][e] === -1);
+  if (r.length && /\.all$/.test(g)) console.log(g + ' would remove ' + r.length);
+}));
+```
+
+Zero removals on `.all` groups is the healthy state.
+
 ### A member keeps disappearing from their unit list
 
 **Symptom:** a member is on the list one day and gone the next, then back again. Or the log

@@ -1,10 +1,23 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.8.1
+ * Version: 1.9.0
  * Filename: UpdateGroups.gs
  * Saved: 2026-07-27
- * Changes: 1.8.1: managed groups also get spamModerationLevel MODERATE. This
+ * Changes: 1.9.0: a new "Add Lite" column in the Groups sheet lets a row include
+ *   cadet-lite members, addressed by their personal CAPWATCH address. Without it
+ *   this path could not see them at all — getMembers() filtered them out before
+ *   the desired set was built — so SquadronGroups added them to every unit .all
+ *   and this path removed them again: 1,643 removals a night on the CAWG cadet
+ *   tenant, undone an hour later, with members off their unit list in between.
+ *   The wing-wide ca.all never had them at all, which is how this was found.
+ *   "Add Lite" IMPLIES external members, because a row asking for accountless
+ *   members while leaving "Add EXT" blank asks for two contradictory things and
+ *   the losing side is silent. Cadet-lite members are now in the member set by
+ *   default and still reach no group without the opt-in: they arrive with a null
+ *   address and every group's `isMatch && .email` test skips them, exactly as
+ *   when they were absent entirely.
+ *   1.8.1: managed groups also get spamModerationLevel MODERATE. This
  *   path already enforced ANYONE_CAN_POST; the moderation setting is what makes
  *   that openness defensible, and SquadronGroups.gs 1.6.0 now manages the same
  *   pair, so the two paths no longer disagree about a group they both touch.
@@ -78,6 +91,8 @@ var desiredGroupMeta = {};
 var groupAttributeByName = {};
 // Map base group name -> allow external members boolean (from Groups sheet Add EXT column)
 var groupAllowExternalByName = {};
+// Map base group name -> include cadet-lite boolean (from Groups sheet "Add Lite" column)
+var groupIncludeCadetLiteByName = {};
 
 const DRY_RUN = false; // change to false for real updates
 
@@ -889,9 +904,13 @@ function getEmailGroupDeltas() {
 // Build Group Name -> Attribute lookup for use during updateEmailGroups filtering
 groupAttributeByName = {};
 groupAllowExternalByName = {};
+// Not carried in the batch state: it is only read while deltas are computed, and
+// a resumed slice applies deltas it already has.
+groupIncludeCadetLiteByName = {};
 
 const groupsHeader = (groupsConfig[0] || []).map(h => (h || '').toString().trim().toLowerCase());
 const addExtIdx = groupsHeader.indexOf('add ext');
+const addLiteIdx = groupsHeader.indexOf('add lite');
 
 function isTruthyAddExt_(v) {
   const t = (v || '').toString().trim().toLowerCase();
@@ -901,8 +920,19 @@ function isTruthyAddExt_(v) {
 for (let r = 1; r < groupsConfig.length; r++) {
   const gName = (groupsConfig[r][1] || '').toString().trim(); // Group Name
   const attr = (groupsConfig[r][2] || '').toString().trim();  // Attribute
-  if (gName) groupAttributeByName[gName] = attr;
-  if (gName) groupAllowExternalByName[gName] = addExtIdx > -1 ? isTruthyAddExt_(groupsConfig[r][addExtIdx]) : false;
+  if (!gName) continue;
+  groupAttributeByName[gName] = attr;
+
+  const wantsLite = addLiteIdx > -1 ? isTruthyAddExt_(groupsConfig[r][addLiteIdx]) : false;
+  const wantsExt = addExtIdx > -1 ? isTruthyAddExt_(groupsConfig[r][addExtIdx]) : false;
+
+  // "Add Lite" IMPLIES external members. A cadet-lite member is addressed by a
+  // personal CAPWATCH address, so a row that asks for them and leaves "Add EXT"
+  // blank is asking for two things that contradict each other — and the losing
+  // side is silent: the adds fail, or worse, allowExternalMembers is set false
+  // here while another writer sets it true, and the flag flips daily.
+  groupAllowExternalByName[gName] = wantsExt || wantsLite;
+  groupIncludeCadetLiteByName[gName] = wantsLite;
 }
 
   // Map base group name -> spreadsheet description (if provided)
@@ -917,7 +947,14 @@ for (let r = 1; r < groupsConfig.length; r++) {
     }
   }
   let squadrons = getSquadrons();
-  let members = getMembers();
+
+  // Cadet-lite members are INCLUDED here and still reach no group by default.
+  // createMemberObject sets email:null, and only buildWorkspaceEmailMapForGroups_
+  // fills it — from the Workspace directory, where an accountless member has no
+  // entry. So they arrive addressless and every group's `isMatch && .email` test
+  // skips them, exactly as when they were filtered out entirely. What changes is
+  // that a row opting into "Add Lite" can now give them an address.
+  let members = getMembers(CONFIG.MEMBER_TYPES.ACTIVE, true, true);
   // --- Build CAPWATCH → Workspace email map ---
   attachCommitteesToMembers(members, squadrons);
   buildWorkspaceEmailMapForGroups_(members);
@@ -948,14 +985,38 @@ for (let r = 1; r < groupsConfig.length; r++) {
     Logger.error('Failed to build Workspace user map', { error: err.message });
   }
 
+  // Personal addresses, built once and only if some row actually asked for them.
+  // Reuses the squadron module's map so both paths reach a cadet-lite member at
+  // the same address — two writers disagreeing about which address is "theirs"
+  // is how a member ends up added and removed on a loop.
+  const anyRowWantsCadetLite = Object.keys(groupIncludeCadetLiteByName)
+    .some(function (n) { return groupIncludeCadetLiteByName[n]; });
+  const capwatchEmailByCapid = anyRowWantsCadetLite
+    ? buildSquadronCapwatchPrimaryEmailByCapidMap_()
+    : {};
+  let membersWithCadetLite = null;
+
+  if (anyRowWantsCadetLite) {
+    membersWithCadetLite = withCadetLiteAddresses_(members, capwatchEmailByCapid);
+    const reachable = Object.keys(membersWithCadetLite)
+      .filter(function (c) { return !members[c].email && membersWithCadetLite[c].email; }).length;
+    Logger.info('Cadet-lite members addressable for opted-in groups', {
+      reachable: reachable,
+      note: 'Accountless members with a CAPWATCH address. Groups without "Add Lite" are unaffected.'
+    });
+  }
+
   // Build desired group membership state
   for(let i = 1; i < groupsConfig.length; i++) {
     const groupName = groupsConfig[i][1];
+    const rowMembers = (membersWithCadetLite && groupIncludeCadetLiteByName[String(groupName || '').trim()])
+      ? membersWithCadetLite
+      : members;
     const generatedGroups = getGroupMembers(
       groupName,
       groupsConfig[i][2],
       groupsConfig[i][3],
-      members,
+      rowMembers,
       squadrons,
     );
 
@@ -1079,6 +1140,40 @@ for (let r = 1; r < groupsConfig.length; r++) {
  * @param {Object<string, Object>} members - Members object indexed by CAPID
  * @returns {Object<string, string>} The CAPID -> email map
  */
+/**
+ * Returns a copy of `members` in which the accountless ones carry their CAPWATCH
+ * personal address, so a group can actually reach them.
+ *
+ * WHY A COPY. The result is handed to one Groups-sheet row and thrown away.
+ * Mutating the shared member map would leak these addresses into every row
+ * processed afterwards, quietly adding 1,600-odd external members to groups
+ * nobody opted in — the kind of change that looks fine in a diff and is
+ * discovered in a mailbox.
+ *
+ * A member with no Workspace account and no CAPWATCH address stays addressless
+ * and reaches no group. That is the honest outcome: there is nowhere to send.
+ *
+ * @param {Object} members - CAPID -> member object
+ * @param {Object} capwatchEmailByCapid - CAPID -> personal address
+ * @returns {Object} Copy with accountless members addressed where possible
+ */
+function withCadetLiteAddresses_(members, capwatchEmailByCapid) {
+  const out = {};
+  Object.keys(members).forEach(function (capid) {
+    const member = members[capid];
+    if (member && !member.email) {
+      const fallback = capwatchEmailByCapid[capid];
+      if (fallback) {
+        // Shallow copy: only the address differs, and the original must not.
+        out[capid] = Object.assign({}, member, { email: fallback });
+        return;
+      }
+    }
+    out[capid] = member;
+  });
+  return out;
+}
+
 function buildWorkspaceEmailMapForGroups_(members) {
   workspaceEmailMap = {};
   let token = '';
