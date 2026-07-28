@@ -278,6 +278,49 @@ keys are reconciled, everything else the callers pass is left to console/GAM. Th
 setting has been wrong twice, once by applying nothing and once by nearly applying too
 much, so which keys are in the set is a decision worth holding still. 17 assertions.
 
+## [2026-07-27] — two writers, one group, 1,643 members removed every night
+
+`ca.all@cawgcadets.org` had 1,004 members. The tenant has 1,004 account-holding cadets and
+**1,683 cadet-lite** ones. Pulling that thread found something worse than a missing wing list.
+
+**Every unit's `.all` group was being emptied of cadet-lite members daily and refilled an hour
+later.**
+
+| | |
+|---|---|
+| **05:24** | `updateEmailGroups` removes ~1,643 external addresses from every `ca###.all` |
+| **06:01** | `updateAllSquadronGroups` adds them all back |
+
+Members were off their unit's all-hands for roughly half an hour every morning, and mail sent in
+that window did not reach them. Measured, not inferred: `getEmailGroupDeltas()` reported 1,643
+pending removals across 55 units.
+
+**One cause, three symptoms.** The sheet-driven path could not see cadet-lite members —
+`getMembers()` filtered them out before the desired set was built — so every address
+SquadronGroups had added looked like a stranger. The same blindness meant `ca.all` never had
+them, and the blank `Add EXT` column on those rows meant `allowExternalMembers` was being set
+**false** nightly, undoing the repair applied that morning.
+
+### Changed — `UpdateGroups.gs` 1.9.0
+
+A new **`Add Lite`** column. Rows that opt in include cadet-lite members, addressed by their
+personal CAPWATCH address — the same address SquadronGroups uses, so the two paths finally agree
+about what a `.all` group contains.
+
+**`Add Lite` implies external members.** A row asking for accountless members while leaving
+`Add EXT` blank asks for two contradictory things, and the losing side is silent: the adds fail,
+or the flag flips nightly against another writer. One column now settles both.
+
+**Cadet-lite members are in the member set by default and still reach no group without the
+opt-in.** `createMemberObject` sets `email: null` and only the Workspace directory fills it, so
+they arrive addressless and every group's `isMatch && .email` test skips them — exactly as when
+they were filtered out entirely. Nothing changes for any row that does not ask.
+
+The addressed member map is a **copy**, handed to one row and discarded. Mutating the shared map
+would leak 1,600-odd external addresses into every row processed afterwards — a change that looks
+small in a diff and is discovered in a mailbox. `test/UpdateGroups.cadetLite.test.js` spends four
+of its 20 assertions on that one property.
+
 ## [2026-07-27] — six transition triggers become one, freeing five slots
 
 Apps Script allows **20 triggers per script per user**, and the cadets project was at 20 — six of
