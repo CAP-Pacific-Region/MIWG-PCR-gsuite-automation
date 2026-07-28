@@ -10,6 +10,57 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-28] — the members who were added and removed every night
+
+`cadet@gmail.com`, `ca.det@gmail.com` and `cadet+cap@gmail.com` are **one mailbox**.
+Google ignores dots and `+tags` in a gmail.com local part, and CAPWATCH supplies
+whichever spelling the member happened to type when they signed up.
+
+The sheet path compared membership as **strings**. So a member whose stored spelling
+differed from their CAPWATCH spelling looked missing and unwanted at the same time:
+
+| | |
+|---|---|
+| Delta says | add `ca.det@gmail.com` — not in the group |
+| Google says | `409 Member already exists` |
+| Delta also says | remove `cadet@gmail.com` — nobody asked for it |
+| Google says | done |
+
+Both are the same person. It ran every night, in every group they belong to. A single
+CAWG cadet run logged **39 errors and 33 needless removals**, all of it this — and the
+member lost their membership until the next run put it back.
+
+`SquadronGroups.gs` fixed this for the squadron lists some time ago
+(`diffGroupMembership_`, keyed on `googleAccountKey()`). The sheet path never learned
+it, so the two writers disagreed about who was already a member of the groups they
+share.
+
+### Changed — `UpdateGroups.gs` 1.11.0
+
+Reconciliation moves into **`reconcileGroupDelta_()`** — pure, no API calls, no logging —
+and compares on the account an address *reaches* rather than how it is spelled. Where the
+group already holds one account under two spellings (the state the old comparison created),
+the extra is now removed, and the spelling the sheet asked for is the one that survives, so
+which address is kept no longer depends on Google's listing order.
+
+`getEmailGroupDeltas()` reports what identity matching bought, so a run can be checked
+without reading it member by member. All three should sit near zero once a tenant settles:
+
+```
+sameAccountDifferentSpelling  group holds the account under another spelling
+duplicateDesiredAddresses     two desired addresses, one account
+redundantCurrentAddresses     group holds one account twice; extra dropped
+```
+
+### Tests — `test/UpdateGroups.identity.test.js`
+
+Ten sections against the real `googleAccountKey()`, not a stub: what is under test is
+the agreement between the two files. Section 2 asserts the *absence* of the old
+behaviour — an empty insert list and an empty removal list for one member in two
+spellings — so a regression is unmistakable rather than a silent return to nightly
+churn. Section 7 fixes the order in which spellings are preferred; getting that wrong
+during development turned a keep into a removal and deleted the member outright.
+
 ## [2026-07-27] — two groups that could never be created, and nobody could tell
 
 `groups.insert` refuses a name over **73 characters** outright — 400 "Invalid Input: groupName"

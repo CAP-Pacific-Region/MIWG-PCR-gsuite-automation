@@ -1,10 +1,20 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.10.0
+ * Version: 1.11.0
  * Filename: UpdateGroups.gs
- * Saved: 2026-07-27
- * Changes: 1.10.0: the apply loop can finally ADD an external member. It allowed
+ * Saved: 2026-07-28
+ * Changes: 1.11.0: membership is reconciled on Google ACCOUNT identity instead of
+ *   string equality. Google ignores dots and +tags in a gmail.com local part, so
+ *   one mailbox has many spellings and CAPWATCH supplies whichever the member
+ *   typed. Comparing raw strings made every such member look both missing and
+ *   unwanted at once: the desired spelling was inserted (409 Member already
+ *   exists) and the stored spelling was removed — every night, in every group
+ *   they belong to. A single CAWG cadet run showed 39 such errors and 33
+ *   needless removals. SquadronGroups.gs fixed this in its own diff; this is the
+ *   same rule on the sheet path. Where the group already holds one account twice
+ *   — the state the old comparison created — the extra spelling is now removed.
+ *   1.10.0: the apply loop can finally ADD an external member. It allowed
  *   off-domain addresses for exactly one case — Attribute 'contact' — and
  *   skipped every other with a bare `continue`: no log, no counter, no error. So
  *   ca.all could want 1,644 cadet-lite members, the delta could say so, and the
@@ -1083,6 +1093,13 @@ for (let r = 1; r < groupsConfig.length; r++) {
   const mergeStats = mergeManualGroupMembersIntoDesired_(groups, manualByGroup);
   Logger.info('Manual User Additions merged into desired memberships', mergeStats);
 
+  // Membership is reconciled on Google ACCOUNT identity, not string equality.
+  // These count what that buys, so a run can be checked without reading it
+  // member by member. Both should sit near zero once a tenant has settled.
+  let sameAccountDifferentSpelling = 0;   // group holds the account under another spelling
+  let duplicateDesiredAddresses = 0;      // two desired addresses, one account
+  let redundantCurrentAddresses = 0;      // group holds one account twice; drop the extra
+
   // Calculate deltas by comparing with current state
   for (const category in groups) {
     for (const group in groups[category]) {
@@ -1152,28 +1169,121 @@ for (let r = 1; r < groupsConfig.length; r++) {
 
       const allowExternal = !!groupAllowExternalByName[baseGroupName];
       const currentMembers = getCurrentGroup(group, squadrons, desiredGroupMeta[groupEmail], allowExternal);
-      for (let i = 0; i < currentMembers.length; i++) {
-        const currentEmail = currentMembers[i].email;
-        const currentRole = (currentMembers[i].role || 'MEMBER').toString().toUpperCase();
+      const tally = reconcileGroupDelta_(groups[category][group], currentMembers);
 
-        if (groups[category][group][currentEmail]) {
-          // Member already in group - no change needed
-          groups[category][group][currentEmail] = 0;
-        } else if (currentRole === 'MEMBER') {
-          // Only auto-remove plain members. Leave MANAGER/OWNER entries alone
-          // unless they are explicitly managed elsewhere (for example User Additions).
-          groups[category][group][currentEmail] = -1;
-        }
-      }
+      sameAccountDifferentSpelling += tally.sameAccountDifferentSpelling;
+      duplicateDesiredAddresses += tally.duplicateDesiredAddresses;
+      redundantCurrentAddresses += tally.redundantCurrentAddresses;
     }
   }
 
   saveEmailGroups(groups);
   Logger.info('Group deltas generated', {
     duration: new Date() - start + 'ms',
-    categories: Object.keys(groups).length
+    categories: Object.keys(groups).length,
+    sameAccountDifferentSpelling: sameAccountDifferentSpelling,
+    duplicateDesiredAddresses: duplicateDesiredAddresses,
+    redundantCurrentAddresses: redundantCurrentAddresses
   });
   return groups;
+}
+
+/**
+ * Marks a group's desired-membership map against what the group holds today.
+ *
+ * The map IS the delta the apply loop reads: 1 add, -1 remove, 0 leave alone.
+ * Entries arrive set to 1 and are demoted here as current membership is matched
+ * against them.
+ *
+ * MEMBERSHIP IS COMPARED ON GOOGLE ACCOUNT IDENTITY, NEVER STRING EQUALITY.
+ * Google ignores dots and +tags in a gmail.com local part, so one mailbox has
+ * many spellings and CAPWATCH supplies whichever the member happened to type.
+ * Comparing raw strings made such a member look missing and unwanted at the same
+ * time: the desired spelling was inserted (409 Member already exists) and the
+ * stored spelling was removed — nightly, in every group they belong to.
+ * See googleAccountKey() in utils.gs. SquadronGroups.gs learned this first, in
+ * diffGroupMembership_(); this is the same rule on the sheet path.
+ *
+ * Pure: no API calls, no logging. Every decision lives here so it can be tested
+ * without Google, and the caller is left with nothing but execution.
+ *
+ * @param {Object<string, number>} desired - address -> delta, MUTATED in place
+ * @param {Array<{email: string, role: string}>} currentMembers - what the group holds
+ * @returns {{sameAccountDifferentSpelling: number, duplicateDesiredAddresses: number,
+ *   redundantCurrentAddresses: number}}
+ */
+function reconcileGroupDelta_(desired, currentMembers) {
+  const delta = desired || {};
+  let sameAccountDifferentSpelling = 0;
+  let duplicateDesiredAddresses = 0;
+  let redundantCurrentAddresses = 0;
+
+  // Desired addresses indexed by the account they reach.
+  const desiredByKey = {};
+  for (const desiredEmail in delta) {
+    const key = googleAccountKey(desiredEmail);
+    if (desiredByKey[key] === undefined) {
+      desiredByKey[key] = desiredEmail;
+      continue;
+    }
+    // Two desired addresses, one account. Keep the first and stand the second
+    // down — inserting it can only ever come back 409.
+    delta[desiredEmail] = 0;
+    duplicateDesiredAddresses++;
+  }
+
+  const held = (currentMembers || []).map(function (member) {
+    return {
+      email: String((member && member.email) || '').trim().toLowerCase(),
+      role: String((member && member.role) || 'MEMBER').toUpperCase()
+    };
+  }).filter(function (member) { return !!member.email; });
+
+  // When the group holds several spellings of one account, keep the one the sheet
+  // asked for. Which address survives then follows the roster rather than Google's
+  // listing order, and the surviving entry is the one the delta already wants — so
+  // a keep can never be overwritten by the removal of its own twin.
+  const exactByKey = {};
+  held.forEach(function (member) {
+    const key = googleAccountKey(member.email);
+    if (desiredByKey[key] === member.email) exactByKey[key] = member.email;
+  });
+
+  const claimedByKey = {};
+
+  held.forEach(function (member) {
+    const currentEmail = member.email;
+    const currentRole = member.role;
+    const key = googleAccountKey(currentEmail);
+    const desiredEmail = desiredByKey[key];
+    const preferred = exactByKey[key];
+
+    if (desiredEmail !== undefined &&
+        claimedByKey[key] === undefined &&
+        (preferred === undefined || preferred === currentEmail)) {
+      // The group already reaches this account. The spelling it holds is
+      // deliverable, so leave it in place and stand the desired insert down.
+      claimedByKey[key] = currentEmail;
+      delta[desiredEmail] = 0;
+      if (desiredEmail !== currentEmail) sameAccountDifferentSpelling++;
+      return;
+    }
+
+    // Only auto-remove plain members. Leave MANAGER/OWNER entries alone unless
+    // they are explicitly managed elsewhere (for example User Additions).
+    if (currentRole !== 'MEMBER') return;
+
+    // Either nobody wants this address, or it is a second spelling of an account
+    // already matched above — the state the old string comparison created.
+    delta[currentEmail] = -1;
+    if (desiredEmail !== undefined) redundantCurrentAddresses++;
+  });
+
+  return {
+    sameAccountDifferentSpelling: sameAccountDifferentSpelling,
+    duplicateDesiredAddresses: duplicateDesiredAddresses,
+    redundantCurrentAddresses: redundantCurrentAddresses
+  };
 }
 
 /**

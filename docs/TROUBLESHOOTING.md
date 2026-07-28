@@ -424,14 +424,30 @@ shows `Member already exists` (409) on a group that plainly does not contain the
 
 **Cause:** two spellings of one Google account. On `gmail.com` dots carry no meaning and
 everything after a `+` is a tag, so `first.last@`, `firstlast@` and `firstlast+cap@` are one
-mailbox. Before SquadronGroups.gs 1.8.0 membership was compared as strings, so a group holding
-one spelling while CAPWATCH supplied another read as a member to add **and** a stranger to
-remove — the add 409'd and was swallowed, the remove succeeded.
+mailbox. Where membership is compared as strings, a group holding one spelling while CAPWATCH
+supplies another reads as a member to add **and** a stranger to remove — the add 409's and is
+swallowed, the remove succeeds.
 
-**Fix:** already in place — `googleAccountKey()` (utils.gs) keys both sides of the diff on the
-account rather than the string. If you still see it, check whether the address is a **Workspace
-alias** rather than a Gmail variant; those are folded by Google too but not by this key, and the
-409 log line now names the member so you can tell.
+**Fix:** in place on both writers, but they were fixed at different times, so check the file
+version before assuming:
+
+| Writer | Groups | Fixed in |
+|---|---|---|
+| `SquadronGroups.gs` — `diffGroupMembership_()` | unit `.all` / `.cadets` / `.parents` | 1.8.0 |
+| `UpdateGroups.gs` — `reconcileGroupDelta_()` | everything from the Groups sheet | **1.11.0** |
+
+Both key on `googleAccountKey()` (utils.gs). Until `UpdateGroups.gs` 1.11.0 the sheet path
+still churned, which is why a member could be stable on their unit list and unstable on the
+wing list at the same time.
+
+Check `Group deltas generated` in the log: `sameAccountDifferentSpelling` counts the members
+this is catching. A number that stays high run after run is normal — it is how many people
+spell their address differently from the group's copy — but it should not be accompanied by
+409s or removals.
+
+If you still see churn, check whether the address is a **Workspace alias** rather than a Gmail
+variant; those are folded by Google too but not by this key, and the 409 log line names the
+member so you can tell.
 
 ### Addresses Google will not accept as members
 
