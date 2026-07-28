@@ -168,6 +168,13 @@ If seniors ⇄ cadets should see each other in the GAL, configure the peer SA an
 [CROSS_TENANT_CONTACTS.md](CROSS_TENANT_CONTACTS.md) and
 [config-tenants/README.md](../config-tenants/README.md#cross-tenant-contacts-xt_peer_).
 
+## Phase 10b — Member self-service signature app (optional)
+
+A separate Apps Script project (`signature-webapp/`) letting members set their own CAP signature.
+Independent of everything above and safe to add later — but note it needs **its own copy** of
+`SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY`, so add it to the key-rotation checklist when you
+deploy it. Setup: [SIGNATURE_WEB_APP.md](SIGNATURE_WEB_APP.md).
+
 ## Phase 11 — Arm triggers
 
 Install the time-driven triggers in dependency order (CAPWATCH download first, everything
@@ -208,5 +215,6 @@ so they are intentionally **not** on this list.
 | Automation spreadsheet | [SPREADSHEET_SETUP.md](SPREADSHEET_SETUP.md) |
 | Trigger schedule | [README](../README.md#what-runs-when), [Admin Guide §8](ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule) |
 | Cross-tenant contacts | [CROSS_TENANT_CONTACTS.md](CROSS_TENANT_CONTACTS.md) |
+| Self-service signature web app | [SIGNATURE_WEB_APP.md](SIGNATURE_WEB_APP.md) |
 | Region-tenant differences | [REGION_DIFF.md](REGION_DIFF.md) |
 | Local clasp workflow | [DEVELOPMENT.md](DEVELOPMENT.md), [Admin Guide §6](ADMIN_GUIDE.md#6-local-development-with-clasp) |

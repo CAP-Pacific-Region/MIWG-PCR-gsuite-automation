@@ -1,0 +1,386 @@
+<!--
+  File: Index.html
+  Description: Single-page UI for the member self-service email signature app.
+  Talks to SignatureApi.gs over google.script.run; holds no authority of its own —
+  the account is taken from the signed-in session server-side, and the only thing
+  this page can decide is whether the phone row is included.
+  Author: Maj Isaac Wilson IV, California Wing
+  Version: 1.1.2
+  Date: 2026-07-28
+  Changes: 1.1.2 — dropped the "assistant" badge beside a duty: the line the
+           server sends now says "Assistant …" itself.
+           1.1.1 — after a successful apply, says that a signature's NAME in Gmail
+           is not something any API client can set (no such field on SendAs) and
+           where the member renames it themselves.
+           1.1.0 — a member may now pick which of their duty assignments appear,
+           up to the two-line cap, assistants included. The cap is shown by greying
+           the rest; the ORDER is never the member's to set.
+           1.0.2 — names CAP's signature generator as the authority for the format
+           and the fallback when this page cannot help; dropped "Nobody else's".
+           1.0.1 — includePhone() no longer consults the checkbox's disabled state,
+           and every call site reads it before setBusy(). See PCR_CHANGELOG.
+-->
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    :root {
+      --ink: #1f2328; --muted: #59636e; --line: #d8dee4; --bg: #fff;
+      --accent: #0a3d62; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+      --chip: #f6f8fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 1.5rem; background: var(--bg); color: var(--ink);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    header { border-bottom: 1px solid var(--line); padding-bottom: .9rem; margin-bottom: 1.4rem; }
+    h1 { margin: 0 0 .2rem; font-size: 1.35rem; }
+    .sub { color: var(--muted); font-size: .875rem; }
+    h2 { font-size: 1rem; margin: 1.8rem 0 .6rem; }
+
+    .banner { padding: .7rem .9rem; border-radius: 6px; margin-bottom: 1rem; font-size: .875rem; }
+    .banner.warn { background: #fff8c5; border: 1px solid #d4a72c; color: #4d2d00; }
+    .banner.bad { background: #ffebe9; border: 1px solid #ff818266; color: #82071e; }
+    .banner.ok { background: #dafbe1; border: 1px solid #1a7f3733; color: #0a3622; }
+    .banner.hidden, .hidden { display: none; }
+
+    .card { border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; }
+    .card dl { margin: 0; display: grid; grid-template-columns: 8.5rem 1fr; gap: .35rem .8rem; font-size: .9rem; }
+    .card dt { color: var(--muted); }
+    .card dd { margin: 0; }
+    .note { color: var(--muted); font-size: .8rem; margin-top: .7rem; }
+
+    label.toggle { display: flex; gap: .55rem; align-items: flex-start; font-size: .9rem; cursor: pointer; }
+    label.toggle input { margin-top: .25rem; }
+    label.toggle.duty { margin-bottom: .45rem; }
+    /* A duty at the cap is greyed, not hidden: a member should see the choice they
+       are not currently able to make. */
+    label.toggle input:disabled + span { color: var(--muted); }
+
+    iframe.preview {
+      width: 100%; height: 330px; border: 1px solid var(--line); border-radius: 8px;
+      background: #fff;
+    }
+
+    .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: 1rem; }
+    button {
+      font: inherit; padding: .5rem 1rem; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button:disabled { opacity: .5; cursor: default; }
+    .spinner { color: var(--muted); font-size: .85rem; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+    .foot {
+      margin-top: 2.2rem; padding-top: .9rem; border-top: 1px solid var(--line);
+      color: var(--muted); font-size: .8rem;
+    }
+    .foot a { color: var(--accent); }
+    ul.addrs { margin: .3rem 0 0; padding-left: 1.1rem; font-size: .875rem; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><?= orgLabel ?> Email Signature</h1>
+    <div class="sub">
+      Signed in as <?= actor ?> &middot; this sets the signature on your own
+      <?= orgLabel ?> addresses.
+    </div>
+  </header>
+
+  <div id="flash" class="banner hidden"></div>
+
+  <div id="loading" class="spinner">Looking up your membership record&hellip;</div>
+
+  <div id="app" class="hidden">
+    <h2>What CAPWATCH says</h2>
+    <div class="card">
+      <dl>
+        <dt>Name and grade</dt><dd id="mName"></dd>
+        <dt>CAPID</dt><dd id="mCapid"></dd>
+      </dl>
+      <p class="note">
+        These come from CAPWATCH and cannot be edited here — the signature is a
+        uniform item. You can choose which assignments it shows, not what they say.
+        If something is wrong, correct it in eServices; the change reaches this page
+        with the next daily extract.
+      </p>
+    </div>
+
+    <h2>Duty assignments</h2>
+    <div id="dutyChoice" class="card hidden">
+      <div id="dutyList"></div>
+      <p class="note" id="dutyNote"></p>
+    </div>
+    <div id="noDuty" class="card hidden">
+      CAPWATCH has no duty assignment on your record, so the signature has no duty
+      line. Ask your unit&rsquo;s personnel officer if that looks wrong.
+    </div>
+
+    <h2>Phone number</h2>
+    <div id="phoneChoice" class="card hidden">
+      <label class="toggle">
+        <input type="checkbox" id="includePhone" checked>
+        <span>Include my phone number — <strong id="phoneValue"></strong></span>
+      </label>
+      <p class="note">
+        Leave it unticked and the phone row is left out entirely.
+      </p>
+    </div>
+    <div id="noPhone" class="card hidden">
+      <div id="noPhoneText"></div>
+    </div>
+
+    <h2>Preview</h2>
+    <iframe class="preview" id="preview" sandbox title="Signature preview"></iframe>
+
+    <h2>Apply</h2>
+    <div class="card">
+      <div id="addrIntro">This will be written to:</div>
+      <ul class="addrs" id="addrs"></ul>
+      <p class="note">
+        Any personal address you send mail from is left alone — this app only ever
+        writes to <?= orgLabel ?> addresses.
+      </p>
+    </div>
+
+    <div class="row">
+      <button class="primary" id="applyBtn">Apply to my signature</button>
+      <span class="spinner hidden" id="applySpin">Writing&hellip;</span>
+    </div>
+
+    <!--
+      Shown only after a successful apply — the moment a member switches to Gmail
+      and sees whatever Google decided to call their new signature. Google's API
+      has no field for a signature's name (the SendAs resource carries the HTML and
+      nothing else), so this is not something the page declined to do: it is the
+      only way the name can be changed at all.
+    -->
+    <p class="note hidden" id="renameNote">
+      <strong>Want it called something else in Gmail?</strong>
+      The signature&rsquo;s <em>name</em> is not something this page can set &mdash;
+      Google&rsquo;s API has no field for it. Rename it yourself in Gmail:
+      <strong>Settings &rarr; See all settings &rarr; General &rarr; Signature</strong>.
+      That name is shown only to you; it never appears on mail you send.
+    </p>
+  </div>
+
+  <footer class="foot">
+    This page builds the signature from CAP&rsquo;s own
+    <a href="<?= generatorUrl ?>" target="_blank" rel="noopener">signature generator</a>
+    — that page is the authority for the format, and where to go if this one
+    can&rsquo;t help you.
+  </footer>
+</div>
+
+<script>
+var STATE = { phone: '', addresses: [], canApply: false, duties: [], maxDuties: 2 };
+
+function el(id) { return document.getElementById(id); }
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function flash(message, kind) {
+  var f = el('flash');
+  f.textContent = message;
+  f.className = 'banner ' + (kind || 'ok');
+}
+
+/**
+ * google.script.run failures arrive as an Error whose message is whatever the
+ * server threw — which for this app is always a sentence written for a member
+ * (see requireMember_ and MemberRecord.gs). Show it as-is.
+ */
+function onFailure(err) {
+  flash(err && err.message ? err.message : 'Something went wrong.', 'bad');
+  setBusy(false);
+  el('loading').className = 'spinner hidden';
+}
+
+/**
+ * STATE.canApply is consulted here rather than only when it is set, because a
+ * preview toggle also ends in setBusy(false) — and re-enabling a button we already
+ * know has nothing to write to would offer an action that can only fail.
+ */
+function setBusy(busy) {
+  el('applyBtn').disabled = busy || !STATE.canApply;
+  el('includePhone').disabled = busy;
+  el('applySpin').className = busy ? 'spinner' : 'spinner hidden';
+}
+
+/**
+ * The member's one choice, as an explicit boolean — the server accepts nothing
+ * else as "yes".
+ *
+ * Read this BEFORE setBusy(true) at every call site. This used to also require
+ * `!box.disabled`, which made it a lie: setBusy(true) disables the checkbox, so
+ * asking afterwards always answered false and the phone row was silently dropped
+ * from every apply — the server obediently reported "the phone row was left out"
+ * about a box the member had ticked. STATE.phone is the only gate that belongs
+ * here; being mid-request is not an opinion about whether the member wants their
+ * number.
+ */
+function includePhone() {
+  var box = el('includePhone');
+  return !!(box && box.checked && STATE.phone);
+}
+
+/**
+ * The duty keys currently ticked, as an array — read before setBusy, same rule as
+ * includePhone().
+ *
+ * Sent even when it matches the default pick. "What is ticked" is always the whole
+ * answer, so the server never has to distinguish "the member accepted the default"
+ * from "the member chose exactly the default", and the preview cannot disagree with
+ * the apply.
+ */
+function selectedDutyKeys() {
+  return STATE.duties.filter(function (d) { return d.checked; })
+    .map(function (d) { return d.key; });
+}
+
+/**
+ * The cap, enforced where the member can see it: once maxDuties are ticked, the
+ * rest go grey rather than letting someone tick a third and be refused by the
+ * server. The server still refuses — this is courtesy, not the guarantee.
+ */
+function applyDutyCap() {
+  var atCap = selectedDutyKeys().length >= STATE.maxDuties;
+  STATE.duties.forEach(function (d) {
+    d.box.disabled = atCap && !d.checked;
+  });
+  el('dutyNote').textContent = STATE.duties.length <= 1
+    ? 'Untick it to leave the duty line out entirely.'
+    : 'Pick up to ' + STATE.maxDuties + '. They are always printed highest ' +
+      'organizational level first — assistant assignments after principal ones at ' +
+      'the same level — whichever order you tick them in.';
+}
+
+/** Builds the duty checkboxes from the record. */
+function renderDuties(duties) {
+  var list = el('dutyList');
+  // No "assistant" badge: the line itself now reads "… Assistant Supply Officer",
+  // so a badge beside it would say the same thing twice.
+  list.innerHTML = duties.map(function (d, i) {
+    return '<label class="toggle duty"><input type="checkbox" id="duty' + i + '"' +
+      (d.selected ? ' checked' : '') + '><span>' + esc(d.line) + '</span></label>';
+  }).join('');
+
+  STATE.duties = duties.map(function (d, i) {
+    var box = el('duty' + i);
+    var entry = { key: d.key, box: box, checked: !!d.selected };
+    if (box) {
+      box.addEventListener('change', function () {
+        entry.checked = !!box.checked;
+        applyDutyCap();
+        refreshPreview();
+      });
+    }
+    return entry;
+  });
+
+  applyDutyCap();
+}
+
+function showPreview(html) {
+  el('preview').srcdoc = html;
+}
+
+function render(state) {
+  STATE.phone = state.phone || '';
+  STATE.addresses = state.addresses || [];
+  STATE.maxDuties = state.maxDuties || 2;
+
+  el('mName').textContent = state.name;
+  el('mCapid').textContent = state.capid;
+
+  if ((state.duties || []).length) {
+    renderDuties(state.duties);
+    el('dutyChoice').className = 'card';
+  } else {
+    el('noDuty').className = 'card';
+  }
+
+  if (STATE.phone) {
+    el('phoneValue').textContent = STATE.phone;
+    el('phoneChoice').className = 'card';
+  } else {
+    el('noPhoneText').textContent = state.isCadet
+      ? 'Cadet phone numbers are never published in the directory or in a signature, ' +
+        'so there is no phone row to include or leave out.'
+      : 'CAPWATCH has no publishable mobile number for you, so the signature has no ' +
+        'phone row. Add a cell number in eServices if you want one.';
+    el('noPhone').className = 'card';
+  }
+
+  if (state.addressError) {
+    el('addrIntro').textContent =
+      'Your send-as addresses could not be read, so applying may fail: ' + state.addressError;
+    el('addrs').innerHTML = '';
+  } else if (!STATE.addresses.length) {
+    el('addrIntro').textContent =
+      'No ' + state.orgLabel + ' send-as address was found on your mailbox, so there is ' +
+      'nothing to write to.';
+  } else {
+    STATE.canApply = true;
+    el('addrs').innerHTML = STATE.addresses.map(function (a) {
+      return '<li><code>' + esc(a) + '</code></li>';
+    }).join('');
+  }
+  el('applyBtn').disabled = !STATE.canApply;
+
+  showPreview(state.html);
+  el('loading').className = 'spinner hidden';
+  el('app').className = '';
+}
+
+function refreshPreview() {
+  // Both read before setBusy — see includePhone().
+  var withPhone = includePhone();
+  var duties = selectedDutyKeys();
+  setBusy(true);
+  google.script.run
+    .withSuccessHandler(function (result) { showPreview(result.html); setBusy(false); })
+    .withFailureHandler(onFailure)
+    .apiPreview(withPhone, duties);
+}
+
+function apply() {
+  // Both read before setBusy — see includePhone().
+  var withPhone = includePhone();
+  var duties = selectedDutyKeys();
+  setBusy(true);
+  google.script.run
+    .withSuccessHandler(function (result) {
+      setBusy(false);
+      var parts = ['Signature applied to ' + result.updated.join(', ') + '.'];
+      if (!result.includedPhone && STATE.phone) parts.push('The phone row was left out.');
+      if (STATE.duties.length && !duties.length) parts.push('No duty assignment was shown.');
+      if (result.failed && result.failed.length) {
+        parts.push('Failed on ' + result.failed.map(function (f) { return f.address; }).join(', ') + '.');
+      }
+      parts.push('Gmail may take a moment to show it.');
+      flash(parts.join(' '), (result.failed && result.failed.length) ? 'warn' : 'ok');
+      // Only once something was actually written — before that it is advice about
+      // a signature Gmail does not yet have.
+      el('renameNote').className = 'note';
+    })
+    .withFailureHandler(onFailure)
+    .apiApply(withPhone, duties);
+}
+
+el('includePhone').addEventListener('change', refreshPreview);
+el('applyBtn').addEventListener('click', apply);
+
+google.script.run.withSuccessHandler(render).withFailureHandler(onFailure).apiGetState();
+</script>
+</body>
+</html>

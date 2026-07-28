@@ -14,6 +14,14 @@
     "status:region": "clasp status -P clasp-targets/region.clasp.json",
     "push:region": "clasp push -P clasp-targets/region.clasp.json",
     "pull:region": "clasp pull -P clasp-targets/region.clasp.json",
-    "open:region": "clasp open-script -P clasp-targets/region.clasp.json"
+    "open:region": "clasp open-script -P clasp-targets/region.clasp.json",
+    "status:signature:seniors": "clasp status -P clasp-targets/signature-webapp-seniors.clasp.json",
+    "push:signature:seniors": "clasp push -P clasp-targets/signature-webapp-seniors.clasp.json --force",
+    "pull:signature:seniors": "clasp pull -P clasp-targets/signature-webapp-seniors.clasp.json",
+    "open:signature:seniors": "clasp open-script -P clasp-targets/signature-webapp-seniors.clasp.json",
+    "status:signature:cadets": "clasp status -P clasp-targets/signature-webapp-cadets.clasp.json",
+    "push:signature:cadets": "clasp push -P clasp-targets/signature-webapp-cadets.clasp.json --force",
+    "pull:signature:cadets": "clasp pull -P clasp-targets/signature-webapp-cadets.clasp.json",
+    "open:signature:cadets": "clasp open-script -P clasp-targets/signature-webapp-cadets.clasp.json"
   }
 }

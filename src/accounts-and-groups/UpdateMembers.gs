@@ -1,10 +1,34 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.20.0
- * Date: 2026-07-26
+ * Version: 1.21.1
+ * Date: 2026-07-28
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.20.0)
- * Changes: 1.20.0 — sendWelcomeEmail() now records each send in the audit
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.21.1)
+ * Changes: 1.21.1 — signatureDutyTitle_(): an assistant duty now prints as
+ *   "Assistant Supply Officer". CAPWATCH keeps the assistant flag in its own
+ *   column, so the Duty value reads the same for the officer and their assistant,
+ *   and printing it bare claimed the billet. Invisible until 1.21.0 let a member
+ *   choose an assistant duty. Kept OUT of formatDutyTitle_(), which UpdateGroups.gs
+ *   and SendRetentionEmail.gs use to MATCH titles — a prefix there would change who
+ *   lands in a duty group. Default signatures are unaffected: they exclude
+ *   assistants entirely.
+ *   1.21.0 — getDutyBlock() accepts an OPTIONAL member.selectedDutyKeys,
+ *   the duties a member chose in the self-service web app. When present it replaces
+ *   the two default rules (assistants excluded, one duty per echelon) — those exist
+ *   to guess well in the member's absence, and the member is no longer absent.
+ *   Echelon ordering and the two-line cap are applied either way, so the style
+ *   guide's requirements hold whoever chose the contents. Assistants now sort after
+ *   principals within an echelon, which is inert by default because assistants are
+ *   filtered out there. NOTHING IN src/ SETS THE FIELD: provisioning and
+ *   pushAllSignatures() render byte-identically to before. Adds dutyKey_() and
+ *   dutyLines_().
+ *   1.20.1 — generateEmailSignature() spacing, no other change:
+ *   removed the leading <br /> (which rendered as a blank line above the name in
+ *   the mail client) and cut the logo's bottom margin from 20px to 5px, so the
+ *   gap above the tagline matches every other row in the block. The web app's
+ *   port (signature-webapp/SignatureTemplate.gs 1.0.1) carries the identical
+ *   change; test/SignatureWebApp.test.js fails if the two ever differ.
+ *   1.20.0 — sendWelcomeEmail() now records each send in the audit
  *   ledger (WelcomeEmailAudit.gs, welcomeLedgerRecordSent_), which is what makes
  *   an account that never received a welcome email detectable instead of
  *   invisible. Recorded here, after the send, so provisioning and the resend are
@@ -2796,6 +2820,26 @@ function dutyTitleRank_(title) {
 }
 
 /**
+ * A stable identifier for one duty assignment, used to name a duty across a round
+ * trip without trusting the browser to hand back a whole duty object.
+ *
+ * Content-derived rather than an array index: the member's record is rebuilt from
+ * CAPWATCH between calls, and CAPWATCH's row order is not a promise. Two duties
+ * identical in all four fields are indistinguishable in the signature anyway.
+ *
+ * @param {Object} dp - one entry of member.dutyPositions
+ * @returns {string}
+ */
+function dutyKey_(dp) {
+  return [
+    String((dp && dp.id) || '').trim(),
+    String((dp && dp.level) || '').trim().toUpperCase(),
+    String((dp && dp.orgName) || '').trim().toUpperCase(),
+    (dp && dp.assistant) ? 'A' : 'P'
+  ].join('|');
+}
+
+/**
  * The signature's duty line(s).
  *
  * Returns '' when there is nothing to show, and generateEmailSignature() then omits
@@ -2812,18 +2856,55 @@ function dutyTitleRank_(title) {
  * from crowding out a lower command (e.g. two wing staff jobs hiding a squadron
  * command). See the one-per-level logic below.
  *
- * @param {Object} member - CAPWATCH member object
- * @returns {string} HTML, or '' if the member has no non-assistant duty position
+ * MEMBER-CHOSEN DUTIES (`member.selectedDutyKeys`)
+ *
+ * The self-service web app lets a member say which of their own duties should
+ * appear. When that array is present it replaces the two DEFAULT rules — an
+ * assistant duty may be included, and two duties at one echelon may both appear —
+ * because those rules exist to guess well in the member's absence, and the member
+ * is no longer absent.
+ *
+ * What a selection can never do is reorder or lengthen the block: the echelon
+ * ordering and the two-line cap below are applied to it exactly as to a default
+ * pick, so the style guide's requirements hold whoever chose the contents.
+ *
+ * NOTHING IN THIS PROJECT SETS IT. Provisioning and pushAllSignatures() pass a
+ * member straight from getMembers(), which has no such field, so both keep the
+ * behavior they have always had — a signature built here is byte-identical to one
+ * built before this parameter existed. That is asserted by
+ * test/SignatureWebApp.test.js, which also holds the web app's port of this
+ * function to the same output.
+ *
+ * @param {Object} member - CAPWATCH member object; optionally carrying
+ *   selectedDutyKeys, an array of dutyKey_() values the member chose
+ * @returns {string} HTML, or '' when there is no duty to show
  */
 function getDutyBlock(member) {
-  const positions = (member.dutyPositions || []).filter(dp => !dp.assistant);
+  const all = member.dutyPositions || [];
+  const chosen = Array.isArray(member.selectedDutyKeys) ? member.selectedDutyKeys : null;
+
+  const positions = chosen
+    ? all.filter(dp => chosen.indexOf(dutyKey_(dp)) !== -1)
+    : all.filter(dp => !dp.assistant);
   if (positions.length === 0) return '';
 
-  // Highest echelon first, then most senior title within that echelon.
+  // Highest echelon first; then principals before assistants at that echelon; then
+  // most senior title. Echelon stays the OUTER key — the style guide asks for
+  // highest organizational level first, so a wing assistant still precedes a
+  // squadron principal. The assistant term only orders duties within one echelon.
+  //
+  // It is inert on the default path, where assistants have already been filtered
+  // out, which is why adding it changes no existing signature.
   const sorted = positions.slice().sort((a, b) =>
     dutyLevelRank_(a.level) - dutyLevelRank_(b.level) ||
+    (a.assistant ? 1 : 0) - (b.assistant ? 1 : 0) ||
     dutyTitleRank_(a.id) - dutyTitleRank_(b.id)
   );
+
+  // An explicit selection is already the answer to "which two" — applying the
+  // one-per-echelon heuristic to it would silently drop a duty the member asked
+  // for. Order and cap, nothing else.
+  if (chosen) return dutyLines_(sorted.slice(0, SIGNATURE_MAX_DUTIES), member);
 
   // Take at most one duty per echelon first. Sorting on level alone let a member's
   // two wing roles fill both slots and push their squadron command off the
@@ -2849,6 +2930,18 @@ function getDutyBlock(member) {
     picked.push(remainder[i]);
   }
 
+  return dutyLines_(picked, member);
+}
+
+/**
+ * Renders chosen duties as the block's HTML. Split out of getDutyBlock() so the
+ * selected and default paths cannot drift in how a line is written.
+ *
+ * @param {Array<Object>} picked - duties, already ordered and capped
+ * @param {Object} member - for the home-unit fallback below
+ * @returns {string}
+ */
+function dutyLines_(picked, member) {
   return picked
     // Name the org the duty is held at, falling back to the member's home unit for
     // duty records that predate orgName being carried (see addDutyPositions). The
@@ -2857,9 +2950,35 @@ function getDutyBlock(member) {
       const org = dp.orgName
         ? formatOrgName_(dp.orgName, dp.orgScope)
         : formatOrgName_(member.orgName);
-      return `${org} ${formatDutyTitle_(dp.id)}`;
+      return `${org} ${signatureDutyTitle_(dp)}`;
     })
     .join('<br />');
+}
+
+/**
+ * The duty title as a SIGNATURE prints it — which is not the string the rest of
+ * the codebase matches on.
+ *
+ * CAPWATCH keeps the assistant flag in its own column (DutyPosition.txt `Asst`),
+ * so the `Duty` value reads "Supply Officer" whether the member is the Supply
+ * Officer or the assistant one. Printing it bare states that an assistant holds
+ * the billet. Nobody noticed while assistants were filtered out of every
+ * signature; the moment a member could choose one, the line began to misstate
+ * their assignment.
+ *
+ * DELIBERATELY NOT IN formatDutyTitle_(). That function is how UpdateGroups.gs and
+ * SendRetentionEmail.gs normalize a title before MATCHING it against a configured
+ * list, and an "Assistant " prefix there would quietly change who lands in a duty
+ * group. Display and matching want different strings; this is the display one.
+ *
+ * @param {Object} dp - one entry of member.dutyPositions
+ * @returns {string}
+ */
+function signatureDutyTitle_(dp) {
+  const title = formatDutyTitle_(dp && dp.id);
+  if (!title || !(dp && dp.assistant)) return title;
+  // A handful of CAPWATCH titles carry the word already; don't say it twice.
+  return /^assistant\b/i.test(title) ? title : 'Assistant ' + title;
 }
 
 /**
@@ -3019,8 +3138,6 @@ function generateEmailSignature(member) {
 <!DOCTYPE html>
 <html>
 <body>
-<br />
-
 <h1 style="font-size: 12px; line-height: 12px;
            font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
            color: #001871; font-weight: bold; margin: 0 0 5px;">
@@ -3069,7 +3186,7 @@ ${phoneFormatted ? `<p style="font-size: 12px; line-height: 12px;
     width="200"
     height="42"
     style="display:block; border:0; outline:none; text-decoration:none;
-           width:200px; max-width:200px; height:42px; margin: 15px 0 20px 0;"
+           width:200px; max-width:200px; height:42px; margin: 15px 0 5px 0;"
     alt="Civil Air Patrol Logo" />
 </a>
 
