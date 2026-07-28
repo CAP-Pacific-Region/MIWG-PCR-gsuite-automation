@@ -10,6 +10,69 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-28] — the accounts whose names were frozen at creation
+
+`processSendAsNamesBatchLocked()` built its roster with a bare `getMembers()`:
+
+```javascript
+getMembers(types = ACTIVE, includeDutyPositions = true, includeCadetLite = false)
+```
+
+So cadet-lite members were filtered out. But the loop walks accounts **Workspace already
+holds**, and some cadet-lite members hold one. Each of those matched no record, logged
+`No CAPWATCH record for user`, and kept whatever name it was created with. A cadet promoted
+from C/Amn to C/SSgt stayed C/Amn in the directory and on outgoing mail — which is most of
+what this job is for.
+
+**Cadet-lite decides who gets an account. It has nothing to say about what an account that
+already exists is called.** The rule was being applied outside the decision it was written
+for, and the result read as a data problem — a missing record — rather than as the policy it
+actually was.
+
+The warning was also doing double duty. Two unrelated populations shared it:
+
+| | |
+|---|---|
+| Cadet-lite holding an account | in CAPWATCH; the roster hid them. Warning was **false** |
+| No member behind the account | expired, transferred out, no CAPID in `externalIds`. Warning was **right** |
+
+The second is the one worth chasing, and it was buried in the first.
+
+### Changed — `UpdateMembers.gs` 1.21.0
+
+The roster is built with `includeCadetLite = true`. `No CAPWATCH record for user` now means
+what it says, and carries the CAPID it looked for. Runs report two counts:
+
+```
+namedCadetLite     accounts named that the old roster would have skipped
+noCapwatchRecord   genuine orphans — investigate these
+```
+
+Both entry points are covered by the one change: `updateAllSendAsNames()` doesn't load members
+itself, it clears the cursor and calls the batch worker.
+
+`isCadetLiteGrade_()` reports which accounts fell in the first bucket. It reads
+`CONFIG.CADET_LITE_EXCLUDED_GRADES` — the same list `shouldProcessMember()` applies — so "who
+is cadet-lite" has one definition rather than two that can drift.
+
+> **Expect a large `namedCadetLite` on the first run after deploying.** Those names had been
+> frozen since the account was created; the run is correcting a backlog, not misbehaving.
+
+### Not changed — `manageLicenseLifecycle()`
+
+It also builds `activeCapsns` from a bare `getMembers()`, so cadet-lite are absent there too.
+It is safe **today** only because every destructive path is gated on the account already being
+suspended, and `suspendExpiredMembers()` uses `getActiveMembers()`, which reads `Member.txt`
+raw with no cadet-lite filter. The two roster functions disagree, and the disagreement happens
+to point the protective way. If suspension is ever moved onto `getMembers()`, cadet-lite
+account holders become deletion candidates.
+
+### Tests — `test/SendAsNames.cadetLite.test.js`
+
+Section 2 asserts `isCadetLiteGrade_()` and `shouldProcessMember()` agree grade for grade, so
+a change to the CONFIG list cannot leave the reporting helper behind. Section 3 pins the
+`includeCadetLite` override itself — the one-argument difference this whole entry is about.
+
 ## [2026-07-27] — two groups that could never be created, and nobody could tell
 
 `groups.insert` refuses a name over **73 characters** outright — 400 "Invalid Input: groupName"

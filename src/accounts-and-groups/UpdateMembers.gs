@@ -1,10 +1,20 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.20.0
- * Date: 2026-07-26
+ * Version: 1.21.0
+ * Date: 2026-07-28
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.20.0)
- * Changes: 1.20.0 — sendWelcomeEmail() now records each send in the audit
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.21.0)
+ * Changes: 1.21.0 — the Send-As / displayName sync now names cadet-lite members
+ *   who hold an account. processSendAsNamesBatchLocked() built its roster with
+ *   getMembers(), whose includeCadetLite defaults to false, so any account
+ *   belonging to a cadet below C/SSgt matched nothing, was logged as "No CAPWATCH
+ *   record for user", and kept whatever name it was created with — rank changes
+ *   never landed. The cadet-lite rule decides who gets an account, not what an
+ *   existing account is called, and this loop only ever visits accounts Workspace
+ *   already holds. That warning now means what it says: an account with no member
+ *   behind it. Both populations shared it before, and the real orphans were buried
+ *   in the noise. Runs report namedCadetLite and noCapwatchRecord.
+ *   1.20.0 — sendWelcomeEmail() now records each send in the audit
  *   ledger (WelcomeEmailAudit.gs, welcomeLedgerRecordSent_), which is what makes
  *   an account that never received a welcome email detectable instead of
  *   invisible. Recorded here, after the send, so provisioning and the resend are
@@ -3847,12 +3857,23 @@ function processSendAsNamesBatchLocked() {
   // spent triggers so they don't accumulate against the project trigger quota.
   deleteSendAsContinuationTriggers();
 
-  // 1. Fetch CAPWATCH members → build lookup
-  const members = getMembers();
+  // 1. Fetch CAPWATCH members → build lookup.
+  //
+  // CADET-LITE ARE INCLUDED HERE ON PURPOSE. The cadet-lite rule decides who gets
+  // an account, not what an account that already exists is called. This loop only
+  // ever visits accounts Workspace already holds, so the rule has nothing to say
+  // about it — and applying it anyway meant a cadet-lite member holding an account
+  // matched no CAPWATCH record, was logged as missing, and kept whatever name they
+  // were created with. Rank changes never landed, which is most of why this job
+  // exists. See getEmailGroupDeltas() in UpdateGroups.gs for the same reasoning.
+  const members = getMembers(CONFIG.MEMBER_TYPES.ACTIVE, true, true);
   const memberIndex = {};
   for (const capid in members) {
     memberIndex[String(capid)] = members[capid];
   }
+
+  let namedCadetLite = 0;   // would have been skipped before this was fixed
+  let noRecord = 0;         // genuinely absent from CAPWATCH — worth chasing
 
   // 2. Fetch all Workspace users in a deterministic order so the saved cursor
   //    (an index) points at the same user on every resume.
@@ -3887,7 +3908,9 @@ function processSendAsNamesBatchLocked() {
       scheduleSendAsContinuation();
       Logger.info('Send-As batch paused; continuation scheduled', {
         nextIndex: index,
-        totalUsers: workspaceUsers.length
+        totalUsers: workspaceUsers.length,
+        namedCadetLite: namedCadetLite,
+        noCapwatchRecord: noRecord
       });
       return;
     }
@@ -3897,9 +3920,20 @@ function processSendAsNamesBatchLocked() {
     const member = memberIndex[capid];
 
     if (!member) {
-      Logger.warn('No CAPWATCH record for user', { email: user.primaryEmail });
+      // Now means what it says. Before cadet-lite were included this warning
+      // covered two unrelated populations — members the roster had filtered out,
+      // and accounts with no member behind them — and the second was buried in
+      // the first. What is left is an account worth chasing: expired, transferred
+      // out, or created without a CAPID in externalIds.
+      noRecord++;
+      Logger.warn('No CAPWATCH record for user', {
+        email: user.primaryEmail,
+        capid: capid || '(none on account)'
+      });
       continue;
     }
+
+    if (isCadetLiteGrade_(member.rank)) namedCadetLite++;
 
     // Build display name exactly like addOrUpdateUser()
     const displayName = [
@@ -3933,8 +3967,27 @@ function processSendAsNamesBatchLocked() {
   // Finished the whole list — clear the checkpoint.
   props.deleteProperty(SEND_AS_CURSOR_KEY);
   Logger.info('Completed updateAllSendAsNames for all Workspace users', {
-    totalUsers: workspaceUsers.length
+    totalUsers: workspaceUsers.length,
+    namedCadetLite: namedCadetLite,
+    noCapwatchRecord: noRecord
   });
+}
+
+/**
+ * True when a grade is one the cadet-lite rule withholds accounts from.
+ *
+ * Reads the same CONFIG list shouldProcessMember() applies, so "who is cadet-lite"
+ * has one definition rather than two that can drift apart. Used to report how many
+ * accounts this run named that the roster would previously have skipped — not to
+ * decide anything, because an account that exists gets its name either way.
+ *
+ * @param {string} rank - CAPWATCH grade, e.g. 'C/Amn'
+ * @returns {boolean}
+ */
+function isCadetLiteGrade_(rank) {
+  if (!CONFIG || CONFIG.CADET_LITE !== true) return false;
+  if (!Array.isArray(CONFIG.CADET_LITE_EXCLUDED_GRADES)) return false;
+  return CONFIG.CADET_LITE_EXCLUDED_GRADES.indexOf(String(rank || '').trim()) > -1;
 }
 
 /** Schedules a one-shot trigger to resume the Send-As sync ~1 minute out. */

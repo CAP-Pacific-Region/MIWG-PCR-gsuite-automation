@@ -775,6 +775,34 @@ function assignLicense(email) {
    - Ensure UpdateMembers runs before display name update
    - Verify custom fields exist in users
 
+### "No CAPWATCH record for user" during the Send-As sync
+
+**Symptom:** `processSendAsNamesBatch` logs `No CAPWATCH record for user` for accounts that
+plainly exist, and those accounts keep a stale name — usually an old rank.
+
+**Cause (before `UpdateMembers.gs` 1.21.0):** the batch built its roster with a bare
+`getMembers()`, and `includeCadetLite` defaults to **false**. Any account belonging to a cadet
+below C/SSgt matched nothing and was skipped. The member was in CAPWATCH the whole time; the
+roster had filtered them out.
+
+Cadet-lite governs **who gets an account**, not what an existing account is called — and this
+loop only ever visits accounts Workspace already holds.
+
+**Fix:** already in place at 1.21.0, which passes `includeCadetLite = true`. Check the file
+version before chasing anything else. After that version the warning means what it says: an
+account with **no member behind it** — expired, transferred out, or created without a CAPID in
+`externalIds`. Those are worth chasing; they were previously buried among the cadet-lite ones.
+
+**Read the run summary** on `Completed updateAllSendAsNames for all Workspace users`:
+
+| Field | Meaning |
+|---|---|
+| `namedCadetLite` | accounts named that the old roster would have skipped |
+| `noCapwatchRecord` | genuine orphans — investigate these |
+
+A large `namedCadetLite` on the first run after upgrading is expected; those names had been
+frozen since the account was created.
+
 ### SendAs Not Being Created
 
 **Symptom:** Display name update fails because SendAs doesn't exist
