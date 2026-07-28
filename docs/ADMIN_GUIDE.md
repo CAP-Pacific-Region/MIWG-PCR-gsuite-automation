@@ -358,6 +358,13 @@ Without this, `clasp push`/`pull` fail with an API-disabled error.
 
 Under the hood each is `clasp <cmd> -P clasp-targets/<tenant>.clasp.json`.
 
+> **`signature-webapp/` is a separate script project *per tenant*.** Same source, its own
+> manifest, scopes and Script Properties, and **one script project inside each Workspace** —
+> a cadet cannot sign in to a project that lives on the senior domain. Push with
+> `npm run push:signature:seniors` / `push:signature:cadets` (`status:` / `pull:` / `open:`
+> likewise). A push of `src/` never carries it and a push of it never carries `src/`. See
+> [Signature Web App](SIGNATURE_WEB_APP.md).
+
 > **Filenames in Apps Script are not cosmetic.** A file at
 > `src/recruiting-and-retention/WelcomeEmail.html` deploys with the literal name
 > `recruiting-and-retention/WelcomeEmail` (slash included). Any
@@ -394,7 +401,7 @@ Secrets are **never** committed. They live in each project's **Script Properties
 | `TENANT_RECRUITING_MAILBOX` | `getTenantConfig_()` → `SQUADRON_GROUP_CONFIG.PUBLIC_CONTACT.RECRUITING_MAILBOX` | Wing recruiting address added as a **member of every squadron public-contact group**, so wing recruiting sees unit-level public inquiries. **Blank disables it, and blank is the default** — enabling it changes group membership across every unit in the wing, so treat it as a deliberate decision rather than a config gap. Validated before use; a set-but-invalid value warns and is skipped. |
 | `TENANT_WING_ABBREVIATION`, `TENANT_WING_NAME`, `TENANT_CADETS_TENANT_DOMAIN` | `getTenantConfig_()` → `CONFIG` | **Optional, all blank-derive.** Display forms of the wing used in automation emails and the member-facing transition email: abbreviation (`CA` → `CAWG`, `HI` → `HIWG`) and proper name (`California Wing` / `Hawaii Wing`, via `WING_NAMES_`). `TENANT_CADETS_TENANT_DOMAIN` is the peer cadet domain for `updateCAWGCadetGroups()` (blank derives `<wing>wgcadets.org`). Set any of these only to override the derived default. |
 | `SA_IMPERSONATION_EMAIL` | `getImpersonatedToken_()` in `UpdateMembers.gs` | Dedicated service account's `client_email` for this tenant. |
-| `SA_PRIVATE_KEY` | same | Service account private key (PEM). Literal `\n` sequences are converted to real newlines at runtime, so pasting the one-line form works. |
+| `SA_PRIVATE_KEY` | same | Service account private key (PEM). Literal `\n` sequences are converted to real newlines at runtime, so pasting the one-line form works. **A second copy lives in the `signature-webapp/` project** (Script Properties are per project, and Gmail settings can only be written through impersonation) — rotate both together. |
 | `SA_PRIVATE_KEY_ID` | same | Optional key id. |
 | `MANAGE_RESOURCES` | `UpdateResources.gs` | Set to `false` to disable Calendar resource management on this tenant. **Cadets = `false`** (resources are managed only by seniors). Absent/anything-else = enabled. |
 | `MISSION_WEBHOOK_SECRET` | `MissionProvisioning.gs` | Shared secret the FileMaker webhook must send in the JSON body. Required for the webhook to accept requests. |
@@ -422,8 +429,9 @@ A service-account private key was previously committed to **public git history**
 Removing it from current files (the security-hardening pass deleted the in-`config.gs` builder
 that carried it) does **not** remove it from history. **Action required:** rotate the exposed key
 in whichever Google Cloud project owns that service account (create a new key, update
-`SA_PRIVATE_KEY` in the affected project's Script Properties, delete the old key). Until rotated,
-treat the exposed key as compromised. See [SECURITY.md](../SECURITY.md).
+`SA_PRIVATE_KEY` in the affected project's Script Properties **and in the `signature-webapp/`
+project if it is deployed on that tenant**, delete the old key). Until rotated, treat the exposed
+key as compromised. See [SECURITY.md](../SECURITY.md).
 
 ---
 
@@ -758,6 +766,22 @@ no-ops elsewhere). State lives in the `Transitions` sheet. See the
 ### Mission provisioning (`MissionProvisioning.gs`)
 - `doPost(e)` / `doGet(e)` — the web-app webhook (not run manually).
 - `testMissionProvisioningPayload_()` — provision a `TEST-001` mission locally to verify wiring.
+
+### Member self-service signature (`signature-webapp/`, separate project)
+A member-facing page: sign in, see the signature CAPWATCH calls for, approve, and it is written to
+your own CAP addresses. A member may adjust two things and no more: whether the phone row appears,
+and which of their own duty assignments do (up to the style guide's two, in the order the guide
+requires — the choice is of contents, never of wording or order). Nothing here is run
+by hand — it is a deployed web app — but two things about it belong in this list:
+
+- It needs **`SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` in its own Script Properties**, because
+  Gmail settings can only be written through impersonation and Script Properties are per project.
+  **A service-account key rotation must update this project too.**
+- `pushAllSignatures()` above rebuilds every member's signature *with* the phone row, so running it
+  wing-wide undoes anyone's decision to omit theirs. It cannot produce a different-looking
+  signature: `npm test` fails if the two generators diverge.
+
+Setup, access model and troubleshooting: [Signature Web App](SIGNATURE_WEB_APP.md).
 
 ### Notifications to command staff (`notifications/`)
 Both modules mail unit command staff, keep their **own** Drive state file, and run on their

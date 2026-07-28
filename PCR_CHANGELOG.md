@@ -10,6 +10,249 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-28] — members can set their own signature, and change exactly one thing about it
+
+A CAP email signature reached a member three ways: five minutes after their account was created,
+whenever somebody ran `pushAllSignatures()` by hand over the whole wing, or by hand-building one
+in CAP's own generator. Nothing covered a member who joined before signatures were automated, was
+promoted, picked up a new duty assignment, or simply cleared their signature — for those, the
+answer was a ticket to IT or an afternoon with the brand-tools page.
+
+### Added — `signature-webapp/` 1.0.0 (a NEW, separate Apps Script project)
+
+A member opens a link, signs in as themselves, and sees the signature their CAPWATCH record calls
+for. If they approve it, it is written to their own CAP addresses.
+
+**One thing is theirs to decide: whether the phone row appears.** Grade, name, duty assignments and
+unit come from CAPWATCH and the layout comes from the CAP brand style guide, so the browser sends
+exactly one value — a boolean — and the server rebuilds the entire signature from CAPWATCH on
+every call, **including on apply**. The preview is a rendering of the record, never a document the
+client can hand back edited. The page says as much: a wrong grade is fixed in eServices, and
+arrives with the next extract.
+
+Two consequences of following `src/`'s own rules rather than inventing new ones: a **cadet never
+has a phone row at all** (`addContactInfo()` refuses to publish cadet numbers to the directory or a
+signature), and neither does a senior with no cell in eServices. Both cases replace the toggle with
+a sentence explaining why there is nothing to toggle.
+
+**Why a separate script project.** An Apps Script project has one `doGet`, and `src/` already
+spends its on the FileMaker mission webhook (anonymous, runs-as-deployer) while `webapp/` spends
+its on the alias ADMIN interface. This is the opposite of that one in who may use it — every
+member of the domain — so it gets its own project, manifest and scope list rather than sharing a
+deployment with alias-mutation code.
+
+**Access model.** `access: DOMAIN` + `executeAs: USER_DEPLOYING`: the CAPWATCH read and the Gmail
+write need rights a member does not have and should not be given. `DOMAIN` is load-bearing, not a
+preference — under anonymous access `getActiveUser()` is blank and every visitor is
+indistinguishable. There is deliberately **no admin-acts-for-a-member mode**; the account acted on
+is derived from the session and nothing else, so no request can reach another member's mailbox.
+`SIGNATURE_WEBAPP_ALLOWED_GROUP` restricts the app to a pilot group; blank means every member,
+which is the reverse of `webapp/`'s fail-closed default and deliberate — that app hands out
+addresses, this one lets people format their own name.
+
+**The write is bounded twice.** Only the caller's own mailbox, and within it only Send-As
+identities on a domain the tenant owns. Members add their personal accounts as Send-As identities,
+and stamping a CAP signature on someone's private mail would be a real intrusion. The domain check
+compares the whole domain, so `…@cawgcap.org.example.com` is refused rather than matched as a
+suffix. A mailbox with no org-owned identity gets an error, not a success that changed nothing.
+
+**The cost, stated plainly.** The signature template is *duplicated* from
+`src/accounts-and-groups/UpdateMembers.gs`, because two script projects cannot share code without
+becoming a library with its own deploy-version step. A copy that drifts is worse than no copy:
+a member would approve one signature and have the next bulk push replace it with a subtly
+different one. So `test/SignatureWebApp.test.js` renders eight fixture members through **both**
+generators and fails on any byte of difference — and does the same for the record builder, running
+`src/`'s own `createMemberObject` / `addContactInfo` / `addDutyPositions` against this project's
+single-CAPID reader over one set of CAPWATCH fixtures. 100 assertions, including a cadets-tenant
+section over cadet, cadet-lite and cadet-duty records, and one that loads the real `Config.gs` over
+a properties store where an unset key is absent rather than empty.
+
+Impersonation needs `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` in **this project's** Script
+Properties as well: Gmail settings have no admin-on-behalf-of endpoint, and Script Properties are
+per project. That is a second copy of a credential that can act as any user, so a key rotation must
+now update both projects — recorded in the Admin Guide's standing rotation item.
+
+### Fixed — an assistant duty claimed the billet (`UpdateMembers.gs` 1.21.1, web app 1.1.1)
+
+Reported from a real record within minutes of the duty chooser going live: picking the assistant
+Supply Officer printed **"California Wing Supply Officer"**. Not a formatting slip — the signature
+stated that the member held a billet somebody else holds.
+
+CAPWATCH keeps the assistant flag in its **own column**; `DutyPosition.txt`'s `Duty` value reads
+"Supply Officer" for the officer and their assistant alike. The signature printed that value bare,
+which was harmless for exactly as long as assistants were filtered out of every signature — and
+wrong from the moment a member could choose one. Shipped inside 1.21.0, found in the first hour of
+use.
+
+`signatureDutyTitle_()` now prefixes "Assistant " for an assistant duty, skipping titles that
+already carry the word.
+
+**Deliberately NOT in `formatDutyTitle_()`.** That function normalizes a title so `UpdateGroups.gs`
+and `SendRetentionEmail.gs` can MATCH it against a configured list; an "Assistant " prefix there
+would quietly change who lands in a duty group. Display and matching want different strings, and
+this is the display one.
+
+Default signatures are unaffected — they exclude assistants entirely — so nothing the automated
+path produces changes. Four assertions had encoded the bug and now encode the fix, alongside new
+ones for the no-double-prefix case, a renamed title keeping its rename under the prefix, and a
+principal never gaining the word. The page also drops its "assistant" badge: the line now says it.
+
+### Added — `Index.html` 1.1.1: the signature's NAME in Gmail, explained rather than attempted
+
+Asked for as an option on the page. It cannot be one: Gmail's multiple-signatures feature labels
+each signature, and **the Gmail API does not expose that label**. The `SendAs` resource carries nine
+fields — `sendAsEmail`, `displayName`, `replyToAddress`, `signature`, `isPrimary`, `isDefault`,
+`treatAsAlias`, `smtpMsa`, `verificationStatus` — and `signature` is the HTML, nothing else. No API
+client can set the name, so no code here could have.
+
+What the page can do is stop a member hunting for a control that could not exist. After a
+successful apply it now says the name is not something this page can set, and points at the only
+place it can be changed — **Gmail → Settings → See all settings → General → Signature** — adding
+that the name is shown only to them and never appears on mail they send. Shown only once something
+was actually written: an apply that failed must not send someone off to rename a signature that
+isn't there.
+
+Not to be confused with `displayName`, the "From:" name, which *is* settable and is already set at
+provisioning by `updateGmailSendAsDisplayName()`. This app still does not touch it.
+
+### Added — members choose which duty assignments appear (`UpdateMembers.gs` 1.21.0, web app 1.1.0)
+
+From a tester: give members a way to pick which duties the signature shows, keeping the two-position
+limit and the echelon hierarchy.
+
+The block previously guessed: assistants excluded, at most one duty per echelon, most senior title
+first. Those rules exist to choose well **in the member's absence** — and on this page the member is
+not absent. So when a selection is present, the defaults give way to it; **what never gives way is
+the ordering or the cap.**
+
+`getDutyBlock()` gained an optional `member.selectedDutyKeys`. The web app filters the member's own
+duty list and hands it to the **same generator** every other signature goes through, so:
+
+- **Highest organizational level still comes first.** A wing *assistant* precedes a squadron
+  *principal* — the new principal-before-assistant rule orders duties **within** one echelon, not
+  across them, because the style guide asks for highest level first and that is not a member's to
+  reorder. Ticking order is irrelevant.
+- **Two lines, still.** Enforced in the generator, again in the API, and shown in the page by
+  greying the remaining boxes once two are ticked.
+- **Assistants are selectable but never default.** Untouched, the page produces exactly what the
+  automated path produces.
+- **Every key is checked against the member's own CAPWATCH record** and a stranger's duty is
+  *refused, not dropped* — quietly ignoring it would publish a signature the member never saw.
+  Three duties are refused, not truncated, for the same reason.
+
+**Nothing in `src/` sets the new field.** Provisioning and `pushAllSignatures()` pass a member
+straight from `getMembers()`, so their output is byte-identical to before it existed — asserted,
+along with the port's agreement, in the test suite.
+
+The choice is session-only, like the phone: reopening the page starts from the CAPWATCH default
+again, and a bulk push resets it.
+
+Also drops the duty row from the "What CAPWATCH says" card, which now duplicated the chooser
+directly beneath it.
+
+### Fixed — the signature's vertical rhythm (`UpdateMembers.gs` 1.20.1, `SignatureTemplate.gs` 1.0.1)
+
+Two stray blank lines, both visible only once a real signature sat in a real mail client:
+
+- a **leading `<br />`** before the name line, which Gmail rendered as a blank line at the top of
+  every signature this project has ever pushed;
+- the logo's **20px bottom margin**, which opened a gap above the tagline that no other row in the
+  block has — every other margin is `0 0 5px`. Now `15px 0 5px 0`: the space above the logo is
+  kept, the one below it matches everything else.
+
+**Changed in `src/` first and mirrored into the web app's port**, which is the rule the parity test
+exists to enforce — `test/SignatureWebApp.test.js` compares the two generators byte for byte and
+would have failed on a one-sided fix. Three new assertions pin the spacing itself, so neither can
+creep back: nothing precedes the name line, the logo carries the 5px margin, and `0 0 5px` /
+`15px 0 5px 0` are the *only* margins in the block.
+
+⚠️ The `src/` change reaches members' signatures only when a tenant is next pushed **and**
+`pushAllSignatures()` or an account provisioning runs. Until then the two paths agree in the repo
+and disagree on the tenants — the web app (already pushed) writes the corrected spacing, the
+tenants' own copy still writes the old.
+
+### Changed — `Index.html` 1.0.2 / `SignatureApi.gs` 1.0.1: the format has an authority, and it is not us
+
+The page now names **CAP's own signature generator**
+(`cap-brand-tools.netlify.app/signature-generator`) in a footer, and — more usefully — on both
+pages that *refuse*: not signed in to a wing account, and tenant not configured yet. A member
+turned away by either had otherwise been told only what did not work. The generator gives them a
+correct signature by hand whatever is wrong with their account or this tenant's setup, and it
+answers "why does my signature look like this?" with something better than "because the wing's
+script says so". It is the same site the signature's logo is served from, and the URL is defined
+once, server-side, in `Config.gs`.
+
+Also dropped "Nobody else's" from the header copy.
+
+### Fixed — `Index.html` 1.0.1, first live test: a ticked box that sent `false`
+
+The first real apply dropped the phone row from a signature the member had **ticked the box for**,
+and then said so: *"Signature applied to … The phone row was left out."*
+
+The server was right and honest — the browser lied to it. `apply()` called `setBusy(true)`, which
+**disables the checkbox** to show a request is in flight, and `includePhone()` read
+`!box.disabled` as part of deciding its answer. By the time the value was computed the box was
+always disabled, so the answer was always `false`. `refreshPreview()` had the same trap, which is
+why re-ticking never brought the phone back in the preview either — the control looked broken as
+well as acting wrongly.
+
+Two changes, either of which would have been enough, kept because they say different things: the
+value is read **before** the UI starts mutating itself for the request, and "is this control
+currently disabled" is no longer treated as an opinion about what the member wants. `STATE.phone`
+is the only gate that belongs there.
+
+**Everything on the server side was already correct and tested to the point of pedantry** — only
+an explicit `true` includes the phone, every other value suppresses it, the render is rebuilt from
+CAPWATCH on apply. None of it could help: the unit that was wrong was the wire between the checkbox
+and the call, and nothing tested that. New `test/SignatureWebApp.page.test.js` loads the real
+`<script>` out of `Index.html` over a small fake DOM and asserts what actually reaches
+`google.script.run` — 19 assertions, and it fails on the original code.
+
+**One project per tenant, same source.** A script project lives inside one Workspace, so a cadet
+cannot sign in to one on the senior domain: seniors and cadets each get their own project, clasp
+target (`signature-webapp-{seniors,cadets}.clasp.json`) and `/exec` URL. Nothing in the code
+branches on `TENANT_PROFILE` — what differs for a cadet differs because their CAPWATCH record does:
+**never a phone row** (`addContactInfo()`'s rule, so a cadet with a clean `CELL PHONE`/`PRIMARY`
+row still resolves to none), duties out of `CadetDutyPositions.txt`, and no secondary domain, so a
+cadet's senior-domain Send-As is left to the seniors deployment. One deliberate divergence:
+cadet-lite grades are filtered out of `getMembers()` because they get no *account*, but this app is
+reached *by* a signed-in account — if such a member has one, they get a correct signature rather
+than a refusal.
+
+**An unset Script Property is ABSENT, not blank** — the Apps Script UI will not store an empty
+value, so "leave blank" means the property is never created and `getProperty()` returns null. The
+config reader already treated null and blank alike, which is right for the optional ones (no
+allowed-group = every member; no abbreviation = derive `CAWG`; no support address = "ask your wing
+IT director"). It was **not** right for a missing required one: with `TENANT_EMAIL_DOMAIN` unset,
+`isOnATenantDomain_()` matches nothing and every member is turned away with a message about *their*
+account — a configuration gap wearing the costume of an authorization failure. `sigMissingConfig_()`
+now runs before identity in both entry points, refuses with "this page is not set up yet", and names
+the missing property **in the execution log rather than to the member**. Missing service-account
+credentials count as missing config too, so the page never offers a button it cannot honor.
+
+The seniors script project exists (`1iNlP98…`) and the code is **pushed** to it; the cadets one is
+still to be created and its ID filled into its clasp target.
+
+⚠️ **Deploy from the Apps Script editor, never with clasp.** `clasp update-deployment` /
+`create-deployment` leave the app serving Google's "You need access" page to visitors, and only an
+editor redeploy clears it — observed twice on seniors. The Apps Script API replaces a deployment's
+config wholesale and the web-app entry point does not survive it; the manifest's `webapp` block is
+only a default applied when a deployment is *created*, so the access setting chosen in the editor is
+not restored from it. `clasp push` is fine and is how code reaches the project — the deploy step is
+a human one.
+
+The `push:signature:*` scripts carry `--force` on purpose. clasp asks before overwriting a
+manifest, and Apps Script normalizes `appsscript.json` server-side, so it sees a difference on
+*every* push of this project. Run non-interactively it answers its own prompt: prints
+`Skipping push.`, exits 0, changes nothing — which reads like success and leaves you testing code
+you never uploaded. It cost one round of exactly that here. Setup, per-tenant Script Properties, the
+cadet notes and troubleshooting are in [docs/SIGNATURE_WEB_APP.md](docs/SIGNATURE_WEB_APP.md).
+
+> **Known interaction.** `pushAllSignatures()` rebuilds every member's signature *with* the phone
+> row, so running it wing-wide undoes anyone's choice to omit theirs (they can untick it again). It
+> cannot produce a different-looking signature — that is what the parity test is for. Making the
+> opt-out survive a bulk push would need a store both projects can read, and belongs in `src/`.
+
 ## [2026-07-27] — two groups that could never be created, and nobody could tell
 
 `groups.insert` refuses a name over **73 characters** outright — 400 "Invalid Input: groupName"
