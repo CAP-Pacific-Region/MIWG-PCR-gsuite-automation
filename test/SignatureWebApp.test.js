@@ -180,7 +180,14 @@ section('2. Suppressing the phone changes the phone and nothing else');
   check('the tel: link is gone', without.indexOf('tel:+1') === -1, true);
   check('the name line survives', without.indexOf('Maj. Rowan Ashford') !== -1, true);
   check('the duty block survives', without.indexOf('Director of IT') !== -1, true);
-  check('the wing website line survives', without.indexOf('cawg.cap.gov') !== -1, true);
+  // Pull the href out and compare it WHOLE rather than asking whether the host
+  // appears somewhere in the document. A substring check would pass just as
+  // happily on https://cawg.cap.gov.example.com, and it is a signature: the link
+  // is the wing's or it is somebody else's.
+  const wingHref = (without.match(/<a\s+href="(https:\/\/[^"]*)"/g) || [])
+    .map(tag => tag.replace(/^<a\s+href="/, '').replace(/"$/, ''))
+    .filter(href => href !== 'https://www.GoCivilAirPatrol.com');
+  check('the wing website line survives', wingHref, ['https://cawg.cap.gov']);
 
   // Line-level set difference, so "only the phone row differs" is asserted rather
   // than eyeballed. Duplicate lines are matched one-for-one: the three paragraphs
@@ -735,6 +742,14 @@ section('6. A signature is only ever written to an address the organization owns
 
   // Now the write itself, over a mailbox carrying a personal Send-As identity —
   // the case the guard exists for.
+  //
+  // The two endpoints GmailSignature.gs is expected to reach, built the way it
+  // builds them so the stub matches the real thing rather than a guess at it.
+  const MAILBOX = 'rowan.ashford@example.org';
+  const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+  const SENDAS_URL = 'https://gmail.googleapis.com/gmail/v1/users/' +
+    encodeURIComponent(MAILBOX) + '/settings/sendAs';
+
   const patched = [];
   const gmail = loadModule(path.join(APP, 'GmailSignature.gs'), {
     Logger: makeLogger().logger,
@@ -751,12 +766,15 @@ section('6. A signature is only ever written to an address the organization owns
       base64EncodeWebSafe: v => 'b64',
       computeRsaSha256Signature: () => 'sig'
     },
+    // Routed on the WHOLE url, not on a host appearing somewhere in it: the stub
+    // then also asserts which endpoints the module talks to, and an unexpected one
+    // fails loudly instead of being served whatever branch it happened to reach.
     UrlFetchApp: {
       fetch: (url, options) => {
-        if (url.indexOf('oauth2.googleapis.com') !== -1) {
+        if (url === TOKEN_URL) {
           return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ access_token: 'tok' }) };
         }
-        if (options.method === 'get') {
+        if (url === SENDAS_URL && options.method === 'get') {
           return {
             getResponseCode: () => 200,
             getContentText: () => JSON.stringify({
@@ -769,13 +787,17 @@ section('6. A signature is only ever written to an address the organization owns
             })
           };
         }
-        patched.push(decodeURIComponent(url.split('/sendAs/')[1]));
-        return { getResponseCode: () => 200, getContentText: () => '{}' };
+        if (url.startsWith(SENDAS_URL + '/') && options.method === 'patch') {
+          patched.push(decodeURIComponent(url.slice((SENDAS_URL + '/').length)));
+          return { getResponseCode: () => 200, getContentText: () => '{}' };
+        }
+        throw new Error('the module called an endpoint this test did not expect: ' +
+          options.method + ' ' + url);
       }
     }
   }, ['sigApplyToSendAsIdentities_', 'sigSendAsSnapshot_']);
 
-  const result = gmail.sigApplyToSendAsIdentities_('rowan.ashford@example.org', '<html></html>');
+  const result = gmail.sigApplyToSendAsIdentities_(MAILBOX, '<html></html>');
   check('only the org-owned identities are written',
     patched.sort(), ['rowan.ashford@example.cap.gov', 'rowan.ashford@example.org']);
   check('the personal ones are reported as skipped, not touched',
