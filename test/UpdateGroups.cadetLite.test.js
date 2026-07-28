@@ -36,7 +36,7 @@ const m = loadModule(MODULE, {
   CONFIG: { EMAIL_DOMAIN: '@example.org', WING: 'CA' },
   Logger: { info: () => {}, warn: () => {}, error: () => {} },
   Utilities: { sleep: () => {} }
-}, ['getGroupMembers', 'externalMemberAllowedForGroup_',
+}, ['getGroupMembers', 'externalMemberAllowedForGroup_', 'buildGroupsSheetFlags_',
     'groupAttributeByName', 'groupAllowExternalByName']);
 
 /**
@@ -162,6 +162,75 @@ section('7. Whether a group may take an off-domain address');
   check('whitespace in the name does not defeat the lookup', allowed('  all  '), true);
   check('a blank name is not allowed', allowed(''), false);
   check('null is not allowed', allowed(null), false);
+}
+
+// ---------------------------------------------------------------------------
+section('8. Several rows, one group name — flags OR, they do not overwrite');
+{
+  // The bug that emptied ca.all overnight. CAWG's sheet has TWO rows named "all"
+  // (SENIOR,CADET and CADET). Memberships from same-named rows are deliberately
+  // merged; the flags were assigned instead, so the second row silently revoked
+  // what the first asked for. The group was populated by hand and the next
+  // scheduled run removed 1,644 members, with nothing in the sheet having changed.
+  const HEADER = ['Category', 'Group Name', 'Attribute', 'Values', 'Description', 'Add EXT', 'Add Lite'];
+  const flags = rows => m.buildGroupsSheetFlags_([HEADER].concat(rows));
+
+  const firstRowOptsIn = flags([
+    ['c', 'all', 'type', 'SENIOR,CADET', '', '', 'Y'],
+    ['c', 'all', 'type', 'CADET', '', '', '']
+  ]);
+  check('a later blank row does not revoke it',
+    firstRowOptsIn.includeCadetLiteByName['all'], true);
+  check('and external stays implied', firstRowOptsIn.allowExternalByName['all'], true);
+
+  const secondRowOptsIn = flags([
+    ['c', 'all', 'type', 'SENIOR,CADET', '', '', ''],
+    ['c', 'all', 'type', 'CADET', '', '', 'Y']
+  ]);
+  check('order does not matter the other way either',
+    secondRowOptsIn.includeCadetLiteByName['all'], true);
+
+  const neither = flags([
+    ['c', 'all', 'type', 'SENIOR,CADET', '', '', ''],
+    ['c', 'all', 'type', 'CADET', '', '', '']
+  ]);
+  check('no row asking means no', neither.includeCadetLiteByName['all'], false);
+  check('and no implied external', neither.allowExternalByName['all'], false);
+
+  const extOnly = flags([['c', 'x', 'type', 'CADET', '', 'Y', '']]);
+  check('Add EXT alone allows external', extOnly.allowExternalByName['x'], true);
+  check('but does not opt into cadet-lite', extOnly.includeCadetLiteByName['x'], false);
+
+  check('Add Lite implies Add EXT',
+    flags([['c', 'y', 'type', 'CADET', '', '', 'Y']]).allowExternalByName['y'], true);
+}
+
+// ---------------------------------------------------------------------------
+section('9. Reading the sheet defensively');
+{
+  const flags = rows => m.buildGroupsSheetFlags_(rows);
+  check('no sheet at all', Object.keys(flags([]).allowExternalByName), []);
+  check('null', Object.keys(flags(null).allowExternalByName), []);
+  check('header only',
+    Object.keys(flags([['Category', 'Group Name', 'Attribute']]).allowExternalByName), []);
+
+  const noLiteColumn = m.buildGroupsSheetFlags_([
+    ['Category', 'Group Name', 'Attribute', 'Values', 'Description', 'Add EXT'],
+    ['c', 'all', 'type', 'CADET', '', 'Y']
+  ]);
+  check('a sheet with no Add Lite column still reads Add EXT',
+    noLiteColumn.allowExternalByName['all'], true);
+  check('and opts nobody into cadet-lite',
+    noLiteColumn.includeCadetLiteByName['all'], false);
+
+  const messy = m.buildGroupsSheetFlags_([
+    ['Category', 'Group Name', 'Attribute', 'Values', 'Description', 'Add EXT', 'Add Lite'],
+    ['c', '  spaced  ', ' type ', 'CADET', '', ' yes ', ' TRUE '],
+    ['c', '', 'type', 'CADET', '', 'Y', 'Y']          // blank name: skipped
+  ]);
+  check('names and values are trimmed', messy.includeCadetLiteByName['spaced'], true);
+  check('truthiness accepts yes/true', messy.allowExternalByName['spaced'], true);
+  check('a nameless row is ignored', messy.allowExternalByName[''], undefined);
 }
 
 done();

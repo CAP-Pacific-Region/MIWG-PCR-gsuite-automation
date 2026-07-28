@@ -316,6 +316,25 @@ opt-in.** `createMemberObject` sets `email: null` and only the Workspace directo
 they arrive addressless and every group's `isMatch && .email` test skips them — exactly as when
 they were filtered out entirely. Nothing changes for any row that does not ask.
 
+### Fixed — 1.10.1: a second row named `all` silently revoked the first
+
+`ca.all` was populated by hand, and the next scheduled run removed all 1,644 cadet-lite members
+again. Nothing in the sheet had changed.
+
+CAWG's Groups sheet has **two rows named `all`** — `SENIOR,CADET` and `CADET`. The code has always
+merged their generated memberships on purpose:
+
+> *"Multiple sheet rows may intentionally target the same base group name. Merge their generated
+> memberships instead of letting the last row win."*
+
+The flags added in 1.9.0 did not follow that rule. They were **assigned**, so whichever `all` row
+came last decided `Add Lite` and `Add EXT` for the group. A tick on the first row and a blank on
+the second reads as "off".
+
+Flags are now OR-ed across rows, matching the merge that was already documented three hundred
+lines below them. The reading moves into `buildGroupsSheetFlags_()` — pure, and tested against
+both orderings, a missing column, an absent sheet, and untrimmed values.
+
 ### Fixed — 1.10.0: the apply loop could not add an external member at all
 
 With the gate working and the delta correct, `ca.all` still gained **one** member out of 1,644

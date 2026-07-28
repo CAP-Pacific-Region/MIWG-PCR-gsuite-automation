@@ -1,10 +1,18 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.10.0
+ * Version: 1.10.1
  * Filename: UpdateGroups.gs
- * Saved: 2026-07-27
- * Changes: 1.10.0: the apply loop can finally ADD an external member. It allowed
+ * Saved: 2026-07-28
+ * Changes: 1.10.1: Groups-sheet flags are OR-ed across rows sharing a group name
+ *   instead of assigned. Several rows may target one name — CAWG has two "all"
+ *   rows — and the code already MERGES their memberships rather than letting the
+ *   last row win; the flags I added in 1.9.0 did not follow that rule, so a later
+ *   row with the box unticked silently revoked what an earlier row asked for.
+ *   Symptom: ca.all populated by hand, then emptied of 1,644 cadet-lite members
+ *   by the next scheduled run, with nothing in the sheet having changed. The
+ *   reading moves into buildGroupsSheetFlags_(), which is pure and tested.
+ *   1.10.0: the apply loop can finally ADD an external member. It allowed
  *   off-domain addresses for exactly one case — Attribute 'contact' — and
  *   skipped every other with a bare `continue`: no log, no counter, no error. So
  *   ca.all could want 1,644 cadet-lite members, the delta could say so, and the
@@ -925,39 +933,12 @@ function getEmailGroupDeltas() {
   let groups = {};
   let groupsConfig = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID).getSheetByName('Groups').getDataRange().getValues();
 
-// Build Group Name -> Attribute lookup for use during updateEmailGroups filtering
-groupAttributeByName = {};
-groupAllowExternalByName = {};
+const sheetFlags = buildGroupsSheetFlags_(groupsConfig);
+groupAttributeByName = sheetFlags.attributeByName;
+groupAllowExternalByName = sheetFlags.allowExternalByName;
 // Not carried in the batch state: it is only read while deltas are computed, and
 // a resumed slice applies deltas it already has.
-groupIncludeCadetLiteByName = {};
-
-const groupsHeader = (groupsConfig[0] || []).map(h => (h || '').toString().trim().toLowerCase());
-const addExtIdx = groupsHeader.indexOf('add ext');
-const addLiteIdx = groupsHeader.indexOf('add lite');
-
-function isTruthyAddExt_(v) {
-  const t = (v || '').toString().trim().toLowerCase();
-  return t === 'y' || t === 'yes' || t === 'x' || t === 'true';
-}
-
-for (let r = 1; r < groupsConfig.length; r++) {
-  const gName = (groupsConfig[r][1] || '').toString().trim(); // Group Name
-  const attr = (groupsConfig[r][2] || '').toString().trim();  // Attribute
-  if (!gName) continue;
-  groupAttributeByName[gName] = attr;
-
-  const wantsLite = addLiteIdx > -1 ? isTruthyAddExt_(groupsConfig[r][addLiteIdx]) : false;
-  const wantsExt = addExtIdx > -1 ? isTruthyAddExt_(groupsConfig[r][addExtIdx]) : false;
-
-  // "Add Lite" IMPLIES external members. A cadet-lite member is addressed by a
-  // personal CAPWATCH address, so a row that asks for them and leaves "Add EXT"
-  // blank is asking for two things that contradict each other — and the losing
-  // side is silent: the adds fail, or worse, allowExternalMembers is set false
-  // here while another writer sets it true, and the flag flips daily.
-  groupAllowExternalByName[gName] = wantsExt || wantsLite;
-  groupIncludeCadetLiteByName[gName] = wantsLite;
-}
+groupIncludeCadetLiteByName = sheetFlags.includeCadetLiteByName;
 
   // Map base group name -> spreadsheet description (if provided)
   // Expected Groups sheet columns:
@@ -1186,6 +1167,63 @@ for (let r = 1; r < groupsConfig.length; r++) {
  * @param {Object<string, Object>} members - Members object indexed by CAPID
  * @returns {Object<string, string>} The CAPID -> email map
  */
+/**
+ * Reads the Groups sheet's per-row flags into lookups keyed by group name.
+ *
+ * FLAGS ARE OR-ED ACROSS ROWS, NEVER ASSIGNED. Several rows may target one group
+ * name — CAWG has two "all" rows, SENIOR,CADET and CADET — and the code already
+ * MERGES their generated memberships rather than letting the last row win. These
+ * flags have to follow the same rule, and originally did not: assigning meant a
+ * later row with the box unticked silently revoked what an earlier row asked for.
+ *
+ * The symptom of getting that wrong is a group that empties overnight. It was
+ * observed: ca.all was populated by hand, then the next scheduled run recomputed
+ * the desired set without cadet-lite and removed 1,644 members. Nothing in the
+ * sheet had changed — the second "all" row had simply always won.
+ *
+ * "Add Lite" IMPLIES "Add EXT": a cadet-lite member is addressed by a personal
+ * CAPWATCH address, so a row asking for them while leaving Add EXT blank is
+ * asking for two contradictory things, and the losing side is silent.
+ *
+ * @param {Array<Array>} groupsConfig - Raw Groups sheet values, header included
+ * @returns {{attributeByName: Object, allowExternalByName: Object, includeCadetLiteByName: Object}}
+ */
+function buildGroupsSheetFlags_(groupsConfig) {
+  const rows = groupsConfig || [];
+  const header = (rows[0] || []).map(h => (h || '').toString().trim().toLowerCase());
+  const addExtIdx = header.indexOf('add ext');
+  const addLiteIdx = header.indexOf('add lite');
+
+  const truthy = function (v) {
+    const t = (v || '').toString().trim().toLowerCase();
+    return t === 'y' || t === 'yes' || t === 'x' || t === 'true';
+  };
+
+  const attributeByName = {};
+  const allowExternalByName = {};
+  const includeCadetLiteByName = {};
+
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r] || [];
+    const name = (row[1] || '').toString().trim();
+    if (!name) continue;
+
+    attributeByName[name] = (row[2] || '').toString().trim();
+
+    const wantsLite = addLiteIdx > -1 ? truthy(row[addLiteIdx]) : false;
+    const wantsExt = addExtIdx > -1 ? truthy(row[addExtIdx]) : false;
+
+    allowExternalByName[name] = !!allowExternalByName[name] || wantsExt || wantsLite;
+    includeCadetLiteByName[name] = !!includeCadetLiteByName[name] || wantsLite;
+  }
+
+  return {
+    attributeByName: attributeByName,
+    allowExternalByName: allowExternalByName,
+    includeCadetLiteByName: includeCadetLiteByName
+  };
+}
+
 /**
  * Whether a group may take a member whose address is not on this tenant's domain.
  *
