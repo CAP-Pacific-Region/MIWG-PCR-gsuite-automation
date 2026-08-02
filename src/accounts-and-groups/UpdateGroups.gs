@@ -1,10 +1,19 @@
 /*******************************************************
  * Group Membership Synchronization Module
  *
- * Version: 1.10.0
+ * Version: 1.11.0
  * Filename: UpdateGroups.gs
- * Saved: 2026-07-27
- * Changes: 1.10.0: the apply loop can finally ADD an external member. It allowed
+ * Saved: 2026-07-31
+ * Changes: 1.11.0: membership is compared on Google ACCOUNT identity, not string
+ *   equality — googleAccountKey(), which SquadronGroups has used since it started
+ *   nesting external groups and this pass never adopted. Two spellings can be one
+ *   mailbox (gmail dots, +tags), and the mismatch reads as a member to ADD and a
+ *   stranger to REMOVE: the add 409s and is swallowed, the remove succeeds, and
+ *   the member is off the list until the next run. Inert while these lists held
+ *   only @<tenant> addresses; live as of 2026-07-31, when Add EXT on the wing
+ *   "all" row admitted 18 CAPWATCH personal addresses, most of them gmail. The
+ *   comparison moves into reconcileCurrentAgainstDesired_(), which is pure and
+ *   tested. 1.10.0: the apply loop can finally ADD an external member. It allowed
  *   off-domain addresses for exactly one case — Attribute 'contact' — and
  *   skipped every other with a bare `continue`: no log, no counter, no error. So
  *   ca.all could want 1,644 cadet-lite members, the delta could say so, and the
@@ -1152,19 +1161,7 @@ for (let r = 1; r < groupsConfig.length; r++) {
 
       const allowExternal = !!groupAllowExternalByName[baseGroupName];
       const currentMembers = getCurrentGroup(group, squadrons, desiredGroupMeta[groupEmail], allowExternal);
-      for (let i = 0; i < currentMembers.length; i++) {
-        const currentEmail = currentMembers[i].email;
-        const currentRole = (currentMembers[i].role || 'MEMBER').toString().toUpperCase();
-
-        if (groups[category][group][currentEmail]) {
-          // Member already in group - no change needed
-          groups[category][group][currentEmail] = 0;
-        } else if (currentRole === 'MEMBER') {
-          // Only auto-remove plain members. Leave MANAGER/OWNER entries alone
-          // unless they are explicitly managed elsewhere (for example User Additions).
-          groups[category][group][currentEmail] = -1;
-        }
-      }
+      reconcileCurrentAgainstDesired_(groups[category][group], currentMembers);
     }
   }
 
@@ -1211,6 +1208,65 @@ for (let r = 1; r < groupsConfig.length; r++) {
 function externalMemberAllowedForGroup_(groupName) {
   const name = String(groupName || '').trim();
   return groupAttributeByName[name] === 'contact' || !!groupAllowExternalByName[name];
+}
+
+/**
+ * Marks each address the group currently holds as keep (0) or remove (-1), and
+ * leaves everything still wanted at add (1).
+ *
+ * COMPARED ON GOOGLE ACCOUNT IDENTITY, NOT STRING EQUALITY. Two spellings can be
+ * one mailbox — on gmail.com dots carry no meaning and everything from a '+' on is
+ * a tag — and googleAccountKey() in utils.gs exists because that gap has teeth: a
+ * group holding one spelling while CAPWATCH supplies another reads as a member to
+ * ADD and a stranger to REMOVE. The add returns 409 and is swallowed; the remove
+ * succeeds. The member is off the list until the next run, silently, every time
+ * their address changes shape.
+ *
+ * SquadronGroups has compared this way since it started nesting external groups
+ * (diffGroupMembership_). This pass never did, which did not matter while these
+ * lists held only @<tenant> addresses — every one of those is its own key. It
+ * matters now: the wing "all" list took its first CAPWATCH personal addresses on
+ * 2026-07-31, most of them gmail, when Add EXT was set on that row.
+ *
+ * An address the group already holds under another spelling of the same account is
+ * neither added again nor removed: the DESIRED entry is marked keep, so the apply
+ * loop leaves both the desired spelling and the live one alone.
+ *
+ * Pure — no API calls, no logging — so the decisions can be tested without Google.
+ *
+ * @param {Object<string, number>} desired - Address -> delta, mutated in place
+ * @param {Array<{email: string, role: string}>} currentMembers - What the group holds
+ * @returns {Object<string, number>} The same map, for convenience
+ */
+function reconcileCurrentAgainstDesired_(desired, currentMembers) {
+  const map = desired || {};
+
+  // First spelling wins, matching diffGroupMembership_. A second desired address
+  // for one account is left at add; it comes back 409 and is caught, exactly as
+  // before this function existed.
+  const desiredByAccount = {};
+  Object.keys(map).forEach(function (email) {
+    const key = googleAccountKey(email);
+    if (key && !desiredByAccount[key]) desiredByAccount[key] = email;
+  });
+
+  (currentMembers || []).forEach(function (member) {
+    const currentEmail = String((member && member.email) || '').trim().toLowerCase();
+    if (!currentEmail) return;
+
+    const currentRole = String((member && member.role) || 'MEMBER').toUpperCase();
+    const match = desiredByAccount[googleAccountKey(currentEmail)];
+
+    if (match) {
+      map[match] = 0;
+    } else if (currentRole === 'MEMBER') {
+      // Only auto-remove plain members. Leave MANAGER/OWNER entries alone unless
+      // they are explicitly managed elsewhere (for example User Additions).
+      map[currentEmail] = -1;
+    }
+  });
+
+  return map;
 }
 
 function buildWorkspaceEmailMapForGroups_(members) {

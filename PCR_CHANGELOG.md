@@ -10,6 +10,39 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-31] — two spellings, one mailbox
+
+### Fixed — UpdateGroups.gs 1.11.0: membership compared on account identity, not string equality
+
+`googleAccountKey()` (utils.gs) folds gmail dots and `+tags`, because two strings can be one
+mailbox and Google resolves them while `===` does not. Its docstring records the cost: a group
+holding one spelling while CAPWATCH supplies another reads as **a member to ADD and a stranger to
+REMOVE** — the add returns 409 and is swallowed, the remove succeeds, and the member is off the
+list until the next run. Silently, once per address change.
+
+**`SquadronGroups` has compared this way since it started nesting external groups
+(`diffGroupMembership_`). This pass never adopted it** — zero references. That was inert for as long
+as these lists held only `@cawgcap.org` addresses: every one of those is already its own key.
+
+It stopped being inert the moment `Add EXT` went on the wing `all` row. That run added **18 CAPWATCH
+personal addresses** — seniors who have not completed Level I and so hold no Workspace account —
+to `ca.all` and the unit lists, most of them gmail. Every one of them is now exposed to the gap the
+helper was written for.
+
+The comparison moves out of the delta loop into `reconcileCurrentAgainstDesired_()`, which is pure
+and covered by `test/UpdateGroups.accountIdentity.test.js` — loading the *real* `googleAccountKey`
+from utils.gs, so the assertions break if the folding rules ever change. An address the group
+already holds under another spelling of one account is now neither added again nor removed.
+
+Two behaviors deliberately unchanged: folding stops at gmail/googlemail (dots are significant
+elsewhere, and folding them would merge two real people), and `MANAGER`/`OWNER` entries are still
+never auto-removed.
+
+**No action needed for the accountless seniors.** `buildWorkspaceEmailMapForGroups_` rewrites a
+member's address to their Workspace one the moment the account exists, so the day one of them is
+provisioned the personal address drops out of the desired set and the delta removes it — a different
+domain is a different key, so this change does not interfere. Asserted in section 4 of the test.
+
 ## [2026-07-31] — why the wing-wide all list reaches no cadet, in one function
 
 Members reported that `ca.all@cawgcap.org` does not deliver to cadets while the unit `.all` lists
