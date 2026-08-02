@@ -1681,8 +1681,8 @@ function logEmailSent(emailType, member, commander) {
       (commander.rank + ' ' + commander.firstName + ' ' + commander.lastName) : '';
     const commanderEmail = commander ? commander.email : '';
     const commanderCapid = commander ? commander.capid : '';
-    
-    sheet.appendRow([
+
+    retentionLogAppend_([
       new Date(),
       emailType,
       member.capid,
@@ -1692,7 +1692,7 @@ function logEmailSent(emailType, member, commander) {
       commanderName,
       commanderEmail
     ]);
-    
+
     Logger.info('Email logged to spreadsheet', {
       emailType: emailType,
       capsn: member.capid

@@ -137,7 +137,7 @@ function load(opts) {
         });
       }
     }
-  }, ['sendRenewalDigests_', 'buildRenewalDigestHtml_']);
+  }, ['sendRenewalDigests_', 'buildRenewalDigestHtml_', 'logEmailSent', 'retentionLogAppend_']);
 
   return Object.assign({}, mod, { sent: sent, logged: logged, logCalls: calls });
 }
@@ -354,6 +354,46 @@ section('14. Member data is escaped into the table');
     /<\s*\/?\s*script/i.test(html), false);
   check('no raw angle bracket from the payload at all',
     html.indexOf('<SCRIPT') === -1 && html.indexOf('</ScRiPt') === -1, true);
+}
+
+// ---------------------------------------------------------------------------
+section('15. The per-member log actually writes a row');
+{
+  // REGRESSION. Extracting retentionLogAppend_() out of logEmailSent() left the
+  // old `sheet.appendRow(...)` call behind, referencing a variable that no longer
+  // existed in that scope. Every per-member write threw ReferenceError into the
+  // catch block, which logged "Failed to log email to spreadsheet" and moved on —
+  // so the run looked healthy while the Log, and with it the duplicate-send
+  // guard, silently recorded nothing. It reached production on 2026-08-01 and
+  // cost that month's 251 rows.
+  //
+  // logEmailSent() had no test at all, which is why. It has one now.
+  const m = load(ONLY_CC);
+
+  m.logEmailSent('EXPIRING',
+    { capid: '600001', rank: 'Capt', firstName: 'Test', lastName: 'Member', email: 'm@example.com' },
+    { capid: '1', rank: 'Maj', firstName: 'Unit', lastName: 'Cmdr', email: CC070 });
+
+  check('a row was written', m.logged.length, 1);
+  check('type in column B', m.logged[0][1], 'EXPIRING');
+  check('CAPID in column C — what the dedupe guard reads', m.logged[0][2], '600001');
+  check('member address in column E', m.logged[0][4], 'm@example.com');
+  check('commander recorded', [m.logged[0][5], m.logged[0][7]], ['1', CC070]);
+  check('eight columns', m.logged[0].length, 8);
+  check('no failure logged', m.logCalls.error.length, 0);
+}
+
+// ---------------------------------------------------------------------------
+section('16. A member send with no commander still logs');
+{
+  const m = load(ONLY_CC);
+  m.logEmailSent('TURNING_18',
+    { capid: '600002', rank: 'C/Amn', firstName: 'A', lastName: 'B', email: 'c@example.com' },
+    null);
+
+  check('row written', m.logged.length, 1);
+  check('commander columns blank', [m.logged[0][5], m.logged[0][6], m.logged[0][7]], ['', '', '']);
+  check('no failure logged', m.logCalls.error.length, 0);
 }
 
 done();
