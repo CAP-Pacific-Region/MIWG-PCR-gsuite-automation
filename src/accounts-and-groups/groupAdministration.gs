@@ -2,8 +2,15 @@
  * Group Administration Utilities
  *
  * Filename: groupAdministration.gs
- * Saved: 2026-07-27
- * Changes: Added groupAdministration_repairReceiveListPosting(dryRun) — the
+ * Saved: 2026-07-31
+ * Changes: Added the two halves of the cross-tenant fan-out check —
+ *   groupAdministration_diagnoseWingAllFanout(groupEmail) on the SENDING (wing)
+ *   tenant, for the four prerequisites the squadron sync handles for unit lists
+ *   and nobody handles for the wing list, and
+ *   groupAdministration_diagnoseReceiveGroup(groupEmail) on the RECEIVING tenant,
+ *   for the three neither the wing tenant nor a Workspace API can see from the
+ *   other side. Both read-only. See PCR_CHANGELOG.md.
+ *   Added groupAdministration_repairReceiveListPosting(dryRun) — the
  *   repair counterpart to the receive-list audit, for the groups no sync owns
  *   (wing all-hands, group-HQ lists, lists outliving their unit). DRY RUN by
  *   default; settings only. See PCR_CHANGELOG.md.
@@ -89,6 +96,22 @@
  *   groups (e.g. the cadets tenant) to find lists that would silently reject
  *   a sender on the other tenant — both a person writing across directly and
  *   cross-tenant fan-out from a wing .all list.
+ *
+ * - groupAdministration_diagnoseWingAllFanout(groupEmail)
+ *   READ-ONLY. Run on the WING tenant. Explains why a wing-wide ".all" list is
+ *   or is not delivering to the cadet tenant: whether a cadet-tenant group is
+ *   nested at all, whether the "User Additions" tab preserves it (the delta pass
+ *   removes any plain MEMBER it did not compute), whether the "Groups" row sets
+ *   Add EXT (without it, external adds are declined and allowExternalMembers is
+ *   written false every run), and the group's live settings. The cadet-side
+ *   posting check is groupAdministration_auditReceiveListPosting() on the
+ *   CADETS tenant.
+ *
+ * - groupAdministration_diagnoseReceiveGroup(groupEmail)
+ *   READ-ONLY. The receiving half of the check above, run on the tenant that OWNS
+ *   the group. Says whether one address is fit to be nested into a list on the
+ *   other tenant: it exists, it has members, and whoCanPostMessage is
+ *   ANYONE_CAN_POST. None of the three is visible from the sending tenant.
  *
  * - groupAdministration_repairReceiveListPosting(dryRun)
  *   Fixes what that audit flags. DRY RUN by default. For the lists no sync
@@ -1002,6 +1025,404 @@ function groupAdministration_resolveLegacyAddress(email) {
   };
 
   Logger.info('Resolved legacy address', result);
+  return result;
+}
+
+/**
+ * READ-ONLY. Explains why a wing-wide ".all" list is (or is not) delivering to
+ * the cadet tenant. Run it on the WING tenant.
+ *
+ * The unit lists and the wing list reach cadets by different code, which is why
+ * "ca###.all works but ca.all does not" is a normal state rather than a
+ * contradiction:
+ *
+ *   ca###.all  — updateAllSquadronGroups() (SquadronGroups.gs) nests the cadet
+ *                group itself and reconciles the group settings that let it.
+ *                It only iterates UNIT-scope orgs.
+ *   ca.all     — updateEmailGroups() (UpdateGroups.gs) only. No CAPWATCH org is
+ *                wing scope, so SquadronGroups never touches it.
+ *
+ * So every prerequisite the squadron sync handles for a unit list has to be
+ * satisfied by the Groups / User Additions tabs for the wing list, and each one
+ * fails silently on its own:
+ *
+ *   1. The nested cadet group has to BE a member.
+ *   2. It has to survive the delta pass: updateEmailGroups() removes any plain
+ *      MEMBER it did not compute as desired, and the only way a cross-tenant
+ *      address becomes desired is a "User Additions" row naming this group.
+ *   3. The Groups row has to permit external members ("Add EXT", or "Add Lite"
+ *      which implies it). Without it the apply loop declines the add AND
+ *      applyManagedGroupSettings_() writes allowExternalMembers=false on every
+ *      run, so a hand-fixed flag reverts within a day.
+ *   4. The group's live allowExternalMembers has to be true.
+ *
+ * It checks all four against live Google state plus the sheet that drives the
+ * next run, and names which one is failing. Cadet-side posting permission — the
+ * fifth prerequisite, and the only one this tenant cannot see — is covered by
+ * groupAdministration_auditReceiveListPosting() run on the CADETS tenant.
+ *
+ * Changes nothing.
+ *
+ *   groupAdministration_diagnoseWingAllFanout()
+ *   groupAdministration_diagnoseWingAllFanout('ca.all@cawgcap.org')
+ *
+ * @param {string=} groupEmail - Defaults to "<wing>.all" on this tenant's domain.
+ * @returns {{group:string, exists:boolean, findings:Array<string>,
+ *            peerMembers:Array<Object>, settings:Object, sheet:Object}}
+ */
+function groupAdministration_diagnoseWingAllFanout(groupEmail) {
+  const target = String(
+    groupEmail || (String(CONFIG.WING || '').toLowerCase() + '.all' + CONFIG.EMAIL_DOMAIN)
+  ).trim().toLowerCase();
+
+  const groupId = target.split('@')[0];
+  const baseName = groupId.indexOf('.') > -1
+    ? groupId.split('.').slice(1).join('.')
+    : groupId;
+
+  const peerDomain = String(
+    (typeof getCAWGCadetsTenantDomain_ === 'function' ? getCAWGCadetsTenantDomain_() : '') ||
+    CONFIG.CADETS_TENANT_DOMAIN || ''
+  ).trim().toLowerCase();
+
+  const findings = [];
+  const result = {
+    group: target,
+    exists: false,
+    findings: findings,
+    peerMembers: [],
+    settings: {},
+    sheet: { groupsRows: [], userAdditionsRows: [] }
+  };
+
+  console.log('\n' + '='.repeat(80));
+  console.log('Cross-tenant fan-out diagnosis: ' + target);
+  console.log('Cadet tenant domain: ' + (peerDomain || '(not configured)'));
+  console.log('='.repeat(80));
+
+  // --- 1. Does the group exist, and what does Google think of it right now? ---
+  let group;
+  try {
+    group = executeWithRetry(() => AdminDirectory.Groups.get(target));
+    result.exists = true;
+  } catch (e) {
+    findings.push('BLOCKER: group does not exist on this tenant (' + e.message + ').');
+    console.log('\n✗ Group not found.');
+    Logger.warn('Wing .all fan-out diagnosis: group not found', { group: target, errorMessage: e.message });
+    return result;
+  }
+
+  console.log('\nGroup: ' + group.name + '   direct members: ' + Number(group.directMembersCount || 0));
+
+  if (typeof AdminGroupsSettings !== 'undefined' && AdminGroupsSettings.Groups && AdminGroupsSettings.Groups.get) {
+    try {
+      const s = executeWithRetry(() => AdminGroupsSettings.Groups.get(target));
+      result.settings = {
+        allowExternalMembers: String(s.allowExternalMembers || ''),
+        whoCanPostMessage: String(s.whoCanPostMessage || ''),
+        messageModerationLevel: String(s.messageModerationLevel || ''),
+        spamModerationLevel: String(s.spamModerationLevel || '')
+      };
+      console.log('Settings: ' + JSON.stringify(result.settings));
+
+      if (result.settings.allowExternalMembers !== 'true') {
+        findings.push('BLOCKER: allowExternalMembers is "' + result.settings.allowExternalMembers +
+          '". A cadet-tenant group cannot be added while this is false.');
+      }
+    } catch (e) {
+      console.log('Settings: unavailable (' + e.message + ')');
+    }
+  } else {
+    console.log('Settings: AdminGroupsSettings advanced service is not enabled.');
+  }
+
+  // --- 2. Is a cadet-tenant group actually nested? ---
+  let members = [];
+  let pageToken = '';
+  do {
+    const page = executeWithRetry(() => AdminDirectory.Members.list(target, {
+      maxResults: 200,
+      pageToken: pageToken
+    }));
+    if (page.members) members = members.concat(page.members);
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+
+  const peerMembers = members
+    .filter(m => peerDomain && String(m.email || '').toLowerCase().endsWith('@' + peerDomain))
+    .map(m => ({
+      email: String(m.email || '').toLowerCase(),
+      role: String(m.role || 'MEMBER').toUpperCase(),
+      type: String(m.type || ''),
+      status: String(m.status || ''),
+      // A member set to NONE/DISABLED is in the group and still receives nothing.
+      deliverySettings: String(m.delivery_settings || m.deliverySettings || '')
+    }));
+  result.peerMembers = peerMembers;
+
+  console.log('\nMembers on ' + (peerDomain || 'the cadet domain') + ': ' + peerMembers.length);
+  peerMembers.forEach(m => console.log('  ' + m.email + '   role=' + m.role +
+    ' type=' + m.type + ' status=' + m.status +
+    (m.deliverySettings ? ' delivery=' + m.deliverySettings : '')));
+
+  if (!peerMembers.length) {
+    findings.push('BLOCKER: no address on the cadet tenant is a member of this group, ' +
+      'so nothing sent here can reach a cadet.');
+  }
+  peerMembers.forEach(m => {
+    if (m.status && m.status.toUpperCase() !== 'ACTIVE') {
+      findings.push('BLOCKER: ' + m.email + ' is a member but its status is ' + m.status + '.');
+    }
+    const delivery = m.deliverySettings.toUpperCase();
+    if (delivery === 'NONE' || delivery === 'DISABLED') {
+      findings.push('BLOCKER: ' + m.email + ' is a member with delivery ' + delivery +
+        ' — it is listed but is sent nothing.');
+    }
+  });
+
+  // --- 3. What will the next updateEmailGroups() run do to it? ---
+  const ss = SpreadsheetApp.openById(CONFIG.AUTOMATION_SPREADSHEET_ID);
+  const groupsSheet = ss.getSheetByName('Groups');
+  let externalAllowedBySheet = false;
+
+  if (!groupsSheet) {
+    findings.push('Groups tab not found; cannot predict the next run.');
+  } else {
+    const rows = groupsSheet.getDataRange().getValues();
+    const header = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
+    const idxAddExt = header.indexOf('add ext');
+    const idxAddLite = header.indexOf('add lite');
+    const truthy = v => ['y', 'yes', 'x', 'true'].indexOf(String(v || '').trim().toLowerCase()) > -1;
+
+    for (let r = 1; r < rows.length; r++) {
+      if (String(rows[r][1] || '').trim().toLowerCase() !== baseName.toLowerCase()) continue;
+      const addExt = idxAddExt > -1 ? String(rows[r][idxAddExt] || '') : '';
+      const addLite = idxAddLite > -1 ? String(rows[r][idxAddLite] || '') : '';
+      const allows = truthy(addExt) || truthy(addLite);
+      externalAllowedBySheet = externalAllowedBySheet || allows;
+      result.sheet.groupsRows.push({
+        row: r + 1,
+        groupName: String(rows[r][1] || ''),
+        attribute: String(rows[r][2] || ''),
+        addExt: addExt,
+        addLite: addLite,
+        allowsExternal: allows
+      });
+    }
+
+    console.log('\nGroups tab rows named "' + baseName + '": ' + result.sheet.groupsRows.length);
+    result.sheet.groupsRows.forEach(r => console.log('  row ' + r.row + '   Attribute=' +
+      (r.attribute || '(blank)') + '   Add EXT=' + (r.addExt || '(blank)') +
+      '   Add Lite=' + (r.addLite || '(blank)')));
+
+    if (!result.sheet.groupsRows.length) {
+      findings.push('No Groups row is named "' + baseName + '", so updateEmailGroups() does not ' +
+        'manage this group and a User Additions row for it has nothing to merge into.');
+    } else if (!externalAllowedBySheet) {
+      findings.push('BLOCKER: no Groups row for "' + baseName + '" sets Add EXT (or Add Lite). ' +
+        'Every run therefore declines external adds AND writes allowExternalMembers=false ' +
+        'onto this group, so fixing the flag by hand reverts on the next sync. ' +
+        'Set Add EXT = Y on the "' + baseName + '" row.');
+    }
+  }
+
+  // --- 4. Is the nesting preserved, or does the delta pass drop it? ---
+  const additionsSheet = ss.getSheetByName('User Additions') ||
+    ss.getSheetByName('UserAdditions') || ss.getSheetByName('USER ADDITIONS');
+  const preserved = {};
+
+  if (!additionsSheet) {
+    findings.push('User Additions tab not found; nothing preserves a cross-tenant member here.');
+  } else {
+    const rows = additionsSheet.getDataRange().getValues();
+    const header = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
+    const idxEmail = header.indexOf('email') > -1 ? header.indexOf('email') : 1;
+    const idxGroups = header.indexOf('groups') > -1 ? header.indexOf('groups') : 3;
+
+    for (let r = 1; r < rows.length; r++) {
+      const email = String(rows[r][idxEmail] || '').trim().toLowerCase();
+      if (!email) continue;
+      const tokens = String(rows[r][idxGroups] || '').split(',')
+        .map(t => t.trim().toLowerCase())
+        .filter(Boolean)
+        .map(t => t.endsWith(CONFIG.EMAIL_DOMAIN.toLowerCase())
+          ? t.slice(0, -CONFIG.EMAIL_DOMAIN.length)
+          : t);
+      if (tokens.indexOf(groupId) < 0) continue;
+
+      preserved[email] = true;
+      // updateCAWGCadetGroups() rewrites every row whose address matches its own
+      // managed pattern. A hand-added one that it does not generate is deleted
+      // from the tab on its next run, and the member disappears one sync later.
+      const generated = typeof isManagedCAWGCadetGroupEmail_ === 'function' &&
+        isManagedCAWGCadetGroupEmail_(email, peerDomain);
+      const isGeneratedShape = /\.(cadets|parents)@/.test(email);
+      result.sheet.userAdditionsRows.push({
+        row: r + 1,
+        email: email,
+        rewrittenByCadetGroupSync: !!generated && !isGeneratedShape
+      });
+    }
+
+    console.log('\nUser Additions rows targeting ' + groupId + ': ' + result.sheet.userAdditionsRows.length);
+    result.sheet.userAdditionsRows.forEach(r => console.log('  row ' + r.row + '   ' + r.email +
+      (r.rewrittenByCadetGroupSync ? '   ⚠ updateCAWGCadetGroups() deletes this row' : '')));
+
+    result.sheet.userAdditionsRows.forEach(r => {
+      if (r.rewrittenByCadetGroupSync) {
+        findings.push('BLOCKER: the User Additions row for ' + r.email + ' matches the addresses ' +
+          'updateCAWGCadetGroups() manages but is not one it generates, so that function deletes ' +
+          'the row and the next updateEmailGroups() run then removes the member. It generates ' +
+          '.cadets@ and .parents@ addresses only — nest ' +
+          String(CONFIG.WING || '').toLowerCase() + '.cadets@' + peerDomain + ' instead.');
+      }
+    });
+  }
+
+  peerMembers.forEach(m => {
+    if (m.role !== 'MEMBER') return;   // MANAGER/OWNER are never auto-removed
+    if (preserved[m.email]) return;
+    findings.push('BLOCKER: ' + m.email + ' is a member but no User Additions row names ' + groupId +
+      ', so the next updateEmailGroups() run computes it as unwanted and removes it. ' +
+      'Add a row: Email=' + m.email + ', Groups=' + groupId + '.');
+  });
+
+  // --- Verdict ---
+  console.log('\n' + '-'.repeat(80));
+  if (!findings.length) {
+    console.log('Nothing on this tenant blocks the fan-out.');
+    console.log('Remaining prerequisite is cadet-side: run ' +
+      'groupAdministration_auditReceiveListPosting() on the CADETS tenant and confirm the ' +
+      'nested group is ANYONE_CAN_POST. Anything else is best proven by Admin console → ' +
+      'Reporting → Email Log Search on a real message to ' + target + '.');
+  } else {
+    findings.forEach((f, i) => console.log((i + 1) + '. ' + f));
+  }
+  console.log('-'.repeat(80) + '\n');
+
+  Logger.info('Wing .all fan-out diagnosis complete', {
+    group: target,
+    peerMembers: peerMembers.length,
+    findings: findings
+  });
+
+  return result;
+}
+
+/**
+ * READ-ONLY. The receiving half of the fan-out check: is this group fit to be
+ * nested into a list on the OTHER tenant? Run it on the tenant that OWNS the
+ * group (for ca.cadets@cawgcadets.org, the cadets tenant).
+ *
+ * groupAdministration_diagnoseWingAllFanout() answers everything visible from the
+ * sending tenant and nothing visible from this one, because a Workspace tenant
+ * cannot read the other's group settings. Three things decide whether mail that
+ * arrives here goes anywhere, and all three are invisible from the wing side:
+ *
+ *   1. The group exists. Nesting an address that resolves to nothing is accepted
+ *      by the sending group and delivers to no one.
+ *   2. It has members. An empty receive list is indistinguishable from a working
+ *      one until somebody asks a cadet whether they got the mail.
+ *   3. whoCanPostMessage is ANYONE_CAN_POST. Fan-out arrives carrying the
+ *      ORIGINAL sender, who is on the other tenant and therefore external —
+ *      ALL_IN_DOMAIN_CAN_POST and ALL_MEMBERS_CAN_POST both reject it. This is
+ *      the one that fails without a bounce anybody notices.
+ *
+ * The bulk equivalent is groupAdministration_auditReceiveListPosting(), which
+ * covers item 3 for every managed list at once. Use this when a specific address
+ * is about to be nested, or has been and is not delivering.
+ *
+ *   groupAdministration_diagnoseReceiveGroup('ca.cadets@cawgcadets.org')
+ *
+ * @param {string=} groupEmail - Defaults to GROUP_ADMINISTRATION_RUN_INPUTS.GROUP_EMAIL.
+ * @returns {{group:string, exists:boolean, directMembersCount:number,
+ *            settings:Object, findings:Array<string>}}
+ */
+function groupAdministration_diagnoseReceiveGroup(groupEmail) {
+  const target = getConfiguredRunEmail_(groupEmail, 'GROUP_EMAIL', 'group email');
+  const findings = [];
+  const result = {
+    group: target,
+    exists: false,
+    directMembersCount: 0,
+    settings: {},
+    findings: findings
+  };
+
+  console.log('\n' + '='.repeat(80));
+  console.log('Receive-group check: ' + target);
+  console.log('='.repeat(80));
+
+  let group;
+  try {
+    group = executeWithRetry(() => AdminDirectory.Groups.get(target));
+    result.exists = true;
+  } catch (e) {
+    findings.push('BLOCKER: this group does not exist on this tenant. Nesting it into a ' +
+      'list on the other tenant is accepted and delivers to nobody.');
+    console.log('\n✗ Not found (' + e.message + ')');
+    console.log('-'.repeat(80) + '\n');
+    Logger.warn('Receive-group check: group not found', { group: target, errorMessage: e.message });
+    return result;
+  }
+
+  result.directMembersCount = Number(group.directMembersCount || 0);
+  console.log('\nName: ' + group.name);
+  console.log('Direct members: ' + result.directMembersCount);
+
+  if (!result.directMembersCount) {
+    findings.push('BLOCKER: the group exists but has no members, so mail fanned out to it ' +
+      'reaches nobody. An empty receive list looks exactly like a working one from ' +
+      'the sending tenant.');
+  }
+
+  if (typeof AdminGroupsSettings !== 'undefined' && AdminGroupsSettings.Groups && AdminGroupsSettings.Groups.get) {
+    try {
+      const s = executeWithRetry(() => AdminGroupsSettings.Groups.get(target));
+      result.settings = {
+        whoCanPostMessage: String(s.whoCanPostMessage || ''),
+        allowExternalMembers: String(s.allowExternalMembers || ''),
+        messageModerationLevel: String(s.messageModerationLevel || ''),
+        spamModerationLevel: String(s.spamModerationLevel || '')
+      };
+      console.log('Settings: ' + JSON.stringify(result.settings));
+
+      if (result.settings.whoCanPostMessage !== 'ANYONE_CAN_POST') {
+        findings.push('BLOCKER: whoCanPostMessage is ' + result.settings.whoCanPostMessage +
+          '. Fan-out from the other tenant carries the original — external — sender, ' +
+          'so this group rejects or holds it. Only ANYONE_CAN_POST accepts it; Google has ' +
+          'no value meaning "members plus my other tenant". Repair with ' +
+          'groupAdministration_repairReceiveListPosting(false) on this tenant.');
+      }
+      if (result.settings.whoCanPostMessage === 'ANYONE_CAN_POST' &&
+          result.settings.spamModerationLevel !== 'MODERATE') {
+        findings.push('ANYONE_CAN_POST is open to the internet and spamModerationLevel is "' +
+          result.settings.spamModerationLevel + '". The two are meant to travel together.');
+      }
+    } catch (e) {
+      console.log('Settings: unavailable (' + e.message + ')');
+      findings.push('Could not read settings, so posting permission is unverified: ' + e.message);
+    }
+  } else {
+    findings.push('AdminGroupsSettings advanced service is not enabled, so posting ' +
+      'permission — the prerequisite that fails silently — could not be checked.');
+  }
+
+  console.log('\n' + '-'.repeat(80));
+  if (!findings.length) {
+    console.log('Fit to receive cross-tenant fan-out.');
+  } else {
+    findings.forEach((f, i) => console.log((i + 1) + '. ' + f));
+  }
+  console.log('-'.repeat(80) + '\n');
+
+  Logger.info('Receive-group check complete', {
+    group: target,
+    exists: result.exists,
+    directMembersCount: result.directMembersCount,
+    findings: findings
+  });
+
   return result;
 }
 

@@ -471,6 +471,55 @@ just the sibling tenant. It is paired with `spamModerationLevel=MODERATE` for th
 reason. A list that genuinely must stay closed should be left out of the managed set
 rather than hand-set in the console, where the next sync will overwrite it.
 
+### The wing-wide `.all` list does not reach cadets (but the unit lists do)
+
+**Symptom:** a message to `ca.all@cawgcap.org` reaches seniors and no cadet. The same message to
+`ca###.all@cawgcap.org` reaches that unit's cadets normally.
+
+**Cause:** the two lists are reached by different code. `shouldCreateDistributionLists()` returns
+false for any org that is not UNIT scope, and no CAPWATCH org is wing scope, so
+`updateAllSquadronGroups()` — which nests the cadet group into the unit lists and reconciles the
+settings that permit it — **never touches the wing list**. `ca.all` is managed by
+`updateEmailGroups()` alone, where every one of those prerequisites has to come from the
+spreadsheet, and each fails silently on its own:
+
+| What is missing | What it looks like |
+| --- | --- |
+| No cadet-tenant group is a member | The list simply has no cadet in it |
+| No **User Additions** row names the group | It works right after somebody adds it by hand, then stops — the delta pass removes any plain `MEMBER` it did not compute as desired |
+| The **Groups** row has no `Add EXT` / `Add Lite` | The add is declined, *and* `allowExternalMembers=false` is written to the group on every run, so an Admin-console fix reverts within a day |
+| The row is one `updateCAWGCadetGroups()` rewrites | It survives a sync or two, then the row disappears from the tab and the member with it |
+
+**Diagnose:** run `groupAdministration_diagnoseWingAllFanout()` on the **wing** tenant. It is
+read-only and reports which of the four is failing, with the address or sheet row to change.
+
+**Fix, in this order** — the first step is a check, because steps 2–3 replace a nesting that may be
+delivering today:
+
+1. On the **cadets** tenant, `groupAdministration_diagnoseReceiveGroup('ca.all@cawgcadets.org')` —
+   that tenant's own wing-wide all-hands, which on a cadet-only tenant *is* the wing's cadets. It
+   must exist, have members, and be `ANYONE_CAN_POST`. If posting is wrong,
+   `groupAdministration_repairReceiveListPosting(false)` fixes it — the wing-level list is one no
+   sync owns, so nothing else will. (Do **not** expect `ca.cadets@cawgcadets.org` to exist: nothing
+   creates wing-level `.cadets` groups on that tenant. See UpdateCAWGCadetGroups.gs 1.3.0.)
+2. On the **wing** tenant, `updateCAWGCadetGroups()`. Since UpdateCAWGCadetGroups.gs 1.3.0 this
+   writes the wing nesting row (`ca.all@cawgcadets.org` → `ca.cadets,ca.all`) and stamps
+   `Add EXT = Y` on the `all` row, which is what stops `allowExternalMembers` reverting to false.
+   **On a tenant still at 1.2.0 or earlier, skip this step** — it nests
+   `ca.cadets@cawgcadets.org`, which does not exist, and deletes the row for the address that does.
+   Set the `Add EXT` cell by hand instead.
+3. On the **wing** tenant, `updateEmailGroups()` (or `updateEmailGroupsBatch()`). It sets
+   `allowExternalMembers=true`, adds the nested group, and drops the old one.
+4. Send a real message to `ca.all@cawgcap.org` and confirm with a cadet, or with Admin console →
+   Reporting → Email Log Search.
+
+See also
+[A member on the other tenant cannot post to a list](#a-member-on-the-other-tenant-cannot-post-to-a-list).
+
+**Note:** before UpdateGroups.gs 1.10.0 the apply loop declined *every* external add unless the
+row's Attribute was literally `contact` — no log, no counter. A tenant still running an older
+version cannot add the nested group at all, however the sheet is filled in.
+
 ### Too Many Members Removed
 
 **Symptom:** Mass removal of members from groups

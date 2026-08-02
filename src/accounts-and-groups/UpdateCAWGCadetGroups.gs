@@ -1,17 +1,39 @@
 /**
  * -------------------------------------------------------------------------
  * File: UpdateCAWGCadetGroups.gs
- * Version: 1.1.5
- * Date: 2026-03-30 21:29 PDT
+ * Version: 1.3.0
+ * Date: 2026-07-31
  * Author: Lt Col Noel Luneau, Pacific Region
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.2.0–1.3.0)
+ * Changes: 1.3.0 — a WING-scope cadet source is now the cadet tenant's own
+ *   all-hands (ca.all@cawgcadets.org), not ca.cadets@cawgcadets.org, which does
+ *   not exist and never has: `.cadets` groups there are created by
+ *   updateAllSquadronGroups(), which walks UNIT-scope orgs only.
+ *   buildCAWGCadetSourceGroupEmail_() took `scope` and ignored it. So this
+ *   function generated a row for a nonexistent address (the add 404s and is
+ *   swallowed), left ca.cadets@cawgcap.org with no member that resolves, AND
+ *   deleted the hand-added row for the address that does work — its
+ *   managed-address pattern matches `.all@` while it generated none. Parents is
+ *   deliberately unchanged; see buildCAWGCadetSourceGroupEmail_.
+ *   1.2.0 — every Groups row this function nests INTO is now stamped
+ *   "Add EXT = Y", not only the rows it creates. It set that column on its own
+ *   "cadets"/"parents" rows while nesting them into ".all" rows it left alone,
+ *   so it built a dependency it did not satisfy: with the column blank on "all",
+ *   updateEmailGroups() declines the external add AND writes
+ *   allowExternalMembers=false onto the group on every run. Found on
+ *   ca.all@cawgcap.org, where the wing-wide list carried a nested cadet group it
+ *   could no longer have re-added. Applies to any wing adopting this.
  * Description:
  * Writes CAWG split-tenant cadet rows into the automation spreadsheet:
  * - "Groups" tab rows for exact destination groups (manualOnly + Add EXT)
+ * - "Groups" rows nested into (".all") get Add EXT = Y as well
  * - "User Additions" rows for nested cadet-tenant source groups
  *
  * Example nested mappings:
- *   ca007.cadets@cawgcadets.org   -> ca007.cadets
+ *   ca007.cadets@cawgcadets.org   -> ca007.cadets, ca007.all
  *   ca007.parents@cawgcadets.org  -> ca007.parents
+ *   ca.all@cawgcadets.org         -> ca.cadets, ca.all   (WING scope: the cadet
+ *                                    tenant has no wing-level .cadets group)
  * -------------------------------------------------------------------------
  */
 
@@ -39,12 +61,15 @@ function updateCAWGCadetGroups() {
 
   const cadetTenantDomain = getCAWGCadetsTenantDomain_();
   const desired = buildCAWGCadetManagedRows_(cadetTenantDomain);
-  const groupsResult = upsertCAWGCadetGroupDefinitionRows_(groupsSheet, desired.groupDefinitions);
+  const groupsResult = upsertCAWGCadetGroupDefinitionRows_(
+    groupsSheet, desired.groupDefinitions, desired.externalNestTargets);
   const additionsResult = upsertCAWGCadetGroupRows_(additionsSheet, desired.userAdditionsRows, cadetTenantDomain);
 
   Logger.info('CAWG cadet split-tenant rows updated', {
     userAdditionsRowsWritten: desired.userAdditionsRows.length,
     groupsRowsWritten: desired.groupDefinitions.length,
+    externalNestTargets: desired.externalNestTargets,
+    addExtStamped: groupsResult.addExtStamped,
     preservedUserAdditionsRows: additionsResult.preservedCount,
     preservedGroupsRows: groupsResult.preservedCount,
     cadetTenantDomain: cadetTenantDomain,
@@ -65,6 +90,7 @@ function previewCAWGCadetGroups() {
   Logger.info('CAWG cadet split-tenant preview', {
     userAdditionsRows: desired.userAdditionsRows.length,
     groupDefinitions: desired.groupDefinitions.length,
+    externalNestTargets: desired.externalNestTargets,
     userAdditionsSample: desired.userAdditionsRows.slice(0, 10),
     groupsSample: desired.groupDefinitions.slice(0, 10)
   });
@@ -125,11 +151,49 @@ function buildCAWGCadetManagedRows_(cadetTenantDomain) {
 
   return {
     userAdditionsRows: userAdditionsRows,
+    externalNestTargets: collectCAWGCadetExternalNestTargets_(userAdditionsRows),
     groupDefinitions: [
       buildCAWGCadetGroupDefinition_('cadets', 'Cadets', cadetGroupIds),
       buildCAWGCadetGroupDefinition_('parents', 'Parents & Guardians', parentGroupIds)
     ]
   };
+}
+
+/**
+ * The Groups-tab row names these nestings land in, which therefore have to allow
+ * external members.
+ *
+ * Every address here is on the cadet tenant, so every group it is nested into is
+ * holding an address outside this domain. updateEmailGroups() reads permission for
+ * that from the Groups sheet ("Add EXT", or "Add Lite" which implies it) and does
+ * two things with a blank column: it declines the add, and it writes
+ * allowExternalMembers=false onto the group. Both silently, and the second one
+ * undoes any repair made in the Admin console by the next morning.
+ *
+ * This function used to set that column only on the "cadets" and "parents" rows it
+ * creates — while nesting them into ".all" rows written by a human. So a wing-wide
+ * list could hold a nested cadet group it was no longer permitted to re-add, which
+ * is exactly what ca.all@cawgcap.org was found doing.
+ *
+ * Names are the Groups-tab convention: everything after the first dot of the group
+ * id, so "ca.all" and "ca007.all" are both the row named "all".
+ *
+ * @param {Array<Object>} userAdditionsRows - Rows from buildCAWGCadetManagedRows_
+ * @returns {Array<string>} Distinct base group names, sorted
+ */
+function collectCAWGCadetExternalNestTargets_(userAdditionsRows) {
+  const seen = {};
+
+  (Array.isArray(userAdditionsRows) ? userAdditionsRows : []).forEach(row => {
+    String((row && row.groups) || '').split(',').forEach(token => {
+      const groupId = String(token || '').trim().toLowerCase();
+      if (!groupId || groupId.indexOf('.') < 0) return;
+      const baseName = groupId.split('.').slice(1).join('.');
+      if (baseName) seen[baseName] = true;
+    });
+  });
+
+  return Object.keys(seen).sort();
 }
 
 function upsertCAWGCadetGroupRows_(sheet, desiredRows, cadetTenantDomain) {
@@ -365,12 +429,48 @@ function buildCAWGCadetStandardGroupName_(org, squadrons, label) {
   return baseLabel && normalizedLabel ? `${baseLabel} - ${normalizedLabel}` : (baseLabel || normalizedLabel || '');
 }
 
+/**
+ * The address on the CADET tenant to nest, for one target.
+ *
+ * SCOPE MATTERS, and used not to. This function has always taken `scope` and
+ * ignored it, so a wing target produced "ca.cadets@cawgcadets.org" — an address
+ * nothing creates. On the cadet tenant, `.cadets` groups come from
+ * updateAllSquadronGroups(), which reaches an org only through
+ * shouldCreateDistributionLists() and so walks UNIT scope only; no CAPWATCH org
+ * is wing scope. Verified 2026-07-31: ca.cadets@cawgcadets.org returns 404 while
+ * ca.all@cawgcadets.org holds 2,646 members and is named "CAWG - Cadets".
+ *
+ * What DOES exist wing-wide on that tenant is its own all-hands, created by its
+ * updateEmailGroups() from the "all" row like any other wing-level group. On a
+ * cadet-only tenant that list IS the wing's cadets, so nesting it is not a
+ * substitution — it is the same population under the name that exists.
+ *
+ * The consequence of the old behavior was quiet: a User Additions row pointing at
+ * a nonexistent address, a 404 swallowed as "cannot add external member", and a
+ * wing-wide ca.cadets@cawgcap.org whose only intended member never resolved. It
+ * also made this function delete a hand-added row for the address that does work,
+ * since its managed-address pattern matches `.all@` while it generated none.
+ *
+ * PARENTS IS DELIBERATELY UNCHANGED. Whether a wing-level parents group exists on
+ * the cadet tenant has not been established, and this tenant cannot check — a
+ * Workspace tenant cannot read the other's directory. Changing it on the same
+ * reasoning would be a guess. See docs/TROUBLESHOOTING.md.
+ *
+ * @param {string} prefix - Group id prefix, e.g. "ca" or "ca007"
+ * @param {string} scope - CAPWATCH org scope: WING or UNIT
+ * @param {string} kind - "cadets" or "parents"
+ * @param {string} cadetTenantDomain - e.g. cawgcadets.org
+ * @returns {string}
+ */
 function buildCAWGCadetSourceGroupEmail_(prefix, scope, kind, cadetTenantDomain) {
   const normalizedPrefix = String(prefix || '').trim().toLowerCase();
   const domain = String(cadetTenantDomain || '').trim().toLowerCase();
+  const normalizedScope = String(scope || '').trim().toUpperCase();
 
   if (kind === 'cadets') {
-    return `${normalizedPrefix}.cadets@${domain}`;
+    return normalizedScope === 'WING'
+      ? `${normalizedPrefix}.all@${domain}`
+      : `${normalizedPrefix}.cadets@${domain}`;
   }
 
   if (kind === 'parents') {
@@ -407,7 +507,18 @@ function getCAWGParentGroupPrefix_(org, squadrons) {
   return `${wing}${unit}`;
 }
 
-function upsertCAWGCadetGroupDefinitionRows_(sheet, desiredRows) {
+/**
+ * Rewrites this function's own rows on the Groups tab, and guarantees the rows it
+ * nests into permit external members.
+ *
+ * @param {SpreadsheetApp.Sheet} sheet - The "Groups" tab
+ * @param {Array<Object>} desiredRows - Rows this function owns outright
+ * @param {Array<string>=} externalNestTargets - Base group names that must allow
+ *   external members; their Add EXT is set to Y, everything else on the row is
+ *   left exactly as the human wrote it.
+ * @returns {{preservedCount:number, rowCount:number, addExtStamped:Array<string>}}
+ */
+function upsertCAWGCadetGroupDefinitionRows_(sheet, desiredRows, externalNestTargets) {
   const defaultHeader = ['Category', 'Group Name', 'Attribute', 'Values', 'Description', 'Add EXT'];
   const values = sheet.getDataRange().getValues();
 
@@ -439,6 +550,18 @@ function upsertCAWGCadetGroupDefinitionRows_(sheet, desiredRows) {
       .filter(Boolean)
   );
 
+  // Rows this function does not own, but nests an external address into. The only
+  // cell touched is Add EXT — see collectCAWGCadetExternalNestTargets_ for why a
+  // blank one silently breaks the nesting it is being asked to hold.
+  const nestTargets = new Set(
+    (Array.isArray(externalNestTargets) ? externalNestTargets : [])
+      .map(n => String(n || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const addExtStamped = [];
+  const alreadyAllowsExternal_ = v =>
+    ['y', 'yes', 'x', 'true'].indexOf(String(v || '').trim().toLowerCase()) > -1;
+
   const out = [headerRow];
   for (let r = 1; r < values.length; r++) {
     const row = values[r] || [];
@@ -447,6 +570,12 @@ function upsertCAWGCadetGroupDefinitionRows_(sheet, desiredRows) {
 
     const groupName = String(padded[idxGroupName] || '').trim().toLowerCase();
     if (groupName && managedGroupNames.has(groupName)) continue;
+
+    if (groupName && nestTargets.has(groupName) && !alreadyAllowsExternal_(padded[idxAddExt])) {
+      padded[idxAddExt] = 'Y';
+      addExtStamped.push(groupName);
+    }
+
     out.push(padded);
   }
 
@@ -468,7 +597,8 @@ function upsertCAWGCadetGroupDefinitionRows_(sheet, desiredRows) {
 
   return {
     preservedCount: Math.max(out.length - 1 - ((desiredRows || []).length), 0),
-    rowCount: Math.max(out.length - 1, 0)
+    rowCount: Math.max(out.length - 1, 0),
+    addExtStamped: addExtStamped
   };
 }
 

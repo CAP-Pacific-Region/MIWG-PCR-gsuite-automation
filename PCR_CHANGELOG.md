@@ -10,6 +10,105 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-07-31] — why the wing-wide all list reaches no cadet, in one function
+
+Members reported that `ca.all@cawgcap.org` does not deliver to cadets while the unit `.all` lists
+do. That is not a contradiction — the two are reached by different code:
+
+| List | Managed by | Nests the cadet group? |
+| --- | --- | --- |
+| `ca###.all` | `updateAllSquadronGroups()` (SquadronGroups.gs) | yes, and reconciles the settings that permit it |
+| `ca.all` | `updateEmailGroups()` (UpdateGroups.gs) **only** | only if the sheet says so |
+
+`shouldCreateDistributionLists()` returns false for anything that is not UNIT scope, and no CAPWATCH
+org is wing scope, so **SquadronGroups never touches the wing list**. Every prerequisite it handles
+for a unit list has to be satisfied by the Groups / User Additions tabs for the wing one, and each
+fails silently and separately.
+
+### Added — `groupAdministration_diagnoseWingAllFanout(groupEmail)` (groupAdministration.gs)
+
+Read-only, run on the WING tenant. It checks the four things this tenant can see and names the one
+that is failing, rather than leaving four candidates to be eliminated by hand:
+
+1. **Is a cadet-tenant address a member at all** — with role, status and `delivery_settings`, because
+   a member set to `NONE` is listed and still sent nothing.
+2. **Does anything preserve it.** `updateEmailGroups()` removes any plain `MEMBER` it did not compute
+   as desired, and a cross-tenant address only becomes desired through a **User Additions** row naming
+   the group. Without that row the nesting is removed on the next sync, which is what "it does not
+   hold" looks like from outside.
+3. **Does the Groups row permit external members** (`Add EXT`, or `Add Lite` which implies it).
+   Without it the apply loop declines the add *and* `applyManagedGroupSettings_()` writes
+   `allowExternalMembers=false` onto the group every run — so fixing the flag in the Admin console
+   reverts within a day, and the two failures look like one intermittent one.
+4. **The live group settings**, so a false flag is reported as a fact rather than inferred.
+
+It also flags a User Additions row that `updateCAWGCadetGroups()` will delete. That function rewrites
+every row whose address matches `ca[###].(cadets|parents|all|…)@cawgcadets.org` but only *generates*
+`.cadets@` and `.parents@` rows, so a hand-added `ca.all@cawgcadets.org` row is erased on its next
+run and the member disappears one sync later. The address it generates for the wing list is
+`ca.cadets@cawgcadets.org`.
+
+Nothing here writes. See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+### Added — `groupAdministration_diagnoseReceiveGroup(groupEmail)` (groupAdministration.gs)
+
+The receiving half, run on the tenant that **owns** the group. A Workspace tenant cannot read the
+other's group settings, so three prerequisites are invisible from the sending side and each fails
+without a bounce anyone sees: the group **exists** (nesting an address that resolves to nothing is
+accepted and delivers to no one), it **has members** (an empty receive list is indistinguishable
+from a working one until somebody asks a cadet), and `whoCanPostMessage` is **`ANYONE_CAN_POST`**
+(fan-out carries the *original* sender, who is external to the receiving tenant).
+
+`groupAdministration_auditReceiveListPosting()` remains the bulk form of the third check; this is
+for a specific address about to be nested, or already nested and not delivering.
+
+### Fixed — UpdateCAWGCadetGroups.gs 1.3.0: a wing target nested an address that does not exist
+
+`buildCAWGCadetSourceGroupEmail_()` took `scope` **and ignored it**, so the wing target resolved to
+`ca.cadets@cawgcadets.org`. Nothing creates that address: `.cadets` groups on the cadet tenant come
+from `updateAllSquadronGroups()`, which reaches an org only via `shouldCreateDistributionLists()` and
+therefore walks UNIT scope only — and no CAPWATCH org is wing scope. It is the same structural gap
+that leaves the wing `.all` list unmanaged, one tenant over.
+
+Confirmed against live state on 2026-07-31: `ca.cadets@cawgcadets.org` returns **404**, while
+`ca.all@cawgcadets.org` holds **2,646 members**, is `ANYONE_CAN_POST`, and is named "CAWG - Cadets".
+On a cadet-only tenant that all-hands list *is* the wing's cadets, so nesting it is not a
+substitution — it is the same population under the name that exists.
+
+Three things followed from the old behavior, none of which surfaced an error:
+
+- the generated User Additions row pointed at nothing; the add 404s and is logged as "cannot add
+  external member", one line among thousands
+- `ca.cadets@cawgcap.org` — the wing-wide cadet list — had no member that resolves, because unit
+  cadets are nested into `ca###.cadets`/`ca###.all` and never into `ca.cadets`
+- **it deleted the row for the address that works.** `isManagedCAWGCadetGroupEmail_()` matches
+  `.all@` while the generator produced none, so a hand-added `ca.all@cawgcadets.org` row was dropped
+  as an orphan of the function's own making
+
+A WING-scope cadet source is now `<wing>.all@<cadet domain>`; UNIT scope is unchanged. The generator
+now emits the row CAWG had added by hand, so the two stop fighting.
+
+**Parents is deliberately unchanged.** Whether a wing-level parents group exists on the cadet tenant
+has not been established, and the wing tenant cannot check — a Workspace tenant cannot read the
+other's directory. Changing it on the same reasoning would be a guess, so `ca.parents@cawgcap.org`
+is left as it is pending `groupAdministration_diagnoseReceiveGroup('ca.parents@cawgcadets.org')` on
+the cadets tenant.
+
+### Fixed — UpdateCAWGCadetGroups.gs 1.2.0: it built a dependency it did not satisfy
+
+`updateCAWGCadetGroups()` set `Add EXT` on the `cadets`/`parents` rows it creates, and nested those
+groups into `.all` rows written by a human — without setting it there. A blank column on that row is
+not inert: `updateEmailGroups()` reads it as "this group holds no outside addresses" and both
+declines the add **and** writes `allowExternalMembers=false` onto the group, every run. So the sheet
+asked for a nesting it simultaneously forbade, and an Admin-console repair reverted by morning.
+
+Found on `ca.all@cawgcap.org`: a nested cadet group present, `allowExternalMembers=false`, and no way
+to re-add the member if it were ever lost. Every Groups row a generated nesting lands in is now
+stamped `Add EXT = Y` — one cell; `Category`, `Attribute`, `Values` and `Description` stay as their
+author wrote them, since rewriting those would silently redefine who is on the wing's all-hands list.
+Both fixes are covered by `test/UpdateCAWGCadetGroups.nesting.test.js`. Neither was ever
+CAWG-specific — they apply to any wing adopting the split-tenant pattern.
+
 ## [2026-07-28] — members can set their own signature, and change exactly one thing about it
 
 A CAP email signature reached a member three ways: five minutes after their account was created,
