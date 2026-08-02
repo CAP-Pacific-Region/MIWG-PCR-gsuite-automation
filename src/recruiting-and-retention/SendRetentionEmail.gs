@@ -1,8 +1,34 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.7.0
- * Date: 2026-07-25
+ * Version: 1.9.0
+ * Date: 2026-08-02
+ * Changes: Members parked in a holding unit (CONFIG.EXCLUDED_ORG_IDS — CA-000
+ *   1297 and CA-999 368) are no longer selected for any retention mail. Nobody
+ *   commands a holding unit, so there is no command channel for the mail to
+ *   reach: the 2026-08-01 run produced a digest for ORGID 1297 addressed to
+ *   nobody. Filtering at selection removes them from the member mail AND the
+ *   digest in one place, and matches how shouldProcessMember() in UpdateMembers.gs
+ *   and the LSCode digest already treat these orgs. The ORGID is trimmed before
+ *   comparison because the CAPWATCH feed ships padded values.
+ *   1.8.0: Fixed logEmailSent(), which called `sheet.appendRow` after the digest
+ *   change moved that variable into retentionLogAppend_(). Every per-member write
+ *   threw into its own catch, so the 2026-08-01 seniors run reported 251 sent /
+ *   0 failed while recording none of it. Digests were unaffected — they call the
+ *   helper directly, which is why it was not obvious. logEmailSent() now has
+ *   tests; it had none, which is how a caller-scope break shipped.
+ *   Added backfillRetentionLogFromSentMail(), which reconstructs missing rows
+ *   from the automation account's SENT MAIL rather than by re-deriving from
+ *   CAPWATCH. Those answer different questions: CAPWATCH says who would be
+ *   selected now, not who was mailed, so a member whose expiration has since come
+ *   into range would get an 'already sent' row for mail they never received. Sent
+ *   mail also carries the true send timestamps. Gmail is the authority on what
+ *   went out; CAPWATCH only supplies the CAPID for each address, since a message
+ *   carries none and the dedupe key is (type, CAPID). Shared family addresses with
+ *   fewer messages than candidates are reported, not guessed. Dry run by default;
+ *   must be run as the automation account. Needs no new scope — gmail.modify is
+ *   already granted. See PCR_CHANGELOG.md.
+ *   1.7.0: (2026-07-25)
  * Changes: A SENIOR's renewal notice now carries NO unit CC, and each unit
  *   instead receives a per-unit DIGEST listing everyone under its command whose
  *   membership expires this month. The distinction is the point: a senior's
@@ -261,6 +287,26 @@ function sendRetentionEmails() {
 // ============================================================================
 
 /**
+ * Is this ORGID one of the tenant's holding units?
+ *
+ * CA-000 (1297) and CA-999 (368) are administrative parking orgs, not units.
+ * Nobody commands them, so retention mail about a member held there has no
+ * command channel to reach: the 2026-08-01 run produced a digest for ORGID 1297
+ * with no recipient at all. Excluding at selection keeps the member out of both
+ * the mail and the digest, matching how shouldProcessMember() in UpdateMembers.gs
+ * and the LSCode digest already treat these orgs.
+ *
+ * Trims, because ORGID values arrive from the CAPWATCH feed padded.
+ *
+ * @param {string} orgid - Member's ORGID
+ * @returns {boolean} True if the member is parked in a holding unit
+ */
+function retentionIsExcludedOrg_(orgid) {
+  const excluded = CONFIG.EXCLUDED_ORG_IDS || [];
+  return excluded.indexOf(String(orgid || '').trim()) > -1;
+}
+
+/**
  * Retrieves cadets turning 18 this month
  * 
  * Filters for ACTIVE CADET members whose birth month matches current month
@@ -279,6 +325,7 @@ function getMembersTurning18() {
   Logger.info('Retrieving members turning 18');
   
   const members = [];
+  let excludedOrgs = 0;
   const memberData = parseFile('Member');
   const emailMap = createEmailMap();
   const currentDate = new Date();
@@ -291,6 +338,13 @@ function getMembersTurning18() {
     if (memberData[i][24] !== 'ACTIVE' || 
         memberData[i][21] !== 'CADET' || 
         !memberData[i][7]) {
+      continue;
+    }
+
+    // Parked in a holding unit: no commander to copy, so no mail. See
+    // retentionIsExcludedOrg_.
+    if (retentionIsExcludedOrg_(memberData[i][11])) {
+      excludedOrgs++;
       continue;
     }
     
@@ -343,7 +397,7 @@ function getMembersTurning18() {
     }
   }
   
-  Logger.info('Members turning 18 retrieved', { count: members.length });
+  Logger.info('Members turning 18 retrieved', { count: members.length, holdingUnitSkipped: excludedOrgs });
   return members;
 }
 
@@ -366,6 +420,7 @@ function getMembersTurning21() {
   Logger.info('Retrieving members turning 21');
   
   const members = [];
+  let excludedOrgs = 0;
   const memberData = parseFile('Member');
   const emailMap = createEmailMap();
   const currentDate = new Date();
@@ -378,6 +433,13 @@ function getMembersTurning21() {
     if (memberData[i][24] !== 'ACTIVE' || 
         memberData[i][21] !== 'CADET' || 
         !memberData[i][7]) {
+      continue;
+    }
+
+    // Parked in a holding unit: no commander to copy, so no mail. See
+    // retentionIsExcludedOrg_.
+    if (retentionIsExcludedOrg_(memberData[i][11])) {
+      excludedOrgs++;
       continue;
     }
     
@@ -430,7 +492,7 @@ function getMembersTurning21() {
     }
   }
   
-  Logger.info('Members turning 21 retrieved', { count: members.length });
+  Logger.info('Members turning 21 retrieved', { count: members.length, holdingUnitSkipped: excludedOrgs });
   return members;
 }
 
@@ -454,6 +516,7 @@ function getExpiringMembers() {
   Logger.info('Retrieving expiring members');
   
   const members = [];
+  let excludedOrgs = 0;
   const memberData = parseFile('Member');
   const emailMap = createEmailMap();
   const currentDate = new Date();
@@ -465,6 +528,13 @@ function getExpiringMembers() {
     if (memberData[i][24] !== 'ACTIVE' || 
         (memberData[i][21] !== 'CADET' && memberData[i][21] !== 'SENIOR') ||
         !memberData[i][16]) {
+      continue;
+    }
+
+    // Parked in a holding unit: no commander to copy, so no mail. See
+    // retentionIsExcludedOrg_.
+    if (retentionIsExcludedOrg_(memberData[i][11])) {
+      excludedOrgs++;
       continue;
     }
     
@@ -519,7 +589,7 @@ function getExpiringMembers() {
     }
   }
   
-  Logger.info('Expiring members retrieved', { count: members.length });
+  Logger.info('Expiring members retrieved', { count: members.length, holdingUnitSkipped: excludedOrgs });
   return members;
 }
 
@@ -1318,6 +1388,232 @@ function sendExpiringEmail(member) {
 }
 
 // ============================================================================
+// LOG BACKFILL FROM SENT MAIL
+// ============================================================================
+
+/**
+ * Reconstructs missing Log rows from the automation account's SENT MAIL.
+ *
+ * WHY THIS EXISTS. logEmailSent() was broken between the digest change and
+ * 2026-08-02: it called a variable that no longer existed in scope, so every
+ * per-member write threw into its own catch and the run recorded nothing while
+ * reporting success. The 2026-08-01 seniors run sent 251 member emails that the
+ * Log has no trace of, which leaves the duplicate-send guard blind to them.
+ *
+ * WHY SENT MAIL RATHER THAN RE-DERIVING FROM CAPWATCH. Re-running the retrieval
+ * functions would answer "who WOULD be selected now", not "who WAS mailed".
+ * Those differ: a member who has renewed since drops out, and one whose
+ * expiration has since come into range appears — and writing an 'already sent'
+ * row for that second member would silently suppress a mail they never got.
+ * Sent mail is the record of what actually happened, and it carries the real
+ * send timestamp rather than the time of the backfill.
+ *
+ * THE JOIN. A sent message identifies the recipient ADDRESS and the type (from
+ * the subject), but carries no CAPID — and the Log's dedupe key is
+ * (type, CAPID). So Gmail is the authority on what was sent, and CAPWATCH
+ * supplies the CAPID for each address. A candidate is confirmed only when a
+ * matching message exists, which is what stops a since-expired member being
+ * wrongly marked.
+ *
+ * SHARED ADDRESSES. Families share a primary email, so one address can map to
+ * several CAPIDs. Where the message count for an address is at least the number
+ * of candidates, all are confirmed; where it is fewer, only that many can be
+ * justified and the rest are reported as ambiguous rather than guessed at.
+ *
+ * MUST BE RUN AS THE AUTOMATION ACCOUNT — it reads that mailbox's sent items. A
+ * run under any other identity finds nothing, which the preview makes obvious.
+ *
+ * DRY RUN BY DEFAULT. Pass { write: true } to actually append rows.
+ *
+ * @param {Object} [opts] - { write: boolean, period: 'yyyy-MM',
+ *   candidates: [{ type, m }] to override the CAPWATCH lookup }
+ * @returns {Object} { period, sentFound, confirmed, written, alreadyLogged,
+ *                     unmatchedAddresses, ambiguous }
+ */
+function backfillRetentionLogFromSentMail(opts) {
+  const o = opts || {};
+  const write = o.write === true;
+  const period = o.period || retentionPeriodKey_(new Date());
+
+  const S = RETENTION_CONFIG.SUBJECTS;
+  const typeBySubject = {};
+  typeBySubject[S.TURNING_18] = 'TURNING_18';
+  typeBySubject[S.TURNING_21] = 'TURNING_21';
+  typeBySubject[S.EXPIRING] = 'EXPIRING';
+
+  // ---- 1. What was actually sent, from the mailbox ------------------------
+  // (type, address) -> { count, earliest Date }
+  const sent = {};
+  let sentFound = 0;
+
+  Object.keys(typeBySubject).forEach(function (subject) {
+    const type = typeBySubject[subject];
+    const query = 'in:sent subject:"' + subject + '" ' + retentionGmailWindow_(period);
+
+    let start = 0;
+    for (;;) {
+      const threads = GmailApp.search(query, start, 100);
+      if (!threads.length) break;
+
+      threads.forEach(function (thread) {
+        thread.getMessages().forEach(function (msg) {
+          // Gmail's subject: operator matches loosely; require the real subject.
+          // Digests append the charter, so an exact match also excludes them.
+          if (String(msg.getSubject() || '').trim() !== subject) return;
+
+          const when = msg.getDate();
+          if (retentionPeriodKey_(when) !== period) return;
+
+          retentionParseAddresses_(msg.getTo()).forEach(function (addr) {
+            const key = type + '|' + addr;
+            if (!sent[key]) sent[key] = { count: 0, when: when };
+            sent[key].count++;
+            if (when < sent[key].when) sent[key].when = when;
+            sentFound++;
+          });
+        });
+      });
+
+      start += threads.length;
+      if (threads.length < 100) break;
+    }
+  });
+
+  Logger.info('Backfill: sent messages found', { period: period, messages: sentFound });
+
+  // ---- 2. CAPWATCH candidates, for the CAPID and name --------------------
+  // Overridable so a narrower reconstruction can be driven from a known list
+  // rather than the whole current selection.
+  const candidates = o.candidates || []
+    .concat(getMembersTurning18().map(function (m) { return { type: 'TURNING_18', m: m }; }))
+    .concat(getMembersTurning21().map(function (m) { return { type: 'TURNING_21', m: m }; }))
+    .concat(getExpiringMembers().map(function (m) { return { type: 'EXPIRING', m: m }; }));
+
+  // ---- 3. Join, respecting per-address message counts ---------------------
+  const alreadySent = retentionAlreadySentThisPeriod_(new Date());
+  const budget = {};
+  Object.keys(sent).forEach(function (k) { budget[k] = sent[k].count; });
+
+  const result = {
+    period: period,
+    sentFound: sentFound,
+    confirmed: 0,
+    written: 0,
+    alreadyLogged: 0,
+    unmatchedAddresses: [],
+    ambiguous: []
+  };
+
+  candidates.forEach(function (c) {
+    const addr = String(c.m.email || '').trim().toLowerCase();
+    const key = c.type + '|' + addr;
+    const dedupeKey = c.type + '|' + String(c.m.capid || '').trim();
+
+    if (alreadySent.usable && alreadySent.keys[dedupeKey]) {
+      result.alreadyLogged++;
+      return;
+    }
+    if (!sent[key]) return; // never mailed — correctly left out
+    if (budget[key] <= 0) {
+      result.ambiguous.push({ type: c.type, capid: c.m.capid, address: addr });
+      return;
+    }
+
+    budget[key]--;
+    result.confirmed++;
+
+    if (!write) return;
+
+    // Mirror what the run itself would have recorded: the commander is on the
+    // row only where the send actually carried one.
+    let commander = null;
+    if (c.type !== 'EXPIRING' || c.m.type === 'CADET') {
+      commander = getCommanderInfo(c.m.orgid);
+    }
+
+    try {
+      retentionLogAppend_([
+        sent[key].when, // the real send time, not the time of this backfill
+        c.type,
+        c.m.capid,
+        c.m.rank + ' ' + c.m.firstName + ' ' + c.m.lastName,
+        c.m.email,
+        commander ? commander.capid : '',
+        commander ? (commander.rank + ' ' + commander.firstName + ' ' + commander.lastName) : '',
+        commander ? commander.email : ''
+      ]);
+      result.written++;
+    } catch (e) {
+      Logger.error('Backfill: failed to append row', {
+        capsn: c.m.capid, type: c.type, errorMessage: e.message
+      });
+    }
+  });
+
+  // Addresses that were mailed but no current CAPWATCH row explains — normally
+  // members who have renewed since, whose rows cannot be reconstructed and do
+  // not need to be: they will not be selected again either.
+  Object.keys(budget).forEach(function (k) {
+    if (budget[k] > 0) {
+      result.unmatchedAddresses.push({ key: k, remaining: budget[k] });
+    }
+  });
+
+  console.log('\n=== RETENTION LOG BACKFILL (' + (write ? 'WRITING' : 'DRY RUN') + ') ===\n');
+  console.log('Period:                  ' + period);
+  console.log('Sent messages found:     ' + sentFound);
+  console.log('Confirmed against CAPWATCH: ' + result.confirmed);
+  console.log('Rows written:            ' + result.written + (write ? '' : '  (dry run — pass {write:true})'));
+  console.log('Already logged, skipped: ' + result.alreadyLogged);
+  console.log('Mailed but unresolvable: ' + result.unmatchedAddresses.length +
+    '  (renewed since; no row needed)');
+  console.log('Ambiguous shared address: ' + result.ambiguous.length);
+  result.ambiguous.forEach(function (a) {
+    console.log('   ' + a.type + ' capid ' + a.capid + ' @ ' + a.address);
+  });
+  if (!sentFound) {
+    console.log('\n⚠ No sent mail found. Are you signed in as the automation account?');
+  }
+  console.log('');
+
+  Logger.info('Retention log backfill complete', result);
+  return result;
+}
+
+/** Gmail date window for a 'yyyy-MM' period, deliberately wide; messages are
+ *  then filtered exactly by retentionPeriodKey_. */
+function retentionGmailWindow_(period) {
+  const parts = String(period).split('-');
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  const from = new Date(y, m - 1, 1);
+  const to = new Date(y, m, 1);
+  const fmt = function (d) {
+    return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate();
+  };
+  // after: is exclusive of the given day, so step back one.
+  from.setDate(from.getDate() - 1);
+  to.setDate(to.getDate() + 1);
+  return 'after:' + fmt(from) + ' before:' + fmt(to);
+}
+
+/**
+ * Pulls bare addresses out of a To header, which may be 'Name <a@b>, c@d'.
+ *
+ * @param {string} header - Raw To header
+ * @returns {Array<string>} Lower-cased addresses
+ */
+function retentionParseAddresses_(header) {
+  return String(header || '')
+    .split(',')
+    .map(function (part) {
+      const m = part.match(/<([^>]+)>/);
+      return String(m ? m[1] : part).trim().toLowerCase();
+    })
+    .filter(function (a) { return a.indexOf('@') > 0; });
+}
+
+// ============================================================================
 // PER-UNIT RENEWAL DIGEST
 // ============================================================================
 
@@ -1681,8 +1977,8 @@ function logEmailSent(emailType, member, commander) {
       (commander.rank + ' ' + commander.firstName + ' ' + commander.lastName) : '';
     const commanderEmail = commander ? commander.email : '';
     const commanderCapid = commander ? commander.capid : '';
-    
-    sheet.appendRow([
+
+    retentionLogAppend_([
       new Date(),
       emailType,
       member.capid,
@@ -1692,7 +1988,7 @@ function logEmailSent(emailType, member, commander) {
       commanderName,
       commanderEmail
     ]);
-    
+
     Logger.info('Email logged to spreadsheet', {
       emailType: emailType,
       capsn: member.capid

@@ -59,6 +59,16 @@ Addressed to the commander with the recruiting officer copied. A unit with only 
 it addressed to whichever exists; a unit with **neither** is reported in the run summary, since
 those units hear nothing.
 
+### Holding units are excluded
+
+Members parked in `CONFIG.EXCLUDED_ORG_IDS` — CA-000 (1297) and CA-999 (368) — are not selected
+for any retention mail. Nobody commands a holding unit, so there is no command channel for the
+mail to reach; the first live run produced a digest for ORGID 1297 addressed to nobody.
+
+The filter is applied at **selection**, so it removes those members from the individual mail and
+from the digest in one place. It matches by ORGID rather than unit number, and trims, because the
+CAPWATCH feed ships padded values.
+
 ### How the unit CC is built
 
 | Recipient | On which mail |
@@ -204,6 +214,34 @@ testAllRetentionEmails();
 // Just the CC dump, without the member sampling
 previewRetentionCcLists();
 ```
+
+### Recovering missing Log rows
+
+If a run sent mail but failed to log it, `backfillRetentionLogFromSentMail()` reconstructs the
+rows from the automation account's **sent mail** — the record of what actually happened, carrying
+the real send timestamps.
+
+```javascript
+// Preview. Sends nothing, writes nothing.
+backfillRetentionLogFromSentMail({ period: '2026-08' });
+
+// Then, once the numbers look right:
+backfillRetentionLogFromSentMail({ period: '2026-08', write: true });
+```
+
+**Run it signed in as the automation account** — it reads that mailbox. Under any other identity
+it finds nothing, which the preview states plainly.
+
+Sent mail is used rather than re-deriving from CAPWATCH because those answer different questions:
+CAPWATCH says who *would be selected now*, not who *was mailed*. A member who has renewed since
+drops out, and one whose expiration has since come into range appears — and writing an
+"already sent" row for that second member would silently suppress a mail they never received. A
+row is written only where a matching message exists.
+
+Since a sent message carries no CAPID, and the dedupe key is `(type, CAPID)`, CAPWATCH supplies
+the CAPID for each address. Families share a primary address, so where one address has fewer
+messages than candidates, only as many as were actually sent are written and the remainder are
+reported as ambiguous rather than guessed at.
 
 `previewRetentionCcLists()` is the one to read before a first real run. It prints each unit's
 commander and CC'd duty holders, the exact CC string each email type would carry, and then three
