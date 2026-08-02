@@ -1,11 +1,20 @@
 /**
  * -------------------------------------------------------------------------
  * File: UpdateCAWGCadetGroups.gs
- * Version: 1.3.0
- * Date: 2026-07-31
+ * Version: 1.4.0
+ * Date: 2026-08-02
  * Author: Lt Col Noel Luneau, Pacific Region
- * Contributors: Maj Isaac Wilson IV, California Wing (1.2.0–1.3.0)
- * Changes: 1.3.0 — a WING-scope cadet source is now the cadet tenant's own
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.2.0–1.4.0)
+ * Changes: 1.4.0 — the WING parents list is fed by the units. Its source,
+ *   ca.parents@cawgcadets.org, does not exist either (404, checked 2026-08-02),
+ *   and unlike cadets there is no aggregate on the cadet tenant to substitute:
+ *   parents groups are created per unit only. So the wing parents SOURCE row is
+ *   no longer emitted — it could only ever 404 and be swallowed, which is how
+ *   ca.parents@cawgcap.org came to hold no member that resolves — and every
+ *   unit's parents group now nests into the wing list directly. ca.parents stays
+ *   a managed DESTINATION. Cadets keep the 1.3.0 route (one nested aggregate),
+ *   because for them the cadet tenant has one.
+ *   1.3.0 — a WING-scope cadet source is now the cadet tenant's own
  *   all-hands (ca.all@cawgcadets.org), not ca.cadets@cawgcadets.org, which does
  *   not exist and never has: `.cadets` groups there are created by
  *   updateAllSquadronGroups(), which walks UNIT-scope orgs only.
@@ -31,9 +40,11 @@
  *
  * Example nested mappings:
  *   ca007.cadets@cawgcadets.org   -> ca007.cadets, ca007.all
- *   ca007.parents@cawgcadets.org  -> ca007.parents
+ *   ca007.parents@cawgcadets.org  -> ca007.parents, ca.parents
  *   ca.all@cawgcadets.org         -> ca.cadets, ca.all   (WING scope: the cadet
  *                                    tenant has no wing-level .cadets group)
+ *   (no wing parents source row — the cadet tenant has no wing-level .parents
+ *    group either, so the units feed ca.parents directly)
  * -------------------------------------------------------------------------
  */
 
@@ -115,6 +126,7 @@ function buildCAWGCadetManagedRows_(cadetTenantDomain) {
   const parentGroupIds = [];
 
   targets.forEach(target => {
+    const isWing = String(target.scope || '').trim().toUpperCase() === 'WING';
     const cadetsTargetGroupId = `${target.prefix}.cadets`;
     const parentsTargetGroupId = `${target.prefix}.parents`;
     const parentGroupPrefix = getCAWGParentGroupPrefix_(target.org, squadrons);
@@ -127,7 +139,17 @@ function buildCAWGCadetManagedRows_(cadetTenantDomain) {
       parentsGroups.push(`${parentGroupPrefix}.parents`);
     }
 
+    // The wing parents list is fed by the units, because it has no source of its
+    // own. Cadets do: the cadet tenant's wing-wide all-hands IS its cadets, so the
+    // wing row nests that one address and the units need not reach up. There is no
+    // equivalent aggregate for parents — ca.parents@<cadet domain> does not exist
+    // (404, verified 2026-08-02) and nothing creates wing-level groups there — so
+    // every unit's parents group is nested into the wing list directly.
+    if (!isWing) parentsGroups.push(`${wingCode}.parents`);
+
     cadetGroupIds.push(cadetsTargetGroupId);
+    // Kept for the wing too: ca.parents remains a DESTINATION this function
+    // manages, even though the wing has no parents SOURCE row below.
     parentGroupIds.push(parentsTargetGroupId);
 
     userAdditionsRows.push(buildCAWGCadetNestedGroupEntry_(
@@ -135,6 +157,11 @@ function buildCAWGCadetManagedRows_(cadetTenantDomain) {
       buildCAWGCadetSourceGroupEmail_(target.prefix, target.scope, 'cadets', cadetTenantDomain),
       cadetsGroups.join(',')
     ));
+
+    // A wing parents row would point at an address that does not exist; the add
+    // 404s and is swallowed, which is how ca.parents@<wing domain> came to hold no
+    // member that resolves. Emit nothing rather than something that cannot work.
+    if (isWing) return;
 
     userAdditionsRows.push(buildCAWGCadetNestedGroupEntry_(
       buildCAWGCadetStandardGroupName_(target.org, squadrons, 'Parents & Guardians'),
@@ -451,10 +478,12 @@ function buildCAWGCadetStandardGroupName_(org, squadrons, label) {
  * also made this function delete a hand-added row for the address that does work,
  * since its managed-address pattern matches `.all@` while it generated none.
  *
- * PARENTS IS DELIBERATELY UNCHANGED. Whether a wing-level parents group exists on
- * the cadet tenant has not been established, and this tenant cannot check — a
- * Workspace tenant cannot read the other's directory. Changing it on the same
- * reasoning would be a guess. See docs/TROUBLESHOOTING.md.
+ * PARENTS TAKES THE OTHER ROUTE. Checked on the cadet tenant 2026-08-02:
+ * ca.parents@cawgcadets.org 404s too, and unlike cadets there is no aggregate to
+ * substitute — parents groups exist only per unit. So the wing parents SOURCE row
+ * is not emitted at all (see buildCAWGCadetManagedRows_), and each unit's parents
+ * group is nested into the wing list instead. This function is therefore only ever
+ * asked for 'parents' at UNIT scope.
  *
  * @param {string} prefix - Group id prefix, e.g. "ca" or "ca007"
  * @param {string} scope - CAPWATCH org scope: WING or UNIT

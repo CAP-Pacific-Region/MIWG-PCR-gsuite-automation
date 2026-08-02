@@ -520,6 +520,14 @@ See also
 row's Attribute was literally `contact` — no log, no counter. A tenant still running an older
 version cannot add the nested group at all, however the sheet is filled in.
 
+**Wing-level groups do not exist on the cadet tenant.** Neither `ca.cadets@cawgcadets.org` nor
+`ca.parents@cawgcadets.org` is real — both 404 — because `updateAllSquadronGroups()` creates those
+groups per UNIT and no CAPWATCH org is wing scope. Since UpdateCAWGCadetGroups.gs 1.4.0 the two are
+handled differently, and the difference is not arbitrary: cadets nest that tenant's wing all-hands
+(`ca.all@cawgcadets.org`, which on a cadet-only tenant *is* its cadets), while parents have no such
+aggregate, so each unit's parents group nests into `ca.parents` directly. If a wing list here looks
+empty, check which of those two shapes it should have before adding anything by hand.
+
 ### Too Many Members Removed
 
 **Symptom:** Mass removal of members from groups

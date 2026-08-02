@@ -27,11 +27,33 @@ const MODULE = path.join(__dirname, '..', 'src', 'accounts-and-groups', 'UpdateC
 const { section, check, done } = makeChecker();
 const { logger } = makeLogger();
 
+/**
+ * Squadrons as getSquadrons() returns them: a wing org, a GROUP echelon, and one
+ * unit whose nextLevel points at that group.
+ */
+const SQUADRONS = {
+  '100': { scope: 'WING', wing: 'ca', unit: '001', name: 'CALIFORNIA WING', nextLevel: '' },
+  '200': { scope: 'GROUP', wing: 'ca', unit: '205', name: 'GROUP 3', nextLevel: '100' },
+  '300': { scope: 'UNIT', wing: 'ca', unit: '007', name: 'SQUADRON 7', nextLevel: '200' }
+};
+
+/** One ACTIVE CADET in orgid 300 — Member.txt columns 11 / 21 / 24. */
+function memberRow(orgid) {
+  const row = new Array(25).fill('');
+  row[11] = orgid;
+  row[21] = 'CADET';
+  row[24] = 'ACTIVE';
+  return row;
+}
+
 const m = loadModule(MODULE, {
   Logger: logger,
-  CONFIG: { WING: 'CA', AUTOMATION_SPREADSHEET_ID: 'x' }
+  CONFIG: { WING: 'CA', AUTOMATION_SPREADSHEET_ID: 'x', CADETS_TENANT_DOMAIN: 'cawgcadets.org' },
+  getSquadrons: () => SQUADRONS,
+  parseFile: name => (name === 'Member' ? [memberRow('300')] : [])
 }, ['collectCAWGCadetExternalNestTargets_', 'upsertCAWGCadetGroupDefinitionRows_',
-    'buildCAWGCadetSourceGroupEmail_', 'isManagedCAWGCadetGroupEmail_']);
+    'buildCAWGCadetSourceGroupEmail_', 'isManagedCAWGCadetGroupEmail_',
+    'buildCAWGCadetManagedRows_']);
 
 /**
  * A stand-in for the Groups tab that records what was written to it.
@@ -216,6 +238,57 @@ section('8. The wing row is now one this function owns');
     m.isManagedCAWGCadetGroupEmail_('somebody@cawgcadets.org', 'cawgcadets.org'), false);
   check('a wing-tenant address is never claimed',
     m.isManagedCAWGCadetGroupEmail_('ca.all@cawgcap.org', 'cawgcadets.org'), false);
+}
+
+// ---------------------------------------------------------------------------
+section('9. Cadets and parents reach the wing by different routes');
+{
+  // Neither ca.cadets@ nor ca.parents@ exists on the cadet tenant — nothing there
+  // creates wing-level groups. Cadets have a substitute (that tenant's own
+  // all-hands IS its cadets); parents do not, so the units feed the wing list.
+  const rows = m.buildCAWGCadetManagedRows_('cawgcadets.org').userAdditionsRows;
+  const by = email => rows.find(r => r.email === email);
+
+  check('the wing cadet source is the all-hands that exists',
+    !!by('ca.all@cawgcadets.org'), true);
+  check('and it feeds both wing lists',
+    by('ca.all@cawgcadets.org').groups, 'ca.cadets,ca.all');
+
+  check('no wing cadets source row — that address 404s',
+    by('ca.cadets@cawgcadets.org'), undefined);
+  check('no wing parents source row either — same reason',
+    by('ca.parents@cawgcadets.org'), undefined);
+
+  const unitParents = by('ca007.parents@cawgcadets.org');
+  check('a unit feeds its own parents list', unitParents.groups.indexOf('ca007.parents') > -1, true);
+  check('and its group echelon', unitParents.groups.indexOf('ca205.parents') > -1, true);
+  check('and now the wing list directly', unitParents.groups.indexOf('ca.parents') > -1, true);
+
+  // Cadets deliberately do NOT reach up: the wing row already nests one aggregate
+  // covering every cadet, so adding them here would duplicate that population.
+  const unitCadets = by('ca007.cadets@cawgcadets.org');
+  check('a unit does not feed ca.cadets', unitCadets.groups.indexOf('ca.cadets'), -1);
+  check('it feeds its own and its group echelon',
+    unitCadets.groups, 'ca007.cadets,ca007.all,ca205.cadets,ca205.all');
+
+  check('exactly three rows: wing cadets, unit cadets, unit parents', rows.length, 3);
+}
+
+// ---------------------------------------------------------------------------
+section('10. ca.parents stays a managed destination');
+{
+  // Dropping the wing SOURCE row must not drop the wing DESTINATION group, or the
+  // 56 unit groups would be nested into something this function stopped managing.
+  const defs = m.buildCAWGCadetManagedRows_('cawgcadets.org').groupDefinitions;
+  const parents = defs.find(d => d.groupName === 'parents');
+  const cadets = defs.find(d => d.groupName === 'cadets');
+
+  check('ca.parents is still in the parents row values',
+    parents.values.split(',').indexOf('ca.parents') > -1, true);
+  check('alongside the unit destination',
+    parents.values.split(',').indexOf('ca007.parents') > -1, true);
+  check('ca.cadets likewise', cadets.values.split(',').indexOf('ca.cadets') > -1, true);
+  check('both rows still request external members', parents.addExt + cadets.addExt, 'YY');
 }
 
 done();

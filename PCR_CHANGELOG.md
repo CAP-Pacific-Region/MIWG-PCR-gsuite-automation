@@ -121,11 +121,30 @@ Three things followed from the old behavior, none of which surfaced an error:
 A WING-scope cadet source is now `<wing>.all@<cadet domain>`; UNIT scope is unchanged. The generator
 now emits the row CAWG had added by hand, so the two stop fighting.
 
-**Parents is deliberately unchanged.** Whether a wing-level parents group exists on the cadet tenant
-has not been established, and the wing tenant cannot check — a Workspace tenant cannot read the
-other's directory. Changing it on the same reasoning would be a guess, so `ca.parents@cawgcap.org`
-is left as it is pending `groupAdministration_diagnoseReceiveGroup('ca.parents@cawgcadets.org')` on
-the cadets tenant.
+**Parents was left pending a check, which has now been made — see 1.4.0 below.**
+
+### Fixed — UpdateCAWGCadetGroups.gs 1.4.0: the wing parents list is fed by the units
+
+`groupAdministration_diagnoseReceiveGroup('ca.parents@cawgcadets.org')` on the cadets tenant, run
+2026-08-02: **404.** Same structural gap as `.cadets` — nothing creates wing-level groups there.
+
+Cadets had a substitute available, because that tenant's wing-wide all-hands *is* its cadets.
+**Parents have none**: those groups exist per unit only. So the two take different routes now, and
+the code says why in both places:
+
+| | Wing source row | Units reach up? |
+| --- | --- | --- |
+| Cadets | `ca.all@cawgcadets.org` → `ca.cadets`, `ca.all` | no — the aggregate already covers every cadet |
+| Parents | *none emitted* | yes — each `ca###.parents@cawgcadets.org` also nests into `ca.parents` |
+
+The wing parents **source** row is no longer emitted at all. It could only ever point at a
+nonexistent address, 404, and be swallowed — which is exactly how `ca.parents@cawgcap.org` came to
+hold no member that resolves. `ca.parents` remains a managed **destination**, or the 56 unit groups
+would be nested into something this function had stopped managing; that is asserted separately.
+
+Sections 9 and 10 of `test/UpdateCAWGCadetGroups.nesting.test.js` drive the real
+`buildCAWGCadetManagedRows_()` against a fake wing/group/unit org tree, so the routing decision is
+covered rather than the helpers alone.
 
 ### Fixed — UpdateCAWGCadetGroups.gs 1.2.0: it built a dependency it did not satisfy
 
