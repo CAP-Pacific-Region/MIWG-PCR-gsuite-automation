@@ -59,6 +59,16 @@ Addressed to the commander with the recruiting officer copied. A unit with only 
 it addressed to whichever exists; a unit with **neither** is reported in the run summary, since
 those units hear nothing.
 
+### Holding units are excluded
+
+Members parked in `CONFIG.EXCLUDED_ORG_IDS` — CA-000 (1297) and CA-999 (368) — are not selected
+for any retention mail. Nobody commands a holding unit, so there is no command channel for the
+mail to reach; the first live run produced a digest for ORGID 1297 addressed to nobody.
+
+The filter is applied at **selection**, so it removes those members from the individual mail and
+from the digest in one place. It matches by ORGID rather than unit number, and trims, because the
+CAPWATCH feed ships padded values.
+
 ### How the unit CC is built
 
 | Recipient | On which mail |

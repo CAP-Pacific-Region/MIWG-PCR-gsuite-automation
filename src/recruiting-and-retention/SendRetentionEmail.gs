@@ -1,9 +1,17 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.8.0
+ * Version: 1.9.0
  * Date: 2026-08-02
- * Changes: Fixed logEmailSent(), which called `sheet.appendRow` after the digest
+ * Changes: Members parked in a holding unit (CONFIG.EXCLUDED_ORG_IDS — CA-000
+ *   1297 and CA-999 368) are no longer selected for any retention mail. Nobody
+ *   commands a holding unit, so there is no command channel for the mail to
+ *   reach: the 2026-08-01 run produced a digest for ORGID 1297 addressed to
+ *   nobody. Filtering at selection removes them from the member mail AND the
+ *   digest in one place, and matches how shouldProcessMember() in UpdateMembers.gs
+ *   and the LSCode digest already treat these orgs. The ORGID is trimmed before
+ *   comparison because the CAPWATCH feed ships padded values.
+ *   1.8.0: Fixed logEmailSent(), which called `sheet.appendRow` after the digest
  *   change moved that variable into retentionLogAppend_(). Every per-member write
  *   threw into its own catch, so the 2026-08-01 seniors run reported 251 sent /
  *   0 failed while recording none of it. Digests were unaffected — they call the
@@ -279,6 +287,26 @@ function sendRetentionEmails() {
 // ============================================================================
 
 /**
+ * Is this ORGID one of the tenant's holding units?
+ *
+ * CA-000 (1297) and CA-999 (368) are administrative parking orgs, not units.
+ * Nobody commands them, so retention mail about a member held there has no
+ * command channel to reach: the 2026-08-01 run produced a digest for ORGID 1297
+ * with no recipient at all. Excluding at selection keeps the member out of both
+ * the mail and the digest, matching how shouldProcessMember() in UpdateMembers.gs
+ * and the LSCode digest already treat these orgs.
+ *
+ * Trims, because ORGID values arrive from the CAPWATCH feed padded.
+ *
+ * @param {string} orgid - Member's ORGID
+ * @returns {boolean} True if the member is parked in a holding unit
+ */
+function retentionIsExcludedOrg_(orgid) {
+  const excluded = CONFIG.EXCLUDED_ORG_IDS || [];
+  return excluded.indexOf(String(orgid || '').trim()) > -1;
+}
+
+/**
  * Retrieves cadets turning 18 this month
  * 
  * Filters for ACTIVE CADET members whose birth month matches current month
@@ -297,6 +325,7 @@ function getMembersTurning18() {
   Logger.info('Retrieving members turning 18');
   
   const members = [];
+  let excludedOrgs = 0;
   const memberData = parseFile('Member');
   const emailMap = createEmailMap();
   const currentDate = new Date();
@@ -309,6 +338,13 @@ function getMembersTurning18() {
     if (memberData[i][24] !== 'ACTIVE' || 
         memberData[i][21] !== 'CADET' || 
         !memberData[i][7]) {
+      continue;
+    }
+
+    // Parked in a holding unit: no commander to copy, so no mail. See
+    // retentionIsExcludedOrg_.
+    if (retentionIsExcludedOrg_(memberData[i][11])) {
+      excludedOrgs++;
       continue;
     }
     
@@ -361,7 +397,7 @@ function getMembersTurning18() {
     }
   }
   
-  Logger.info('Members turning 18 retrieved', { count: members.length });
+  Logger.info('Members turning 18 retrieved', { count: members.length, holdingUnitSkipped: excludedOrgs });
   return members;
 }
 
@@ -384,6 +420,7 @@ function getMembersTurning21() {
   Logger.info('Retrieving members turning 21');
   
   const members = [];
+  let excludedOrgs = 0;
   const memberData = parseFile('Member');
   const emailMap = createEmailMap();
   const currentDate = new Date();
@@ -396,6 +433,13 @@ function getMembersTurning21() {
     if (memberData[i][24] !== 'ACTIVE' || 
         memberData[i][21] !== 'CADET' || 
         !memberData[i][7]) {
+      continue;
+    }
+
+    // Parked in a holding unit: no commander to copy, so no mail. See
+    // retentionIsExcludedOrg_.
+    if (retentionIsExcludedOrg_(memberData[i][11])) {
+      excludedOrgs++;
       continue;
     }
     
@@ -448,7 +492,7 @@ function getMembersTurning21() {
     }
   }
   
-  Logger.info('Members turning 21 retrieved', { count: members.length });
+  Logger.info('Members turning 21 retrieved', { count: members.length, holdingUnitSkipped: excludedOrgs });
   return members;
 }
 
@@ -472,6 +516,7 @@ function getExpiringMembers() {
   Logger.info('Retrieving expiring members');
   
   const members = [];
+  let excludedOrgs = 0;
   const memberData = parseFile('Member');
   const emailMap = createEmailMap();
   const currentDate = new Date();
@@ -483,6 +528,13 @@ function getExpiringMembers() {
     if (memberData[i][24] !== 'ACTIVE' || 
         (memberData[i][21] !== 'CADET' && memberData[i][21] !== 'SENIOR') ||
         !memberData[i][16]) {
+      continue;
+    }
+
+    // Parked in a holding unit: no commander to copy, so no mail. See
+    // retentionIsExcludedOrg_.
+    if (retentionIsExcludedOrg_(memberData[i][11])) {
+      excludedOrgs++;
       continue;
     }
     
@@ -537,7 +589,7 @@ function getExpiringMembers() {
     }
   }
   
-  Logger.info('Expiring members retrieved', { count: members.length });
+  Logger.info('Expiring members retrieved', { count: members.length, holdingUnitSkipped: excludedOrgs });
   return members;
 }
 
