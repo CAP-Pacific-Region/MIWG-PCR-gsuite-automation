@@ -622,6 +622,46 @@ function previewTransitionRepair() {
 }
 
 /**
+ * Dumps the fields that decide a row's fate, for every COMPLETE row.
+ *
+ * Read-only. Exists because "0 rows matched" tells you nothing about WHICH
+ * condition failed — and guessing at that is how this feature has repeatedly
+ * gone wrong. Look, then decide.
+ */
+function dumpTransitionRowState() {
+  const rows = readTransitions_();
+  const now = new Date();
+  let n = 0;
+
+  for (const capid in rows) {
+    const row = rows[capid];
+    if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.COMPLETE) continue;
+    n++;
+    const da = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
+    console.log('--- ' + capid + '  ' + row.Name + ' ---');
+    console.log('  CadetEmail        : ' + row.CadetEmail +
+      '   (account exists now: ' + userExists_(row.CadetEmail) + ')');
+    console.log('  SeniorEmail       : ' + row.SeniorEmail);
+    console.log('  MigrationStatus   : ' + row.MigrationStatus);
+    console.log('  MigratedDate      : ' + (row.MigratedDate || '(blank)'));
+    console.log('  DeleteAfter       : ' + (row.DeleteAfter || '(blank)') +
+      (da ? (now >= da ? '   [PAST — due]' : '   [future — still in grace]') : ''));
+    console.log('  ForwardGroupCreated: ' + (row.ForwardGroupCreated || '(blank)'));
+    console.log('  NotifiedDate      : ' + (row.NotifiedDate || '(blank)'));
+    console.log('  MessagesMigrated  : ' + row.MessagesMigrated);
+    console.log('  DriveMigrated     : ' + row.DriveMigrated);
+    console.log('  ContactsMigrated  : ' + row.ContactsMigrated);
+    console.log('  Notes             : ' + String(row.Notes || '(blank)').slice(0, 220));
+    console.log('  whyNotCloseable_  : ' + (whyNotCloseable_(row, now) || '(closeable)'));
+    console.log('  needsForwardRepair_: ' + needsForwardRepair_(row));
+  }
+
+  console.log('');
+  console.log(n + ' COMPLETE row(s) shown.');
+  return { shown: n };
+}
+
+/**
  * A row that migrated and was closed-ish, but has no forwarding group: the
  * signature of the failed batch.
  *
