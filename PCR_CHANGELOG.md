@@ -10,6 +10,32 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-03] — free the address by renaming, not deleting (close incident fix)
+
+### Fixed
+
+- **`CadetTransitionCleanup.gs` (v1.3.0)** — the first live `closeCompletedTransitions(false)`
+  run deleted four cadet accounts and then **failed to create any forwarding group**:
+  `directory.groups.insert` returned `409 Entity already exists` for every one. A deleted
+  Workspace account **holds its address for Google's ~20-day recovery window**, so the
+  delete-then-create-at-the-same-address sequence could never work. (No member data was lost —
+  migration and the final catch-up sweep both completed before each delete, moving 1–15 late
+  messages each; the deleted accounts remained restorable.)
+
+  The address is now freed by **renaming the user off it**: rename → remove the alias the
+  rename auto-retains → create the group (retrying the brief, genuinely transient post-rename
+  409) → delete the renamed shell, whose tombstone holds the `.transitioned` address rather
+  than the real one. The **delete is now LAST**, so any earlier failure leaves a live,
+  recoverable account instead of a deleted one.
+
+  Added **`repairFailedTransitionCloses(dryRun)`** (+ `previewTransitionRepair()`) to finish
+  the stranded rows once their accounts are restored from the Admin console — it rebuilds the
+  forward without re-migrating anything. Added **`testAddressHandover(addr, forwardTo)`**,
+  which exercises the whole sequence on a throwaway *user*; the earlier
+  `testForwardingGroup()` validated only a group at a *fresh* address, which is exactly why
+  this reached production. Removed the now-unused plain create helper so the unsafe order
+  cannot be reintroduced.
+
 ## [2026-07-31] — two spellings, one mailbox
 
 ### Fixed — UpdateGroups.gs 1.11.0: membership compared on account identity, not string equality

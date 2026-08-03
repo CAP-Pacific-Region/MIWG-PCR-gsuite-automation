@@ -1,9 +1,19 @@
 /**
  * Cadet → senior transition: closing the old account.
  *
- * Version: 1.2.0
- * Date: 2026-07-17
- * Changes: 1.2.0 — the forwarding group now sets allowExternalMembers=true
+ * Version: 1.3.0
+ * Date: 2026-08-03
+ * Changes: 1.3.0 — the address is now freed by RENAMING the user off it, not by
+ *   deleting them. A deleted account holds its address for Google's ~20-day
+ *   recovery window, so Groups.insert 409'd and the first live close batch
+ *   (2026-08-03) deleted four accounts and built no forwarding groups. Sequence
+ *   is now rename → drop the auto-retained alias → create the group (retrying
+ *   the brief post-rename 409) → delete the renamed shell, so the delete is LAST
+ *   and any earlier failure leaves a live, recoverable account. Added
+ *   repairFailedTransitionCloses() for the stranded batch and
+ *   testAddressHandover() to exercise the full sequence on a throwaway user —
+ *   the case testForwardingGroup() missed by using a fresh address.
+ *   1.2.0 — the forwarding group now sets allowExternalMembers=true
  *   (the destination is on the peer/senior tenant, external to this domain, so
  *   without it the group can't deliver the forward) and applies settings BEFORE
  *   adding the member. Added testForwardingGroup() to prove the mechanism —
@@ -305,23 +315,20 @@ function closeOneTransition_(row) {
     });
   }
 
-  // 2. Prove the destination is real before destroying the source. A typo or a
-  // stale SeniorEmail would otherwise delete the only copy and forward the
-  // address into the void.
+  // 2. Prove the destination is real before touching the source. A typo or a
+  // stale SeniorEmail would otherwise strand the address and forward nowhere.
   assertDestinationExists_(row.SeniorEmail);
 
-  // 3. Delete. Irreversible from here.
-  executeWithRetry(() => AdminDirectory.Users.remove(row.CadetEmail));
-  Logger.info('Cadet account deleted', {
-    capid: row.CAPID, email: row.CadetEmail
-  });
-
-  // 4. Take the freed address as a forwarding group. Only possible now: a Group
-  // cannot coexist with a User on the same address.
+  // 3. Rename the account off its address, create the forwarding group there,
+  // then delete the renamed shell. NOT delete-then-create: a deleted account's
+  // address is held ~20 days by the recovery tombstone, so Groups.insert 409s
+  // (this stranded the first close batch on 2026-08-03). Because the delete is
+  // last, a failure here leaves a renamed-but-live account (recoverable), not a
+  // deleted one.
   const expires = new Date();
   expires.setMonth(expires.getMonth() + TRANSITION_CONFIG.FORWARD_GROUP_MONTHS);
 
-  createForwardingGroup_(row.CadetEmail, row.SeniorEmail, row.Name);
+  freeAddressAndForward_(row.CadetEmail, row.SeniorEmail, row.Name);
 
   setTransitionField_(row._rowNumber, 'ForwardGroupCreated', new Date().toISOString());
   setTransitionField_(row._rowNumber, 'ForwardGroupExpires', expires.toISOString());
@@ -333,6 +340,50 @@ function closeOneTransition_(row) {
     forwarding: row.CadetEmail + ' -> ' + row.SeniorEmail,
     expires: expires.toISOString()
   });
+}
+
+/**
+ * Vacates a cadet address and stands up the forwarding group there.
+ *
+ * The address cannot be freed by deleting the user — a deleted account holds its
+ * address for Google's ~20-day recovery window, so a group can't take it (409
+ * "Entity already exists"). It is freed by renaming the user off it instead:
+ *
+ *   1. rename user  oldAddress → oldAddress+".transitioned"   (frees oldAddress)
+ *   2. remove the alias the rename auto-adds (oldAddress back onto the shell)
+ *   3. create the group at oldAddress (tolerating the brief post-rename 409)
+ *   4. delete the renamed shell — its tombstone holds the .transitioned address,
+ *      not oldAddress, which is now the group
+ *
+ * The delete is LAST on purpose: any earlier failure leaves a live, renamed,
+ * recoverable account rather than a deleted one.
+ *
+ * @param {string} oldAddress - the cadet address to convert to a forwarding group
+ * @param {string} forwardTo - the senior address
+ * @param {string} name
+ */
+function freeAddressAndForward_(oldAddress, forwardTo, name) {
+  const at = oldAddress.indexOf('@');
+  const tempAddress = oldAddress.slice(0, at) + '.transitioned' + oldAddress.slice(at);
+
+  executeWithRetry(() =>
+    AdminDirectory.Users.update({ primaryEmail: tempAddress }, oldAddress));
+  Logger.info('Renamed off the address to free it', { from: oldAddress, to: tempAddress });
+
+  // A rename auto-retains the old address as an alias of the renamed user;
+  // remove it or the address stays taken. Tolerate its absence.
+  try {
+    executeWithRetry(() =>
+      AdminDirectory.Users.Aliases.remove(tempAddress, oldAddress));
+    Logger.info('Removed auto-retained alias', { alias: oldAddress });
+  } catch (e) {
+    Logger.info('No alias to remove after rename', { oldAddress: oldAddress });
+  }
+
+  createForwardingGroupWhenFree_(oldAddress, forwardTo, name);
+
+  executeWithRetry(() => AdminDirectory.Users.remove(tempAddress));
+  Logger.info('Renamed shell deleted', { email: tempAddress });
 }
 
 /**
@@ -393,39 +444,80 @@ function catchUpOneTransition_(row) {
  *
  * Order matters: settings are applied BEFORE the member is added, because on a
  * domain that restricts external members the Members.insert fails until
- * allowExternalMembers is set — and by this point the cadet account is already
- * deleted, so a throw here leaves a half-built forward.
+ * allowExternalMembers is set.
  *
  * DEPENDS ON DOMAIN POLICY: the cadets domain must permit external group
  * members (Admin console → Groups → Sharing settings). allowExternalMembers on
- * the group cannot override a domain that forbids them outright. Verify with a
- * throwaway group before relying on this — see testForwardingGroup().
+ * the group cannot override a domain that forbids them outright. Verified
+ * 2026-07-17 with testForwardingGroup() — a real message reached the senior
+ * address.
  *
- * @param {string} oldAddress - the freed cadet address
- * @param {string} forwardTo - the senior address
- * @param {string} name - member name, for the group description
+ * The creation entry point is createForwardingGroupWhenFree_ below. There is no
+ * plain create-at-this-address helper on purpose: every real caller is taking
+ * over an address a user just held, which needs the retry-until-free behavior.
  */
-function createForwardingGroup_(oldAddress, forwardTo, name) {
-  const group = executeWithRetry(() =>
-    AdminDirectory.Groups.insert({
-      email: oldAddress,
-      name: name + ' (forwarding)',
-      description: 'Auto-created by the cadet transition automation. Forwards to ' +
-        forwardTo + '. Safe to delete once members have updated their contacts.'
-    })
-  );
 
-  // Settings first — allowExternalMembers must be on before the cross-tenant
-  // member can be added.
-  applyForwardingGroupSettings_(oldAddress);
+/**
+ * Creates the forwarding group, waiting out the brief window where the address
+ * is still held after a rename.
+ *
+ * Directory changes are not instantaneous: right after renaming the user off the
+ * address, Groups.insert can still 409 for a few seconds. That 409 is transient
+ * and worth retrying — unlike the 409 from a DELETED account's ~20-day recovery
+ * tombstone, which no amount of waiting inside one execution will clear. Bounded
+ * retries distinguish them: if it never frees, we raise the error rather than
+ * spin, and the caller has NOT yet deleted anything.
+ *
+ * @param {string} oldAddress
+ * @param {string} forwardTo
+ * @param {string} name
+ */
+function createForwardingGroupWhenFree_(oldAddress, forwardTo, name) {
+  const maxAttempts = 6;
+  let lastErr = null;
 
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const group = AdminDirectory.Groups.insert({
+        email: oldAddress,
+        name: name + ' (forwarding)',
+        description: 'Auto-created by the cadet transition automation. Forwards to ' +
+          forwardTo + '. Safe to delete once members have updated their contacts.'
+      });
+
+      attachForwardingMember_(oldAddress, forwardTo);
+      Logger.info('Forwarding group created', {
+        address: oldAddress, forwardsTo: forwardTo, groupId: group.id, attempt: attempt
+      });
+      return;
+
+    } catch (e) {
+      lastErr = e;
+      const msg = String((e && e.message) || e);
+      const taken = msg.indexOf('Entity already exists') > -1 || msg.indexOf('409') > -1;
+      if (!taken || attempt === maxAttempts) throw e;
+
+      Logger.info('Address not free yet after rename — waiting', {
+        address: oldAddress, attempt: attempt
+      });
+      Utilities.sleep(5000 * attempt);
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Applies the settings, then adds the cross-tenant member. Settings first —
+ * allowExternalMembers must be on before an external member can be added.
+ *
+ * @param {string} groupEmail
+ * @param {string} forwardTo
+ */
+function attachForwardingMember_(groupEmail, forwardTo) {
+  applyForwardingGroupSettings_(groupEmail);
   executeWithRetry(() =>
-    AdminDirectory.Members.insert({ email: forwardTo, role: 'MEMBER' }, oldAddress)
+    AdminDirectory.Members.insert({ email: forwardTo, role: 'MEMBER' }, groupEmail)
   );
-
-  Logger.info('Forwarding group created', {
-    address: oldAddress, forwardsTo: forwardTo, groupId: group.id
-  });
 }
 
 /**
@@ -450,12 +542,134 @@ function applyForwardingGroupSettings_(groupEmail) {
 }
 
 /**
+ * Repairs rows whose close deleted the account but failed to create the
+ * forwarding group — the 2026-08-03 batch, stranded by the delete-then-create
+ * 409 (see freeAddressAndForward_).
+ *
+ * PREREQUISITE: restore the affected accounts first, in the Admin console
+ * (Users → recently deleted → Recover), within Google's ~20-day window. This
+ * function needs the account to exist so it can rename it off the address.
+ * previewTransitionRepair() lists exactly who needs restoring.
+ *
+ * Does NOT re-migrate: their mail, Drive and contacts are already across and the
+ * rows still record it. It only vacates the address, stands up the forwarding
+ * group, and deletes the renamed shell — the tail of a close that never
+ * completed. It deliberately skips the catch-up sweep too: mail that arrived
+ * after the original delete went nowhere (the account was gone), so there is
+ * nothing new in the source to collect.
+ *
+ * @param {boolean} [dryRun=true]
+ * @returns {{repaired: number, missing: number, failed: number}}
+ */
+function repairFailedTransitionCloses(dryRun) {
+  if (TRANSITION_CONFIG.ROLE !== 'source') return { repaired: 0, missing: 0, failed: 0 };
+  const isDry = dryRun !== false;
+  if (isDry) return previewTransitionRepair();
+
+  return withTransitionLock_(function () {
+    const rows = readTransitions_();
+    let repaired = 0, missing = 0, failed = 0;
+
+    for (const capid in rows) {
+      const row = rows[capid];
+      if (!needsForwardRepair_(row)) continue;
+
+      // The account must be restored first — we cannot rename what isn't there.
+      if (!userExists_(row.CadetEmail)) {
+        console.log(`${capid} | ${row.Name} | NOT RESTORED — recover ${row.CadetEmail} in the Admin console first`);
+        missing++;
+        continue;
+      }
+
+      try {
+        const expires = new Date();
+        expires.setMonth(expires.getMonth() + TRANSITION_CONFIG.FORWARD_GROUP_MONTHS);
+
+        freeAddressAndForward_(row.CadetEmail, row.SeniorEmail, row.Name);
+
+        setTransitionField_(row._rowNumber, 'ForwardGroupCreated', new Date().toISOString());
+        setTransitionField_(row._rowNumber, 'ForwardGroupExpires', expires.toISOString());
+        setTransitionField_(row._rowNumber, 'Notes',
+          `Close repaired ${new Date().toISOString()}; forwards until ${expires.toISOString()}`);
+
+        console.log(`${capid} | ${row.Name} | repaired — ${row.CadetEmail} now forwards to ${row.SeniorEmail}`);
+        repaired++;
+
+      } catch (e) {
+        const msg = (e && e.message) ? e.message : String(e);
+        setTransitionField_(row._rowNumber, 'Notes',
+          `Close repair FAILED ${new Date().toISOString()}: ${msg}`);
+        Logger.error('Transition close repair failed', { capid: capid, errorMessage: msg });
+        console.log(`${capid} | ${row.Name} | FAILED — ${msg}`);
+        failed++;
+      }
+    }
+
+    console.log('');
+    console.log(`Repaired ${repaired}, awaiting restore ${missing}, failed ${failed}.`);
+    return { repaired: repaired, missing: missing, failed: failed };
+  }, { repaired: 0, missing: 0, failed: 0 });
+}
+
+/** Read-only: who needs repair, and whether they have been restored yet. */
+function previewTransitionRepair() {
+  const rows = readTransitions_();
+  let needs = 0, ready = 0;
+
+  console.log('=== Rows whose close deleted the account but left no forwarding group ===');
+  for (const capid in rows) {
+    const row = rows[capid];
+    if (!needsForwardRepair_(row)) continue;
+    needs++;
+    const exists = userExists_(row.CadetEmail);
+    if (exists) ready++;
+    console.log(`${capid} | ${row.Name} | ${row.CadetEmail} → ${row.SeniorEmail} | ` +
+      (exists ? 'RESTORED, ready to repair' : 'still deleted — recover it in the Admin console'));
+  }
+
+  console.log('');
+  if (!needs) {
+    console.log('Nothing to repair.');
+  } else {
+    console.log(`${needs} row(s) need repair; ${ready} restored and ready.`);
+    console.log('Restore any missing accounts (Users → recently deleted → Recover),');
+    console.log('then run repairFailedTransitionCloses(false).');
+  }
+  return { repaired: 0, missing: needs - ready, failed: 0 };
+}
+
+/**
+ * A row that migrated and was closed-ish, but has no forwarding group: the
+ * signature of the failed batch.
+ *
+ * @param {Object} row
+ * @returns {boolean}
+ */
+function needsForwardRepair_(row) {
+  if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.COMPLETE) return false;
+  if (!row.SeniorEmail) return false;
+  if (row.ForwardGroupCreated) return false;   // already has one
+  return String(row.Notes || '').indexOf('Close failed') > -1 ||
+         String(row.Notes || '').indexOf('Close repair FAILED') > -1;
+}
+
+/** True if a user currently exists (a restored or live account). */
+function userExists_(email) {
+  try {
+    AdminDirectory.Users.get(email, { projection: 'basic', fields: 'primaryEmail' });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * Proves the forwarding-group mechanism end to end with a THROWAWAY group,
  * before a real close depends on it.
  *
  * The real close deletes the account first and only then builds the group, so a
  * domain that forbids external members would fail the forward AFTER an
- * irreversible delete. This exercises the exact three steps createForwardingGroup_
+ * irreversible delete. This exercises the exact three steps the forward build
  * does — create group, allow-external + anyone-can-post settings, add a
  * cross-tenant member — against a scratch address, and reports which step fails
  * if any. It does NOT delete anyone.
@@ -516,6 +730,53 @@ function testForwardingGroup(testAddress, externalMember) {
 function deleteTestForwardingGroup(testAddress) {
   AdminDirectory.Groups.remove(testAddress);
   console.log('Deleted test group ' + testAddress);
+}
+
+/**
+ * Proves the FULL address-handover sequence on a throwaway USER: create a user,
+ * then rename → free → group → delete exactly as a real close does.
+ *
+ * testForwardingGroup() only proved a group can be made at a FRESH address; it
+ * never exercised taking over an address a user already held. That gap is what
+ * let the delete-then-create 409 reach production on 2026-08-03. This closes it.
+ *
+ * Creates and destroys only the throwaway account it is given. Never touches a
+ * member.
+ *
+ * @param {string} testAddress - a non-existent address on THIS domain,
+ *   e.g. zz-handover-test@cawgcadets.org
+ * @param {string} forwardTo - a real peer-tenant address to receive the forward
+ */
+function testAddressHandover(testAddress, forwardTo) {
+  if (!testAddress || !forwardTo) {
+    console.log('Usage: testAddressHandover("zz-handover-test@cawgcadets.org", "you@cawgcap.org")');
+    return;
+  }
+
+  console.log('Creating throwaway user ' + testAddress + ' ...');
+  try {
+    AdminDirectory.Users.insert({
+      primaryEmail: testAddress,
+      name: { givenName: 'Handover', familyName: 'Test' },
+      password: Utilities.getUuid() + 'Aa1!'
+    });
+    console.log('  user created');
+  } catch (e) {
+    console.log('  FAILED to create test user: ' + (e && e.message));
+    return;
+  }
+
+  try {
+    freeAddressAndForward_(testAddress, forwardTo, 'Handover Test');
+    console.log('');
+    console.log('SUCCESS — the address was freed and now hosts a forwarding group.');
+    console.log('Send a test email to ' + testAddress + '; it should arrive at ' + forwardTo + '.');
+    console.log('Clean up with deleteTestForwardingGroup("' + testAddress + '")');
+  } catch (e) {
+    console.log('');
+    console.log('FAILED during handover: ' + (e && e.message));
+    console.log('The test user may be left renamed (….transitioned@) — check and clean up by hand.');
+  }
 }
 
 // ============================================================================
