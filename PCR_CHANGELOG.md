@@ -161,6 +161,71 @@ author wrote them, since rewriting those would silently redefine who is on the w
 Both fixes are covered by `test/UpdateCAWGCadetGroups.nesting.test.js`. Neither was ever
 CAWG-specific — they apply to any wing adopting the split-tenant pattern.
 
+## [2026-08-03] — the duty CAPWATCH never told us about
+
+A member's signature was missing their Pacific Region billet. Not mis-sorted, not filtered —
+**absent from the data**. CAPWATCH scopes an extract to the echelon it is downloaded as, so the
+wing pull (ORGID 188) carries the duties its members hold *at wing or below* and simply has no row
+for a region or national assignment. Nothing logged, because there was nothing to log; the wing
+extract is not aware the billet exists.
+
+Confirmed by downloading the region list by hand and finding the row there, keyed to the same
+CAPID.
+
+### Added — `UpdateMembers.gs` 1.22.0, `signature-webapp/` 1.1.0
+
+The region tenant already downloads a region-wide extract, so the wing tenant now reads **that
+folder** as a second, read-only source — `TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`, shared read-only
+to the automation account. No second download, no additional eServices permission, no duplicated
+quota. The tenant goes on operating as the wing in every other respect; the supplement answers one
+question only: *what duties does this member hold that our own pull cannot see?*
+
+**Two invariants, both pinned by tests, because this source is also the one that could do the most
+damage:**
+
+1. **It never widens the roster.** Rows are read only for CAPIDs the tenant's own extract already
+   has. The region extract holds every member of every wing in PCR; treating it as a source of
+   members would provision Nevada.
+2. **It never changes group membership.** The duties it adds go into `dutyPositions` — what
+   signatures read — and **not** into `dutyPositionIds` / `dutyPositionIdsAndLevel`, which is the
+   contract `UpdateGroups.gs` matches duty-based groups on. A wing member's region billet quietly
+   adding them to a wing duty group is not something anyone asked for.
+
+Only orgs **outside** this wing are taken; our own pull is authoritative for ours. Filtering on the
+org rather than de-duplicating keeps the rule legible — "duties our own pull cannot see" — instead
+of depending on which extract downloaded last. Org names come from the supplement's own
+`Organization.txt`, the only place "Pacific Region" and "National Headquarters" exist, so a region
+billet renders as *"Pacific Region Assistant Director of IT"* rather than falling back to the
+member's home unit. `DUTY_LEVEL_ORDER` already ranked NAT/NHQ above REGION above WING.
+
+Self-disabling throughout: unset property, missing folder, unreadable folder and empty file all
+degrade to "no extra duties", never to an error. A member still gets their signature.
+
+### Added — `previewOutOfWingDuties()`, because the first failure was undiagnosable
+
+When it did not work, the log said nothing — "the supplement is switched off" and "the supplement
+found nothing" were indistinguishable from outside. The normal path now logs whether the supplement
+was consulted and what it found, and `previewOutOfWingDuties()` walks the same path on demand and
+reports where it stops: property unset, folder unreadable, file absent, no rows for that CAPID, or
+rows found and for each whether it was TAKEN or SKIPPED as ours.
+
+Run it **from the editor**, which executes the project's current code — the deployed app serves
+whatever version was last published, and "pushed but not re-deployed" is a common cause that this
+distinction isolates immediately.
+
+> ⚠️ **The share is a manual, cross-tenant grant.** Folder `1lU9…` lives in the PCR Workspace and is
+> shared read-only with the wing's automation account. If that lapses, or the PCR pull stops being
+> armed, out-of-wing duties quietly stop appearing — the failure mode is silence by design, which is
+> why the log line and the diagnostic exist.
+
+> Two things that look like failure and are not: an **assistant** billet is never in the default
+> pick, so it sits unticked in the chooser rather than appearing in the preview (most region
+> assignments are assistant ones); and the resolved record is **cached for ten minutes**, so a page
+> load from before the property was set keeps serving the old one.
+
+`src/` carries the change but has **not been pushed to any tenant**, so provisioning and
+`pushAllSignatures()` do not yet see region duties. The web app is live on seniors.
+
 ## [2026-07-28] — members can set their own signature, and change exactly one thing about it
 
 A CAP email signature reached a member three ways: five minutes after their account was created,

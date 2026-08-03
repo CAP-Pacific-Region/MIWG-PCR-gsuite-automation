@@ -10,6 +10,8 @@
   "TENANT_WING": "CA",
   "TENANT_REGION": "",
   "TENANT_CAPWATCH_DATA_FOLDER_ID": "10T0wBubqzUzHa_7nx__eNfuzhTpFRDs3",
+  "_region_extract_note": "CAPWATCH scopes an extract to the echelon downloaded, so this wing pull has NO ROW for a member's REGION or NATIONAL billet — absent, not filtered. TENANT_REGION_CAPWATCH_DATA_FOLDER_ID below points at the PCR tenant's region-wide folder ('PCR CapWATCH Data'), shared READ-ONLY with this tenant's automation account, and is read only to fill that gap: only for CAPIDs this tenant already has, only for orgs outside this wing, and only into dutyPositions (never dutyPositionIds, so duty-group matching is untouched). The share is a manual cross-tenant grant — if it lapses, everything degrades to 'no out-of-wing duties' rather than failing. Blank is valid. NB the signature web app is a SEPARATE script project with its own Script Properties: set this there too if members should see region billets on their signature.",
+  "TENANT_REGION_CAPWATCH_DATA_FOLDER_ID": "1lU9yWHPf1Eij3AEQPmMR8ki7EpgslV9z",
   "TENANT_AUTOMATION_FOLDER_ID": "1lLUs0RsTQXNgRnt_fURsw8B3E8DpsgE2",
   "TENANT_AUTOMATION_SPREADSHEET_ID": "1UqCc6aRMEYw-Y_bTcTDKXuaYLsQ6bQzkdoVG7rRsV9Q",
   "TENANT_RETENTION_LOG_SPREADSHEET_ID": "1ouL6YHtTfpJs32YQ2NyfYxjHSDg39RydHMamGHXM7yA",
