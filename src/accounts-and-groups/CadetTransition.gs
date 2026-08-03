@@ -820,6 +820,7 @@ const TRANSITION_TRIGGER_FUNCTIONS_ = [
   'migrateCadetTransitions',
   'migrateAllTransitionDrives',
   'migrateAllTransitionContacts',
+  'catchUpTransitionMail',
   'remindPendingTransitionCloses'
 ];
 
@@ -866,6 +867,12 @@ function armTransitionTriggers() {
     ['migrateCadetTransitions', 5],
     ['migrateAllTransitionDrives', 6],
     ['migrateAllTransitionContacts', 7],
+    // Parked accounts stay LIVE and keep receiving after their close, so this
+    // sweep is what actually delivers their mail to the senior tenant — the
+    // auto-forward is only a best-effort accelerator (it needs the member to
+    // confirm a cross-domain forward). Without this, a parked account quietly
+    // accumulates mail nobody reads.
+    ['catchUpTransitionMail', 9],
     // After migration, so the ready/stuck picture reflects the day's work.
     // Deletion is NOT automated; this only emails IT that the timer is up.
     ['remindPendingTransitionCloses', 8]

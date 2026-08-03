@@ -10,6 +10,40 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-03] — the close parks the account instead of deleting it
+
+### Changed
+
+- **`CadetTransitionCleanup.gs` (v2.0.0)** — **the close no longer deletes the cadet
+  account.** Two live attempts proved the original design impossible: a Google Group can only
+  take an address once Google releases it, and Google reserves a former primary address well
+  beyond a single execution — ~20 days after a delete (recovery tombstone) and, measured, >75s
+  after a rename (docs say up to 24h). Both returned `409 Entity already exists`. Any
+  delete-now design therefore guarantees a bounce window of a day to weeks.
+
+  The account is now **parked**: kept live, forwarding to the senior address, so the address
+  never stops existing and no mail ever bounces. The trade is a license seat held until the
+  forwarding window ends, at which point `expireParkedAccounts()` runs a final catch-up sweep
+  and deletes the account.
+
+  Delivery is guaranteed by the **daily catch-up sweep** (`catchUpTransitionMail`, now on the
+  trigger schedule at 09:00), which moves anything arriving at a parked mailbox across to the
+  senior tenant. Gmail auto-forwarding is *also* requested but is best-effort only:
+  cross-domain forwarding requires the member to click a confirmation Google sends to their
+  senior address, so it reports `pending` until they do — it makes delivery instant rather
+  than sweep-delayed, but never gates it. Needs `gmail.settings.basic` +
+  `gmail.settings.sharing` on the cadets local SA; without them it degrades to sweep-only.
+
+  Removed the group/rename machinery (`freeAddressAndForward_`, `createForwardingGroupWhenFree_`,
+  the alias-retention handling and their tests) — that whole approach cannot work, and leaving
+  it invited its reintroduction.
+
+### Fixed
+
+- **`whyNotCloseable_`** now refuses a row whose previous close deleted the account but left no
+  forwarding, routing it to `repairFailedTransitionCloses()` instead. Such rows previously
+  passed every check, so re-running the close would have swept against a deleted mailbox.
+
 ## [2026-08-03] — free the address by renaming, not deleting (close incident fix)
 
 ### Fixed
