@@ -43,14 +43,20 @@
  *      live and still receiving — it is not suspended, because suspension is not
  *      running on this tenant — so a snapshot taken days ago is already stale.
  *      Skipping this silently destroys everything that landed in between.
- *   2. Delete the cadet account.
+ *   2. Rename the cadet account off its address (this is what frees it).
  *   3. Create a Group at the freed address, forwarding to the senior account.
+ *   4. Delete the renamed shell.
  *
- * Steps 2 and 3 cannot be reordered: a Google Group cannot share an address with
- * a User, so the address must be freed before the group can take it. That
- * ordering leaves a window where mail to the old address bounces — small, but
- * real, and the reason the completion email tells members to update their
- * contacts rather than trusting the forward.
+ * A Google Group cannot share an address with a User, so the address must be
+ * vacated first — but NOT by deleting: a deleted account holds its address for
+ * Google's ~20-day recovery window, which 409s the group. Renaming frees it
+ * immediately. Deleting LAST also means any failure in 1–3 leaves a live,
+ * recoverable account rather than a deleted one. (Learned the hard way on
+ * 2026-08-03; see freeAddressAndForward_ and v1.3.0 above.)
+ *
+ * There is still a brief window where mail to the old address bounces — between
+ * the rename and the group existing — which is why the completion email tells
+ * members to update their contacts rather than trusting the forward.
  */
 
 /** Continuation-safe cap: how many accounts to close in one execution. */
@@ -170,6 +176,15 @@ function whyNotCloseable_(row, now) {
 
   if (TRANSITION_CONFIG.REQUIRE_MIGRATION_BEFORE_DELETE && isBlankField_(row.MessagesMigrated)) {
     return 'MessagesMigrated is empty — no evidence anything was actually moved';
+  }
+
+  // A row whose close already got as far as deleting the account, but left no
+  // forwarding group, must NOT be run through the close again: the account is
+  // gone, so the catch-up sweep would fail against a deleted mailbox. It needs
+  // repairFailedTransitionCloses() instead (after the account is restored).
+  if (needsForwardRepair_(row)) {
+    return 'previous close failed after deleting — restore the account, then run ' +
+      'repairFailedTransitionCloses(false). Do NOT re-close.';
   }
 
   // Deleting the account destroys the member's Drive with it, and this function
