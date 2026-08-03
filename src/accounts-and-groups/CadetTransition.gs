@@ -890,10 +890,27 @@ function armTransitionTriggers() {
  *
  * @returns {{removed: number}}
  */
+/**
+ * Is this handler one of ours — the pipeline driver, or a phase from the older
+ * one-trigger-per-phase scheme?
+ *
+ * ONE predicate, used by both disarm and list. They were separate before, and
+ * disagreed: list matched the pipeline handler, disarm did not. Since arm calls
+ * disarm first, arming could never clear the trigger it installs — every arm
+ * silently added another duplicate pipeline trigger, against a 20-trigger cap.
+ *
+ * @param {string} handler
+ * @returns {boolean}
+ */
+function isTransitionTriggerHandler_(handler) {
+  return handler === TRANSITION_PIPELINE_FN_ ||
+    TRANSITION_TRIGGER_FUNCTIONS_.indexOf(handler) > -1;
+}
+
 function disarmTransitionTriggers() {
   var removed = 0;
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (TRANSITION_TRIGGER_FUNCTIONS_.indexOf(t.getHandlerFunction()) > -1) {
+    if (isTransitionTriggerHandler_(t.getHandlerFunction())) {
       ScriptApp.deleteTrigger(t);
       removed++;
     }
@@ -1224,9 +1241,7 @@ function listTransitionTriggers() {
   // would report "none installed" on a project running the pipeline, which is
   // the opposite of true.
   const mine = ScriptApp.getProjectTriggers().filter(function (t) {
-    const handler = t.getHandlerFunction();
-    return TRANSITION_TRIGGER_FUNCTIONS_.indexOf(handler) > -1 ||
-      handler === TRANSITION_PIPELINE_FN_;
+    return isTransitionTriggerHandler_(t.getHandlerFunction());
   });
   if (!mine.length) {
     console.log('No transition lifecycle triggers installed.');
@@ -1237,4 +1252,9 @@ function listTransitionTriggers() {
   });
   console.log('');
   console.log(mine.length + ' installed. Continuation triggers (transient) are not listed.');
+  if (mine.length > 1) {
+    console.log('');
+    console.log('WARNING: more than one is installed — they will all fire. Run');
+    console.log('disarmTransitionTriggers() then armTransitionTriggers() to get back to one.');
+  }
 }
