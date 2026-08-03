@@ -10,6 +10,27 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-03] — one lifecycle trigger, not seven
+
+### Fixed
+
+- **`CadetTransition.gs` (v1.2.0)** — arming failed with *"This script has too many triggers."*
+  Apps Script caps a script at **20 triggers**, shared across the whole project, and the cadets
+  project already runs a full core schedule; one trigger per transition phase (seven by then)
+  exhausted it. Replaced with a single daily **`runCadetTransitionLifecycle`** that runs every
+  phase in order — the right shape anyway, since the phases are strictly sequential and all
+  daily. Each phase remains independently time-limited and still schedules its own
+  continuation, and an elapsed-time check between phases keeps the pass under the 6-minute
+  ceiling; anything skipped runs on the next day's pass, because completed phases return
+  immediately. A failing phase is logged and the rest continue, so one error cannot strand the
+  sweep or the reminder. `disarmTransitionTriggers()` still knows the old per-phase handler
+  names, so re-arming cleans them up.
+
+- Added **`listAllProjectTriggers()`** (every trigger on the project, with the count against the
+  20 limit and stale continuations flagged) and **`clearAllTransitionContinuations()`**.
+  Continuation triggers normally self-delete but consume slots if orphaned, and nothing
+  previously showed the whole budget.
+
 ## [2026-08-03] — the close parks the account instead of deleting it
 
 ### Changed

@@ -814,7 +814,24 @@ function previewCadetTransitions() {
  * Lifecycle handlers that run on a daily schedule. Deliberately excludes the
  * close/delete step — deletion is permanent and stays a human decision.
  */
+const TRANSITION_LIFECYCLE_FN_ = 'runCadetTransitionLifecycle';
+
+/** Hour the daily lifecycle pass runs. After the nightly CAPWATCH pull. */
+const TRANSITION_LIFECYCLE_HOUR_ = 3;
+
+/**
+ * Stop starting new phases past this much wall time, leaving room under the
+ * 6-minute hard ceiling for the phase already running to wind down.
+ */
+const TRANSITION_LIFECYCLE_BUDGET_MS_ = 4 * 60 * 1000;
+
+/**
+ * Handlers disarmTransitionTriggers() removes. Includes the per-phase names from
+ * the old one-trigger-per-phase scheme so re-arming cleans them up — that scheme
+ * blew the 20-trigger-per-script limit.
+ */
 const TRANSITION_TRIGGER_FUNCTIONS_ = [
+  TRANSITION_LIFECYCLE_FN_,
   'detectCadetTransitions',
   'resolveTransitionDestinations',
   'migrateCadetTransitions',
@@ -861,33 +878,78 @@ function armTransitionTriggers() {
   // phase only acts on rows the previous one made ready, so a member who does
   // not finish one phase in a day is simply picked up the next day — well inside
   // the 14/90-day windows.
-  const schedule = [
-    ['detectCadetTransitions', 3],
-    ['resolveTransitionDestinations', 4],
-    ['migrateCadetTransitions', 5],
-    ['migrateAllTransitionDrives', 6],
-    ['migrateAllTransitionContacts', 7],
-    // Parked accounts stay LIVE and keep receiving after their close, so this
-    // sweep is what actually delivers their mail to the senior tenant — the
-    // auto-forward is only a best-effort accelerator (it needs the member to
-    // confirm a cross-domain forward). Without this, a parked account quietly
-    // accumulates mail nobody reads.
-    ['catchUpTransitionMail', 9],
-    // After migration, so the ready/stuck picture reflects the day's work.
-    // Deletion is NOT automated; this only emails IT that the timer is up.
-    ['remindPendingTransitionCloses', 8]
-  ];
-
-  schedule.forEach(function (pair) {
-    ScriptApp.newTrigger(pair[0]).timeBased().everyDays(1).atHour(pair[1]).create();
-    Logger.info('Transition trigger armed', { handler: pair[0], atHour: pair[1] });
+  ScriptApp.newTrigger(TRANSITION_LIFECYCLE_FN_)
+    .timeBased().everyDays(1).atHour(TRANSITION_LIFECYCLE_HOUR_).create();
+  Logger.info('Transition lifecycle trigger armed', {
+    handler: TRANSITION_LIFECYCLE_FN_, atHour: TRANSITION_LIFECYCLE_HOUR_
   });
 
-  console.log('Armed ' + schedule.length + ' daily transition triggers (detect → migrate → remind).');
-  console.log('NO close/delete trigger — remindPendingTransitionCloses just EMAILS when the');
-  console.log('timer is up; you still run closeCompletedTransitions(false) by hand.');
-  console.log('These are owned by whoever ran this — confirm it is automation@cawgcadets.org.');
-  return { armed: schedule.length };
+  console.log('Armed 1 daily trigger (' + TRANSITION_LIFECYCLE_FN_ + ' at ' +
+    TRANSITION_LIFECYCLE_HOUR_ + ':00) that runs the whole lifecycle in order.');
+  console.log('NO close/delete trigger — the lifecycle only EMAILS when the timer is up;');
+  console.log('you still run closeCompletedTransitions(false) by hand.');
+  console.log('Owned by whoever ran this — confirm it is automation@cawgcadets.org.');
+  return { armed: 1 };
+}
+
+/**
+ * Runs every lifecycle phase in order, under ONE daily trigger.
+ *
+ * Apps Script allows only 20 triggers per script, and this project already runs
+ * a full core schedule — one trigger per phase (seven of them) exhausted the
+ * budget and the arm failed outright. One trigger for one feature is also just
+ * the right shape: the phases are strictly sequential and all daily.
+ *
+ * Each phase is independently time-limited and schedules its own continuation
+ * for its own work, so a phase that cannot finish today resumes on its own. The
+ * elapsed-time check between phases stops this execution before the 6-minute
+ * hard ceiling; whatever is skipped simply runs on tomorrow's pass, because
+ * every completed phase returns fast when it has nothing to do.
+ *
+ * @param {Object} [e] - trigger event (ignored)
+ */
+function runCadetTransitionLifecycle(e) {
+  if (TRANSITION_CONFIG.ROLE !== 'source') {
+    Logger.info('Transition lifecycle skipped — not the source tenant');
+    return;
+  }
+
+  const started = new Date();
+  const phases = [
+    ['detect',       function () { detectCadetTransitions(); }],
+    ['resolve',      function () { resolveTransitionDestinations(); }],
+    ['migrate mail', function () { migrateCadetTransitions(); }],
+    ['migrate Drive',function () { migrateAllTransitionDrives(); }],
+    ['migrate contacts', function () { migrateAllTransitionContacts(); }],
+    // Parked accounts stay LIVE and keep receiving, so this sweep is what
+    // actually delivers their mail across — the auto-forward is only a
+    // best-effort accelerator. Without it a parked mailbox silently piles up.
+    ['sweep parked', function () { catchUpTransitionMail(); }],
+    ['remind',       function () { remindPendingTransitionCloses(); }]
+  ];
+
+  for (let i = 0; i < phases.length; i++) {
+    if (new Date() - started > TRANSITION_LIFECYCLE_BUDGET_MS_) {
+      Logger.info('Lifecycle budget reached — remaining phases run tomorrow', {
+        completed: i, next: phases[i][0]
+      });
+      break;
+    }
+    try {
+      phases[i][1]();
+    } catch (err) {
+      // One phase failing must not strand the rest — notably the sweep and the
+      // reminder, which are what keep parked accounts working.
+      Logger.error('Lifecycle phase failed — continuing', {
+        phase: phases[i][0],
+        errorMessage: (err && err.message) ? err.message : String(err)
+      });
+    }
+  }
+
+  Logger.info('Transition lifecycle pass finished', {
+    duration: new Date() - started + 'ms'
+  });
 }
 
 /**
@@ -1159,6 +1221,52 @@ function checkTransitionPipelineStatus() {
     ' (' + TRANSITION_TRIGGER_FUNCTIONS_[index] + ')');
   console.log('Position last written: ' + savedAt);
   if (index === 0) console.log('0 means the last run completed the full cycle.');
+}
+
+/**
+ * Lists EVERY trigger on the project, not just this feature's, with a count
+ * against Apps Script's hard limit of 20 per script.
+ *
+ * Worth having because that limit is shared across the whole project: this
+ * feature adding one trigger per phase exhausted it and the arm failed with
+ * "This script has too many triggers." Orphaned continuation triggers (which
+ * normally self-delete) also consume slots, so this separates scheduled work
+ * from leftovers.
+ */
+function listAllProjectTriggers() {
+  const all = ScriptApp.getProjectTriggers();
+  const continuations = ['continueCadetTransitionMigration',
+                         'continueCadetTransitionDriveMigration',
+                         'continueCadetTransitionContactsMigration'];
+  let leftovers = 0;
+
+  console.log('=== ' + all.length + ' of 20 trigger slots used ===');
+  all.forEach(function (t) {
+    const fn = t.getHandlerFunction();
+    const isCont = continuations.indexOf(fn) > -1;
+    if (isCont) leftovers++;
+    console.log('  ' + fn + (isCont ? '   <-- continuation (transient; stale ones are removable)' : ''));
+  });
+
+  console.log('');
+  if (leftovers) {
+    console.log(leftovers + ' continuation trigger(s) present. If no migration is running,');
+    console.log('they are orphans — clear with clearAllTransitionContinuations().');
+  }
+  if (all.length >= 18) {
+    console.log('WARNING: at or near the 20-trigger ceiling. Adding more will fail.');
+  }
+  return { used: all.length, continuations: leftovers };
+}
+
+/** Clears every stale transition continuation trigger (all three kinds). */
+function clearAllTransitionContinuations() {
+  const a = clearMigrationContinuations();
+  const b = clearDriveContinuations();
+  const c = clearContactsContinuations();
+  const total = (a.removed || 0) + (b.removed || 0) + (c.removed || 0);
+  console.log('Cleared ' + total + ' continuation trigger(s).');
+  return { removed: total };
 }
 
 /**
