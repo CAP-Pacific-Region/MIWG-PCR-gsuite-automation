@@ -387,15 +387,13 @@ function freeAddressAndForward_(oldAddress, forwardTo, name) {
   renameUserWhenReady_(oldAddress, tempAddress);
   Logger.info('Renamed off the address to free it', { from: oldAddress, to: tempAddress });
 
-  // A rename auto-retains the old address as an alias of the renamed user;
-  // remove it or the address stays taken. Tolerate its absence.
-  try {
-    executeWithRetry(() =>
-      AdminDirectory.Users.Aliases.remove(tempAddress, oldAddress));
-    Logger.info('Removed auto-retained alias', { alias: oldAddress });
-  } catch (e) {
-    Logger.info('No alias to remove after rename', { oldAddress: oldAddress });
-  }
+  // A rename auto-retains the old address as an alias of the renamed user, and
+  // the address stays taken until that alias is gone. This must be VERIFIED, not
+  // attempted-and-hoped: the first version wrapped it in a try/catch that
+  // swallowed a 404 as "no alias to remove", when the 404 actually meant the
+  // renamed user was not resolvable yet (Resource Not Found: userKey). The alias
+  // survived, the address never freed, and the group insert 409'd for 75s.
+  removeRetainedAlias_(tempAddress, oldAddress);
 
   createForwardingGroupWhenFree_(oldAddress, forwardTo, name);
 
@@ -473,6 +471,67 @@ function catchUpOneTransition_(row) {
  * plain create-at-this-address helper on purpose: every real caller is taking
  * over an address a user just held, which needs the retry-until-free behavior.
  */
+
+/**
+ * Removes the alias a rename auto-retains, and proves it is gone.
+ *
+ * Renaming a Workspace user keeps the old address as an alias of the renamed
+ * account, so the address remains taken until the alias is deleted. Two things
+ * make this fiddly, and both bit on 2026-08-03:
+ *
+ *  - Right after the rename the renamed user is not yet resolvable by its NEW
+ *    address, so the delete fails with `404 Resource Not Found: userKey` — a
+ *    propagation error about the USER, not a statement that the alias is absent.
+ *    Treating that 404 as "nothing to remove" left the alias in place.
+ *  - Alias deletion is itself asynchronous, so success does not mean gone yet.
+ *
+ * So: retry until the user resolves, delete the alias, then poll the alias list
+ * until it actually disappears. Throws if it never does — better to fail here,
+ * with the account still live and renamed, than to hand a still-taken address to
+ * the group step.
+ *
+ * @param {string} userAddress - the renamed user (….transitioned@)
+ * @param {string} aliasToRemove - the original address to free
+ */
+function removeRetainedAlias_(userAddress, aliasToRemove) {
+  const maxAttempts = 8;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let aliases = null;
+    try {
+      const resp = AdminDirectory.Users.Aliases.list(userAddress);
+      aliases = (resp && resp.aliases) ? resp.aliases.map(a => String(a.alias).toLowerCase()) : [];
+    } catch (e) {
+      // Almost always the renamed user not being resolvable yet.
+      Logger.info('Renamed user not resolvable yet — waiting to read aliases', {
+        user: userAddress, attempt: attempt
+      });
+      Utilities.sleep(5000 * attempt);
+      continue;
+    }
+
+    if (aliases.indexOf(String(aliasToRemove).toLowerCase()) < 0) {
+      Logger.info('Retained alias is gone', { alias: aliasToRemove, attempt: attempt });
+      return;
+    }
+
+    try {
+      AdminDirectory.Users.Aliases.remove(userAddress, aliasToRemove);
+      Logger.info('Requested removal of retained alias', { alias: aliasToRemove });
+    } catch (e) {
+      Logger.info('Alias removal call failed — will re-check', {
+        alias: aliasToRemove, attempt: attempt,
+        errorMessage: (e && e.message) ? e.message : String(e)
+      });
+    }
+
+    Utilities.sleep(5000 * attempt);   // let the deletion propagate, then re-verify
+  }
+
+  throw new Error('Could not free ' + aliasToRemove + ': it is still an alias of ' +
+    userAddress + ' after ' + maxAttempts + ' attempts. The account is still live ' +
+    '(renamed) — nothing was deleted.');
+}
 
 /**
  * Renames a user, waiting out Google's post-provisioning window.
