@@ -814,24 +814,18 @@ function previewCadetTransitions() {
  * Lifecycle handlers that run on a daily schedule. Deliberately excludes the
  * close/delete step — deletion is permanent and stays a human decision.
  */
-const TRANSITION_LIFECYCLE_FN_ = 'runCadetTransitionLifecycle';
-
-/** Hour the daily lifecycle pass runs. After the nightly CAPWATCH pull. */
-const TRANSITION_LIFECYCLE_HOUR_ = 3;
-
 /**
- * Stop starting new phases past this much wall time, leaving room under the
- * 6-minute hard ceiling for the phase already running to wind down.
- */
-const TRANSITION_LIFECYCLE_BUDGET_MS_ = 4 * 60 * 1000;
-
-/**
- * Handlers disarmTransitionTriggers() removes. Includes the per-phase names from
- * the old one-trigger-per-phase scheme so re-arming cleans them up — that scheme
- * blew the 20-trigger-per-script limit.
+ * The pipeline's phase ORDER — runCadetTransitionPipeline() iterates this array
+ * and looks each name up in its phases map, so anything added here must exist
+ * there too.
+ *
+ * catchUpTransitionMail is a phase because the close PARKS accounts rather than
+ * deleting them (see CadetTransitionCleanup v2.0.0): a parked account stays live
+ * and keeps receiving, and this sweep is what actually carries that mail to the
+ * senior tenant. The Gmail auto-forward is only a best-effort accelerator. Without
+ * this phase a parked mailbox silently accumulates mail nobody reads.
  */
 const TRANSITION_TRIGGER_FUNCTIONS_ = [
-  TRANSITION_LIFECYCLE_FN_,
   'detectCadetTransitions',
   'resolveTransitionDestinations',
   'migrateCadetTransitions',
@@ -840,6 +834,7 @@ const TRANSITION_TRIGGER_FUNCTIONS_ = [
   'catchUpTransitionMail',
   'remindPendingTransitionCloses'
 ];
+
 
 /**
  * Installs the daily time-driven triggers that run the transition lifecycle
@@ -878,78 +873,15 @@ function armTransitionTriggers() {
   // phase only acts on rows the previous one made ready, so a member who does
   // not finish one phase in a day is simply picked up the next day — well inside
   // the 14/90-day windows.
-  ScriptApp.newTrigger(TRANSITION_LIFECYCLE_FN_)
-    .timeBased().everyDays(1).atHour(TRANSITION_LIFECYCLE_HOUR_).create();
-  Logger.info('Transition lifecycle trigger armed', {
-    handler: TRANSITION_LIFECYCLE_FN_, atHour: TRANSITION_LIFECYCLE_HOUR_
-  });
+  ScriptApp.newTrigger(TRANSITION_PIPELINE_FN_)
+    .timeBased().everyDays(1).atHour(3).create();
+  Logger.info('Transition pipeline trigger armed', { handler: TRANSITION_PIPELINE_FN_ });
 
-  console.log('Armed 1 daily trigger (' + TRANSITION_LIFECYCLE_FN_ + ' at ' +
-    TRANSITION_LIFECYCLE_HOUR_ + ':00) that runs the whole lifecycle in order.');
-  console.log('NO close/delete trigger — the lifecycle only EMAILS when the timer is up;');
+  console.log('Armed 1 daily trigger (' + TRANSITION_PIPELINE_FN_ + ' at 3:00).');
+  console.log('NO close/delete trigger — the pipeline only EMAILS when the timer is up;');
   console.log('you still run closeCompletedTransitions(false) by hand.');
   console.log('Owned by whoever ran this — confirm it is automation@cawgcadets.org.');
   return { armed: 1 };
-}
-
-/**
- * Runs every lifecycle phase in order, under ONE daily trigger.
- *
- * Apps Script allows only 20 triggers per script, and this project already runs
- * a full core schedule — one trigger per phase (seven of them) exhausted the
- * budget and the arm failed outright. One trigger for one feature is also just
- * the right shape: the phases are strictly sequential and all daily.
- *
- * Each phase is independently time-limited and schedules its own continuation
- * for its own work, so a phase that cannot finish today resumes on its own. The
- * elapsed-time check between phases stops this execution before the 6-minute
- * hard ceiling; whatever is skipped simply runs on tomorrow's pass, because
- * every completed phase returns fast when it has nothing to do.
- *
- * @param {Object} [e] - trigger event (ignored)
- */
-function runCadetTransitionLifecycle(e) {
-  if (TRANSITION_CONFIG.ROLE !== 'source') {
-    Logger.info('Transition lifecycle skipped — not the source tenant');
-    return;
-  }
-
-  const started = new Date();
-  const phases = [
-    ['detect',       function () { detectCadetTransitions(); }],
-    ['resolve',      function () { resolveTransitionDestinations(); }],
-    ['migrate mail', function () { migrateCadetTransitions(); }],
-    ['migrate Drive',function () { migrateAllTransitionDrives(); }],
-    ['migrate contacts', function () { migrateAllTransitionContacts(); }],
-    // Parked accounts stay LIVE and keep receiving, so this sweep is what
-    // actually delivers their mail across — the auto-forward is only a
-    // best-effort accelerator. Without it a parked mailbox silently piles up.
-    ['sweep parked', function () { catchUpTransitionMail(); }],
-    ['remind',       function () { remindPendingTransitionCloses(); }]
-  ];
-
-  for (let i = 0; i < phases.length; i++) {
-    if (new Date() - started > TRANSITION_LIFECYCLE_BUDGET_MS_) {
-      Logger.info('Lifecycle budget reached — remaining phases run tomorrow', {
-        completed: i, next: phases[i][0]
-      });
-      break;
-    }
-    try {
-      phases[i][1]();
-    } catch (err) {
-      // One phase failing must not strand the rest — notably the sweep and the
-      // reminder, which are what keep parked accounts working.
-      Logger.error('Lifecycle phase failed — continuing', {
-        phase: phases[i][0],
-        errorMessage: (err && err.message) ? err.message : String(err)
-      });
-    }
-  }
-
-  Logger.info('Transition lifecycle pass finished', {
-    duration: new Date() - started + 'ms'
-  });
 }
 
 /**
@@ -1046,10 +978,24 @@ function runCadetTransitionPipeline(budgetMinutes) {
     migrateCadetTransitions: migrateCadetTransitions,
     migrateAllTransitionDrives: migrateAllTransitionDrives,
     migrateAllTransitionContacts: migrateAllTransitionContacts,
+    // Parked accounts (the close no longer deletes — see CadetTransitionCleanup
+    // v2.0.0) stay live and keep receiving; this sweep is what delivers that
+    // mail to the senior tenant.
+    catchUpTransitionMail: catchUpTransitionMail,
     remindPendingTransitionCloses: remindPendingTransitionCloses
   };
 
   const order = TRANSITION_TRIGGER_FUNCTIONS_;
+
+  // The order array and the phases map must agree. They are separate
+  // declarations, so an edit to one can silently orphan a phase — a stray name
+  // in `order` would dispatch to undefined and be skipped, and a phase only in
+  // the map would never run at all. Fail loudly instead.
+  const orphans = order.filter(function (n) { return typeof phases[n] !== 'function'; });
+  if (orphans.length) {
+    throw new Error('Transition pipeline misconfigured — these are in the phase ' +
+      'order but have no handler: ' + orphans.join(', '));
+  }
   const budgetMs = Math.max(1, Number(budgetMinutes || TRANSITION_PIPELINE_BUDGET_MIN_)) * 60 * 1000;
   const deadline = Date.now() + budgetMs;
 

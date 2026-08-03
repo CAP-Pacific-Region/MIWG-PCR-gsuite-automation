@@ -10,26 +10,21 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
-## [2026-08-03] — one lifecycle trigger, not seven
+## [2026-08-03] — sweep phase added to the transition pipeline
 
-### Fixed
+### Added
 
-- **`CadetTransition.gs` (v1.2.0)** — arming failed with *"This script has too many triggers."*
-  Apps Script caps a script at **20 triggers**, shared across the whole project, and the cadets
-  project already runs a full core schedule; one trigger per transition phase (seven by then)
-  exhausted it. Replaced with a single daily **`runCadetTransitionLifecycle`** that runs every
-  phase in order — the right shape anyway, since the phases are strictly sequential and all
-  daily. Each phase remains independently time-limited and still schedules its own
-  continuation, and an elapsed-time check between phases keeps the pass under the 6-minute
-  ceiling; anything skipped runs on the next day's pass, because completed phases return
-  immediately. A failing phase is logged and the rest continue, so one error cannot strand the
-  sweep or the reminder. `disarmTransitionTriggers()` still knows the old per-phase handler
-  names, so re-arming cleans them up.
+- **`CadetTransition.gs` (v1.2.1)** — **`catchUpTransitionMail` is now a pipeline phase.** The
+  close parks accounts rather than deleting them (see below), so a parked account stays live
+  and keeps receiving mail; this sweep is what actually carries it to the senior tenant, and
+  without it a parked mailbox silently accumulates mail nobody reads. Added a guard that
+  `TRANSITION_TRIGGER_FUNCTIONS_` (the phase order) and the pipeline's phases map agree — they
+  are separate declarations, so an edit to one can orphan a phase that then silently no-ops.
 
-- Added **`listAllProjectTriggers()`** (every trigger on the project, with the count against the
-  20 limit and stale continuations flagged) and **`clearAllTransitionContinuations()`**.
-  Continuation triggers normally self-delete but consume slots if orphaned, and nothing
-  previously showed the whole budget.
+- **`listAllProjectTriggers()`** and **`clearAllTransitionContinuations()`** — Apps Script caps
+  a script at **20 triggers** across the whole project, and nothing surfaced that shared
+  budget; arming failed outright with *"This script has too many triggers."* These show the
+  usage, flag orphaned continuation triggers, and reclaim them.
 
 ## [2026-08-03] — the close parks the account instead of deleting it
 
