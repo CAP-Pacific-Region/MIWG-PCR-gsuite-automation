@@ -12,7 +12,10 @@
  *   and any earlier failure leaves a live, recoverable account. Added
  *   repairFailedTransitionCloses() for the stranded batch and
  *   testAddressHandover() to exercise the full sequence on a throwaway user —
- *   the case testForwardingGroup() missed by using a fresh address.
+ *   the case testForwardingGroup() missed by using a fresh address. The rename
+ *   waits out `412 User creation is not complete`, which a freshly RESTORED
+ *   account (i.e. every account the repair path touches) can return while
+ *   Google finishes re-provisioning it.
  *   1.2.0 — the forwarding group now sets allowExternalMembers=true
  *   (the destination is on the peer/senior tenant, external to this domain, so
  *   without it the group can't deliver the forward) and applies settings BEFORE
@@ -366,8 +369,7 @@ function freeAddressAndForward_(oldAddress, forwardTo, name) {
   const at = oldAddress.indexOf('@');
   const tempAddress = oldAddress.slice(0, at) + '.transitioned' + oldAddress.slice(at);
 
-  executeWithRetry(() =>
-    AdminDirectory.Users.update({ primaryEmail: tempAddress }, oldAddress));
+  renameUserWhenReady_(oldAddress, tempAddress);
   Logger.info('Renamed off the address to free it', { from: oldAddress, to: tempAddress });
 
   // A rename auto-retains the old address as an alias of the renamed user;
@@ -456,6 +458,45 @@ function catchUpOneTransition_(row) {
  * plain create-at-this-address helper on purpose: every real caller is taking
  * over an address a user just held, which needs the retry-until-free behavior.
  */
+
+/**
+ * Renames a user, waiting out Google's post-provisioning window.
+ *
+ * A freshly created — or freshly RESTORED — account returns
+ * `412 User creation is not complete` on update for a short period while Google
+ * finishes provisioning it. This matters for the repair path specifically: the
+ * accounts being repaired were just recovered from the deleted-users list, so
+ * they are newly re-provisioned and can hit exactly this.
+ *
+ * The shared executeWithRetry() is no use here — it treats only 403/429/5xx as
+ * transient, so a 412 would rethrow immediately.
+ *
+ * @param {string} fromAddress
+ * @param {string} toAddress
+ */
+function renameUserWhenReady_(fromAddress, toAddress) {
+  const maxAttempts = 8;
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      AdminDirectory.Users.update({ primaryEmail: toAddress }, fromAddress);
+      return;
+    } catch (e) {
+      lastErr = e;
+      const msg = String((e && e.message) || e);
+      const notReady = msg.indexOf('User creation is not complete') > -1 ||
+                       msg.indexOf('412') > -1;
+      if (!notReady || attempt === maxAttempts) throw e;
+
+      Logger.info('Account not finished provisioning — waiting before rename', {
+        email: fromAddress, attempt: attempt
+      });
+      Utilities.sleep(5000 * attempt);   // 5s, 10s, 15s … ~3 min total
+    }
+  }
+  throw lastErr;
+}
 
 /**
  * Creates the forwarding group, waiting out the brief window where the address
@@ -771,11 +812,40 @@ function testAddressHandover(testAddress, forwardTo) {
     console.log('');
     console.log('SUCCESS — the address was freed and now hosts a forwarding group.');
     console.log('Send a test email to ' + testAddress + '; it should arrive at ' + forwardTo + '.');
-    console.log('Clean up with deleteTestForwardingGroup("' + testAddress + '")');
+    console.log('Clean up with cleanupHandoverTest("' + testAddress + '")');
   } catch (e) {
     console.log('');
     console.log('FAILED during handover: ' + (e && e.message));
-    console.log('The test user may be left renamed (….transitioned@) — check and clean up by hand.');
+    console.log('Clean up with cleanupHandoverTest("' + testAddress + '") — it removes whichever');
+    console.log('artifacts exist (user at either address, and/or the group).');
+  }
+}
+
+/**
+ * Removes whatever a handover test left behind, in any partial state: the user
+ * at its original address, the renamed ….transitioned shell, and/or the group.
+ * Reports what it found. Safe to run repeatedly.
+ *
+ * @param {string} testAddress
+ */
+function cleanupHandoverTest(testAddress) {
+  const at = testAddress.indexOf('@');
+  const temp = testAddress.slice(0, at) + '.transitioned' + testAddress.slice(at);
+
+  [testAddress, temp].forEach(function (addr) {
+    try {
+      AdminDirectory.Users.remove(addr);
+      console.log('removed user ' + addr);
+    } catch (e) {
+      console.log('no user at ' + addr);
+    }
+  });
+
+  try {
+    AdminDirectory.Groups.remove(testAddress);
+    console.log('removed group ' + testAddress);
+  } catch (e) {
+    console.log('no group at ' + testAddress);
   }
 }
 
