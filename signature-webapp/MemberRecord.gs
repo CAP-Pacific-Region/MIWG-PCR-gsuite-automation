@@ -428,6 +428,9 @@ function sigBuildMemberRecord_(capid) {
     suffix: String(row[5] || '').trim(),
     type: type,
     orgName: homeOrg ? homeOrg.name : '',
+    // The home org's echelon, so the signature's home-unit fallback can trim it
+    // the way it trims a duty's org. Mirrors createMemberObject() in src/.
+    orgScope: homeOrg ? homeOrg.scope : '',
     phone: sigDirectoryPhone_(capid, type),
     dutyPositions: sigDutyPositions_(capid, orgs),
     // Kept apart from dutyPositions on purpose — the same separation src/ makes,

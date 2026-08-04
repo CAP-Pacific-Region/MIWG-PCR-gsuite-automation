@@ -636,6 +636,10 @@ function createMemberObject(memberRow, squadrons) {
     group: calculateGroup(memberRow[11], squadrons),
     charter: squadrons[memberRow[11]].charter,
     orgName: squadrons[memberRow[11]].name,
+    // The home org's echelon, carried so a signature can trim its name the way it
+    // trims a duty's org ("PACIFIC REGION CAP" -> "Pacific Region"). Only the
+    // signature's home-unit fallback reads it.
+    orgScope: squadrons[memberRow[11]].scope,
     rank: memberRow[14],
     type: memberRow[21],
     status: memberRow[24],
@@ -3136,9 +3140,14 @@ function dutyLines_(picked, member) {
     // duty records that predate orgName being carried (see addDutyPositions). The
     // scope describes the duty's own org, so it is dropped on that fallback.
     .map(dp => {
+      // dp.level is the same vocabulary as an org's scope (UNIT/GROUP/WING/REGION/
+      // NAT) and comes straight off the duty row, so it stands in when the org's
+      // own scope is missing. Without it the echelon trim silently does nothing and
+      // the raw org name goes into the signature — "Pacific Region Cap Director of
+      // Safety", "California Wing HQ Commander".
       const org = dp.orgName
-        ? formatOrgName_(dp.orgName, dp.orgScope)
-        : formatOrgName_(member.orgName);
+        ? formatOrgName_(dp.orgName, dp.orgScope || dp.level)
+        : formatOrgName_(member.orgName, member.orgScope);
       return `${org} ${signatureDutyTitle_(dp)}`;
     })
     .join('<br />');
@@ -3261,6 +3270,17 @@ function formatOrgName_(orgName, scope) {
     const m = name.toUpperCase().match(/\b(WING|REGION)\b/);
     if (m) name = name.slice(0, m.index + m[1].length);
   }
+
+  // A trailing "CAP" is the organization's own initials, and CAPWATCH puts them on
+  // some org names — "PACIFIC REGION CAP". Title-cased into a duty line it becomes
+  // a word: "Pacific Region Cap Director of Safety". It also says nothing the next
+  // line of the signature does not already say in full.
+  //
+  // Done AFTER the echelon trim so it catches the case the trim cannot: the trim
+  // needs a scope, and a duty whose org scope did not survive the extract falls
+  // through with the raw name. UpdateChatSpaces.gs carries the same fix as a
+  // one-off replace on this exact string; this generalizes it.
+  name = name.replace(/\s+CAP$/i, '');
 
   return toTitleCase(name)
     .split(/\s+/)

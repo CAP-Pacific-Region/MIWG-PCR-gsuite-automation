@@ -422,6 +422,80 @@ section('3b. Member-chosen duties: the member picks the contents, never the orde
     orgName: 'EXAMPLE SR SQDN 80',
     dutyPositions: [duty('Recruiting & Retention Officer', 'UNIT', 'EXAMPLE SR SQDN 80', 'UNIT', true)]
   };
+  // "PACIFIC REGION CAP" is how CAPWATCH names the region: the organization's own
+  // initials, appended. Title-cased into a duty line it becomes a word — "Pacific
+  // Region Cap Director of Safety" — and it repeats what the signature's next line
+  // already says in full. Reported from a live record.
+  const regionOrg = {
+    orgName: 'EXAMPLE SR SQDN 80',
+    dutyPositions: [duty('Director of Safety', 'REGION', 'PACIFIC REGION CAP', 'REGION')]
+  };
+  const regionKey = 'Director of Safety|REGION|PACIFIC REGION CAP|P';
+  check('the region\'s trailing "CAP" is not a word in the duty line',
+    tpl.sigDutyBlock_(Object.assign({}, regionOrg, { selectedDutyKeys: [regionKey] })),
+    'Pacific Region Director of Safety');
+  check('...and src/ agrees',
+    tpl.sigDutyBlock_(Object.assign({}, regionOrg, { selectedDutyKeys: [regionKey] })),
+    src.getDutyBlock(Object.assign({}, regionOrg, { selectedDutyKeys: [regionKey] })));
+
+  // The echelon trim needs a scope. A duty whose org scope did not survive the
+  // extract used to fall through with the raw name, which is exactly how this
+  // reached a member's signature.
+  const noScope = {
+    orgName: 'EXAMPLE SR SQDN 80',
+    dutyPositions: [duty('Director of Safety', 'REGION', 'PACIFIC REGION CAP', '')]
+  };
+  check('...even when the org scope is missing',
+    tpl.sigDutyBlock_(Object.assign({}, noScope, {
+      selectedDutyKeys: ['Director of Safety|REGION|PACIFIC REGION CAP|P']
+    })),
+    'Pacific Region Director of Safety');
+
+  // A member whose HOME UNIT is the region — chartered PCR-PCR-001 — takes the
+  // fallback branch, which passed no scope at all until now. This is the shape
+  // that produced "Pacific Region Cap Director of Safety" from a live record.
+  const regionMember = {
+    orgName: 'PACIFIC REGION CAP',
+    orgScope: 'REGION',
+    // orgName '' is a duty whose own org did not resolve, so the line falls back
+    // to the member's home unit.
+    dutyPositions: [duty('Director of Safety', 'REGION', '', '')]
+  };
+  check('a member chartered to the region gets their home unit trimmed too',
+    tpl.sigDutyBlock_(Object.assign({}, regionMember, {
+      selectedDutyKeys: ['Director of Safety|REGION||P']
+    })),
+    'Pacific Region Director of Safety');
+  check('...and src/ agrees',
+    tpl.sigDutyBlock_(Object.assign({}, regionMember, {
+      selectedDutyKeys: ['Director of Safety|REGION||P']
+    })),
+    src.getDutyBlock(Object.assign({}, regionMember, {
+      selectedDutyKeys: ['Director of Safety|REGION||P']
+    })));
+
+  // The duty's own level stands in when the org row carried no scope.
+  const noOrgScope = {
+    orgName: 'EXAMPLE SR SQDN 80',
+    dutyPositions: [duty('Commander', 'WING', 'CALIFORNIA WING HQ', '')]
+  };
+  check('a missing org scope falls back to the duty\'s level',
+    tpl.sigDutyBlock_(Object.assign({}, noOrgScope, {
+      selectedDutyKeys: ['Commander|WING|CALIFORNIA WING HQ|P']
+    })),
+    'California Wing Commander');
+
+  // ...but a unit whose NAME merely starts with those letters is not touched.
+  const capitol = {
+    orgName: 'CAPITOL CITY SQDN 14',
+    dutyPositions: [duty('Commander', 'UNIT', 'CAPITOL CITY SQDN 14', 'UNIT')]
+  };
+  check('a unit name containing "Cap" is left alone',
+    tpl.sigDutyBlock_(Object.assign({}, capitol, {
+      selectedDutyKeys: ['Commander|UNIT|CAPITOL CITY SQDN 14|P']
+    })),
+    'Capitol City Squadron 14 Commander');
+
   check('a renamed title keeps its rename under the prefix',
     tpl.sigDutyBlock_(Object.assign({}, retiredAssistant, {
       selectedDutyKeys: ['Recruiting & Retention Officer|UNIT|EXAMPLE SR SQDN 80|A']
