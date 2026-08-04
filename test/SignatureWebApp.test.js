@@ -37,13 +37,52 @@ const SRC_MEMBERS = path.join(__dirname, '..', 'src', 'accounts-and-groups', 'Up
 const SRC_UTILS = path.join(__dirname, '..', 'src', 'utils.gs');
 const APP = path.join(__dirname, '..', 'signature-webapp');
 
-const CONFIG = { WING: 'CA', EMAIL_DOMAIN: '@example.org', SECONDARY_EMAIL_DOMAIN: '@example.cap.gov' };
+const WING_FOLDER = 'folder-id';
+const REGION_FOLDER = 'region-folder-id';
+
+/**
+ * A DriveApp over SEVERAL folders, because the whole point of the region
+ * supplement is that the two extracts are different files in different places.
+ * An unknown folder id throws, the way Drive does — that is the path a mistyped
+ * or unshared folder takes, and both modules must survive it.
+ */
+const DRIVE_FOLDERS = {};
+function makeFolderedDrive(byFolder) {
+  return {
+    getFolderById: id => {
+      const files = byFolder[id];
+      if (!files) throw new Error('No item with the given ID could be found: ' + id);
+      return {
+        getFilesByName: name => {
+          const exists = Object.prototype.hasOwnProperty.call(files, name);
+          let consumed = false;
+          return {
+            hasNext: () => exists && !consumed,
+            next: () => {
+              consumed = true;
+              return { getBlob: () => ({ getDataAsString: () => files[name] }) };
+            }
+          };
+        }
+      };
+    }
+  };
+}
+
+const CONFIG = {
+  WING: 'CA',
+  EMAIL_DOMAIN: '@example.org',
+  SECONDARY_EMAIL_DOMAIN: '@example.cap.gov',
+  CAPWATCH_DATA_FOLDER_ID: WING_FOLDER,
+  REGION_CAPWATCH_DATA_FOLDER_ID: REGION_FOLDER
+};
 
 const SIG_CONFIG = {
   WING: 'CA',
   EMAIL_DOMAIN: '@example.org',
   SECONDARY_EMAIL_DOMAIN: '@example.cap.gov',
-  CAPWATCH_DATA_FOLDER_ID: 'folder-id',
+  CAPWATCH_DATA_FOLDER_ID: WING_FOLDER,
+  REGION_CAPWATCH_DATA_FOLDER_ID: REGION_FOLDER,
   ALLOWED_GROUP: '',
   SUPPORT_EMAIL: 'it@example.org',
   ORG_LABEL: 'CAWG'
@@ -59,11 +98,15 @@ const src = loadModule(SRC_MEMBERS, {
   CONFIG: CONFIG,
   Logger: makeLogger().logger,
   Utilities: Utilities,
+  // Resolves the folder maps at CALL time, so the fixtures below can be declared
+  // in reading order rather than hoisted above this load.
+  DriveApp: makeFolderedDrive(DRIVE_FOLDERS),
   toTitleCase: utils.toTitleCase,
   sanitizeEmail: utils.sanitizeEmail,
   calculateGroup: utils.calculateGroup
 }, ['generateEmailSignature', 'getDutyBlock', 'dutyKey_', 'createMemberObject',
-    'addContactInfo', 'addDutyPositions', 'addCadetDutyPositions']);
+    'addContactInfo', 'addDutyPositions', 'addCadetDutyPositions',
+    'addOutOfWingDutyPositions_']);
 
 const tpl = loadModule(path.join(APP, 'SignatureTemplate.gs'), {
   SIG_CONFIG: SIG_CONFIG
@@ -537,6 +580,39 @@ function csv(header, rows) {
   return quote(header) + '\n' + rows.map(quote).join('\n') + '\n';
 }
 
+/**
+ * The REGION-wide extract, in its own folder.
+ *
+ * CAPWATCH scopes an extract to the echelon downloaded, so these rows — a wing
+ * member's region billet, and the region org itself — exist ONLY here. The
+ * fixture deliberately also repeats a duty the wing extract already has (600001's
+ * wing directorship, orgid 188) and carries a member the wing does not have
+ * (700001), because those are the two ways this source could do damage.
+ */
+const REGION_ORG_ROWS = [
+  ['434', 'PCR', '', '001', '', 'PACIFIC REGION CAP', '', '', '', 'REGION'],
+  ['1', 'NAT', '', '000', '', 'NATIONAL HEADQUARTERS', '', '', '', 'NAT'],
+  ['188', 'PCR', 'CA', '001', '434', 'CALIFORNIA WING HQ', '', '', '', 'WING'],
+  ['2500', 'PCR', 'CA', '080', '900', 'EXAMPLE SR SQDN 80', '', '', '', 'UNIT']
+];
+
+const REGION_DUTY_ROWS = [
+  // The billet the wing pull cannot see: assistant, held at region.
+  ['600001', 'Director of Operations', '', 'REGION', '1', '', '', '434'],
+  // A national one, principal.
+  ['600002', 'Advisor', '', 'NAT', '0', '', '', '1'],
+  // Already in the wing extract — must not be added twice.
+  ['600001', 'Director of IT', '', 'WING', '0', '', '', '188'],
+  // A member of another wing entirely. Must never reach this tenant's roster.
+  ['700001', 'Commander', '', 'WING', '0', '', '', '434']
+];
+
+const REGION_FILES = {
+  'Organization.txt': csv(['ORGID', 'Region', 'Wing', 'Unit', 'NextLevel', 'Name', 'a', 'b', 'c', 'Scope'], REGION_ORG_ROWS),
+  'DutyPosition.txt': csv(['CAPID', 'Duty', 'a', 'Lvl', 'Asst', 'b', 'c', 'ORGID'], REGION_DUTY_ROWS),
+  'CadetDutyPositions.txt': csv(['CAPID', 'Duty', 'a', 'Lvl', 'Asst', 'b', 'c', 'ORGID'], [])
+};
+
 const FILES = {
   'Member.txt': csv(MEMBER_HEADER, MEMBER_ROWS),
   'Organization.txt': csv(['ORGID', 'Region', 'Wing', 'Unit', 'NextLevel', 'Name', 'a', 'b', 'c', 'Scope'], ORG_ROWS),
@@ -545,16 +621,21 @@ const FILES = {
   'CadetDutyPositions.txt': csv(['CAPID', 'Duty', 'a', 'Lvl', 'Asst', 'b', 'c', 'ORGID'], CADET_DUTY_ROWS)
 };
 
+// Both extracts, now that the fixtures exist. The src module loaded above reads
+// these through the same closure.
+DRIVE_FOLDERS[WING_FOLDER] = FILES;
+DRIVE_FOLDERS[REGION_FOLDER] = REGION_FILES;
+
 /** Loads MemberRecord.gs over a fresh copy of the fixture extract. */
-function loadRecordModule(cacheStore) {
+function loadRecordModule(cacheStore, sigConfig) {
   const store = cacheStore || {};
   return loadModule(path.join(APP, 'MemberRecord.gs'), {
-    SIG_CONFIG: SIG_CONFIG,
+    SIG_CONFIG: sigConfig || SIG_CONFIG,
     SIG_CAPID_RE: /^\d{5,7}$/,
     SIG_CACHE_TTL_SECONDS: 600,
     Logger: makeLogger().logger,
     Utilities: Utilities,
-    DriveApp: makeDrive(Object.assign({}, FILES)),
+    DriveApp: makeFolderedDrive(DRIVE_FOLDERS),
     CacheService: {
       getUserCache: () => ({
         get: key => (Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null),
@@ -607,6 +688,9 @@ function srcRecord(capid) {
   src.addContactInfo(members, CONTACT_ROWS);
   src.addDutyPositions(members, DUTY_ROWS, squadrons);
   src.addCadetDutyPositions(members, CADET_DUTY_ROWS, squadrons);
+  // The same order getMembers() calls them in: our own extract first, then the
+  // region supplement for what it cannot see.
+  src.addOutOfWingDutyPositions_(members, squadrons);
   return members[capid];
 }
 
@@ -641,7 +725,8 @@ function shape(member) {
   check('a cadet has no phone at all, DoNotContact or not',
     app.sigBuildMemberRecord_('600003').phone, '');
   check('an assistant duty is carried but flagged',
-    app.sigBuildMemberRecord_('600001').dutyPositions.filter(d => d.assistant).length, 1);
+    app.sigBuildMemberRecord_('600001').dutyPositions
+      .filter(d => d.assistant && !d.outOfWing).length, 1);
   check('a duty at another wing\'s org carries no org name',
     app.sigBuildMemberRecord_('600004').dutyPositions[0].orgName, '');
   check('...so its line names the member\'s own unit',
@@ -651,6 +736,106 @@ function shape(member) {
     app.sigOrgMap_()['7700'], undefined);
   check('a member who is not ACTIVE has no record', app.sigBuildMemberRecord_('600005'), null);
   check('nor does an unknown CAPID', app.sigBuildMemberRecord_('999999'), null);
+}
+
+// ---------------------------------------------------------------------------
+section('4b. Duties our own CAPWATCH pull cannot see');
+{
+  // CAPWATCH scopes an extract to the echelon downloaded, so a wing pull has NO
+  // ROW for a member's region or national billet. Reading the region tenant's
+  // region-wide extract is the only way it can appear — and that source is also
+  // the one that could do the most damage, so both guards are pinned here.
+  const app = loadRecordModule();
+
+  const region = app.sigBuildMemberRecord_('600001').dutyPositions
+    .filter(d => d.outOfWing);
+  check('the region billet appears at all', region.length, 1);
+  check('...named by the REGION extract\'s own org list, not ours',
+    [region[0].orgName, region[0].orgScope], ['PACIFIC REGION CAP', 'REGION']);
+  check('...at its real echelon', region[0].level, 'REGION');
+  check('...and still marked assistant', region[0].assistant, true);
+  check('...so it renders as the region, not the member\'s squadron',
+    tpl.sigDutyBlock_(Object.assign({}, app.sigBuildMemberRecord_('600001'), {
+      selectedDutyKeys: ['Director of Operations|REGION|PACIFIC REGION CAP|A']
+    })),
+    'Pacific Region Assistant Director of Operations');
+
+  // A national assignment, which is the same problem one echelon further up.
+  const national = app.sigBuildMemberRecord_('600002').dutyPositions.filter(d => d.outOfWing);
+  check('a national billet appears too', national.map(d => [d.level, d.orgName]),
+    [['NAT', 'NATIONAL HEADQUARTERS']]);
+  check('...and outranks everything, per DUTY_LEVEL_ORDER',
+    tpl.sigDutyBlock_(app.sigBuildMemberRecord_('600002')),
+    'National Headquarters Advisor');
+
+  // INVARIANT 1: the region extract must never introduce a member. It carries
+  // every wing in the region; treating it as a roster would provision Nevada.
+  check('a member who is only in the region extract stays unknown',
+    app.sigBuildMemberRecord_('700001'), null);
+
+  // The region extract repeats duties our own pull already has. Taking those too
+  // would print a member's wing directorship twice.
+  const wingDuties = app.sigBuildMemberRecord_('600001').dutyPositions
+    .filter(d => d.id === 'Director of IT');
+  check('a duty our own extract already has is not added twice', wingDuties.length, 1);
+  check('...and the copy kept is ours, with our org name',
+    [wingDuties[0].orgName, !!wingDuties[0].outOfWing], ['CALIFORNIA WING HQ', false]);
+
+  // Self-disabling. A tenant that never sets the property, or sets it to a folder
+  // it cannot read, must behave exactly as it did before this existed.
+  const unset = loadRecordModule({}, Object.assign({}, SIG_CONFIG, {
+    REGION_CAPWATCH_DATA_FOLDER_ID: ''
+  }));
+  check('with no region folder configured, nothing changes',
+    unset.sigBuildMemberRecord_('600001').dutyPositions.filter(d => d.outOfWing).length, 0);
+
+  const unreadable = loadRecordModule({}, Object.assign({}, SIG_CONFIG, {
+    REGION_CAPWATCH_DATA_FOLDER_ID: 'not-shared-with-us'
+  }));
+  check('an unreadable folder degrades to no extra duties, not an error',
+    unreadable.sigBuildMemberRecord_('600001').dutyPositions.filter(d => d.outOfWing).length, 0);
+  check('...and the member still gets their signature',
+    unreadable.sigBuildMemberRecord_('600001').dutyPositions.length > 0, true);
+}
+
+// ---------------------------------------------------------------------------
+section('4c. INVARIANT 2: a region billet never changes group membership');
+{
+  // dutyPositionIds / dutyPositionIdsAndLevel are what UpdateGroups.gs matches
+  // duty-based groups on. A wing member's region billet silently adding them to a
+  // wing duty group is not something anyone asked for, so the supplement feeds
+  // dutyPositions — which is what signatures read — and nothing else.
+  const squadrons = {};
+  ORG_ROWS.forEach(row => {
+    if (row[2] !== CONFIG.WING) return;
+    squadrons[row[0]] = {
+      orgid: row[0], name: row[5], charter: row[1] + '-' + row[2] + '-' + row[3],
+      unit: row[3], nextLevel: row[4], scope: row[9], wing: row[2], orgPath: ''
+    };
+  });
+
+  const members = {};
+  members['600001'] = src.createMemberObject(
+    MEMBER_ROWS.filter(r => r[COL.CAPID] === '600001')[0], squadrons);
+  src.addDutyPositions(members, DUTY_ROWS, squadrons);
+
+  const idsBefore = members['600001'].dutyPositionIds.slice();
+  const levelsBefore = members['600001'].dutyPositionIdsAndLevel.slice();
+  const dutiesBefore = members['600001'].dutyPositions.length;
+
+  src.addOutOfWingDutyPositions_(members, squadrons);
+
+  check('the signature-facing list grows',
+    members['600001'].dutyPositions.length > dutiesBefore, true);
+  check('dutyPositionIds does NOT', members['600001'].dutyPositionIds, idsBefore);
+  check('nor does dutyPositionIdsAndLevel',
+    members['600001'].dutyPositionIdsAndLevel, levelsBefore);
+  check('and the added duty says where it came from',
+    members['600001'].dutyPositions.filter(d => d.outOfWing).map(d => d.id),
+    ['Director of Operations']);
+
+  // The out-of-wing member is still absent afterwards.
+  check('the region-only member was not created', members['700001'], undefined);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,21 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.21.1
- * Date: 2026-07-28
+ * Version: 1.22.0
+ * Date: 2026-08-03
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.21.1)
- * Changes: 1.21.1 — signatureDutyTitle_(): an assistant duty now prints as
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.22.0)
+ * Changes: 1.22.0 — addOutOfWingDutyPositions_(): CAPWATCH scopes an extract to
+ *   the echelon downloaded, so a wing pull has NO ROW for a member's region or
+ *   national billet — it is absent, not filtered. getMembers() now also reads an
+ *   optional region-wide extract (CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID, shared
+ *   read-only from the region tenant) to fill that gap. Two invariants: it is read
+ *   only for CAPIDs already on this tenant's roster, so it can never widen the
+ *   roster; and the duties it adds go to dutyPositions only, NOT to
+ *   dutyPositionIds/dutyPositionIdsAndLevel, so duty-group matching is unchanged.
+ *   Only orgs outside this wing are taken — our own pull is authoritative for
+ *   ours. Self-disabling when the property is unset or the folder unreadable.
+ *   Adds parseCapwatchFromFolder_().
+ *   1.21.1 — signatureDutyTitle_(): an assistant duty now prints as
  *   "Assistant Supply Officer". CAPWATCH keeps the assistant flag in its own
  *   column, so the Duty value reads the same for the officer and their assistant,
  *   and printing it bare claimed the billet. Invisible until 1.21.0 let a member
@@ -538,6 +549,7 @@ function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = t
     const dutyStart = new Date();
     addDutyPositions(members, parseFile('DutyPosition'), squadrons);
     addCadetDutyPositions(members, parseFile('CadetDutyPositions'), squadrons);
+    addOutOfWingDutyPositions_(members, squadrons);
     Logger.info('Duty positions added', {
       duration: new Date() - dutyStart + 'ms'
     });
@@ -866,6 +878,149 @@ function assignManagerEmails(members) {
   Logger.info('Manager emails assigned', {
     membersAssigned: assignedCount,
     commandersLoaded: Object.keys(commanderByOrg).length
+  });
+}
+
+/**
+ * CAPWATCH files from a folder OTHER than this tenant's own extract, header
+ * dropped — the same shape parseFile() returns.
+ *
+ * Deliberately never throws. A supplementary extract that is missing, empty or
+ * unreadable must degrade to "no extra duties", never break the member sync that
+ * every account on the tenant depends on. (region/UpdateRegionGroupChats.gs has a
+ * parseFileFromFolder_ with the opposite contract — it throws, because for that
+ * module a missing file means the run cannot proceed.)
+ *
+ * @param {string} folderId
+ * @param {string} baseName - e.g. 'DutyPosition' for DutyPosition.txt
+ * @returns {Array<Array<string>>} rows without the header, or []
+ */
+const _foreignCapwatchCache = {};
+function parseCapwatchFromFolder_(folderId, baseName) {
+  const key = folderId + '/' + baseName;
+  if (_foreignCapwatchCache[key]) return _foreignCapwatchCache[key];
+
+  let rows = [];
+  try {
+    const files = DriveApp.getFolderById(folderId).getFilesByName(baseName + '.txt');
+    if (files.hasNext()) {
+      const content = files.next().getBlob().getDataAsString();
+      if (content) rows = Utilities.parseCsv(content).slice(1);
+    } else {
+      Logger.warn('Supplementary CAPWATCH file not found', {
+        fileName: baseName + '.txt', folderId: folderId
+      });
+    }
+  } catch (e) {
+    Logger.warn('Supplementary CAPWATCH folder could not be read; continuing without it', {
+      folderId: folderId, fileName: baseName + '.txt', errorMessage: e.message
+    });
+  }
+
+  _foreignCapwatchCache[key] = rows;
+  return rows;
+}
+
+/**
+ * Adds duty positions this tenant's own CAPWATCH extract CANNOT SEE.
+ *
+ * THE PROBLEM THIS SOLVES
+ *
+ * CAPWATCH scopes an extract to the echelon it was downloaded as. A wing pull
+ * (ORGID 188) contains the wing's members and the duties they hold AT WING OR
+ * BELOW — a member's region or national assignment is simply absent from it. The
+ * effect was a signature that silently omitted a member's region billet, with no
+ * error anywhere, because there was nothing in the data to omit.
+ *
+ * The region tenant already downloads a region-wide extract, so this reads THAT
+ * folder (TENANT_REGION_CAPWATCH_DATA_FOLDER_ID, shared read-only to this
+ * tenant's automation account) purely to fill the gap.
+ *
+ * TWO INVARIANTS, both deliberate:
+ *
+ *   1. IT NEVER WIDENS THE ROSTER. Rows are only read for CAPIDs `members`
+ *      already holds. The region extract contains every member of every wing in
+ *      the region; treating it as a source of members would provision Nevada.
+ *
+ *   2. IT NEVER FEEDS GROUP MATCHING. The new duties go into `dutyPositions`,
+ *      which is what signatures read, and NOT into `dutyPositionIds` or
+ *      `dutyPositionIdsAndLevel` — those two arrays are the contract
+ *      UpdateGroups.gs matches duty-based groups on, and a wing member's region
+ *      billet quietly adding them to a wing duty group is not something anyone
+ *      asked for. If a group should ever key off a region duty, that is a
+ *      deliberate change here, not a side effect.
+ *
+ * Only orgs OUTSIDE this wing are taken. The region extract also carries this
+ * wing's own duties, and the wing extract is authoritative for those — filtering
+ * on the org rather than de-duplicating keeps the rule legible ("duties our own
+ * pull cannot see") instead of depending on which extract downloaded last.
+ *
+ * Self-disabling: blank property, missing folder or unreadable file all mean the
+ * tenant behaves exactly as it did before this existed.
+ *
+ * @param {Object} members - Members object indexed by CAPID, already populated
+ * @param {Object} squadrons - This wing's org map, used to tell "ours" from "not"
+ * @returns {void}
+ */
+function addOutOfWingDutyPositions_(members, squadrons) {
+  const folderId = String(CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID || '').trim();
+  if (!folderId) return;
+
+  // The supplementary extract's OWN org list, unfiltered: it is the only place
+  // the region's and NHQ's org names exist, and naming a duty's org is the whole
+  // point of reading it.
+  const foreignOrgs = {};
+  parseCapwatchFromFolder_(folderId, 'Organization').forEach(row => {
+    const orgid = String((row || [])[0] || '').trim();
+    if (orgid) {
+      foreignOrgs[orgid] = {
+        name: String(row[5] || '').trim(),
+        scope: String(row[9] || '').trim()
+      };
+    }
+  });
+
+  let added = 0;
+  let membersTouched = 0;
+
+  ['DutyPosition', 'CadetDutyPositions'].forEach(fileName => {
+    parseCapwatchFromFolder_(folderId, fileName).forEach(row => {
+      const capid = String((row || [])[0] || '').trim();
+      const member = members[capid];
+      if (!member) return;                       // invariant 1: roster is not widened
+
+      const orgid = String(row[7] || '').trim();
+      if (squadrons[orgid]) return;              // ours already, from our own extract
+
+      const org = foreignOrgs[orgid];
+      const dutyId = String(row[1] || '').trim();
+      if (!dutyId) return;
+
+      if (!member.outOfWingDutyCount) membersTouched++;
+      member.outOfWingDutyCount = (member.outOfWingDutyCount || 0) + 1;
+
+      // NB: dutyPositions only. See invariant 2 — dutyPositionIds and
+      // dutyPositionIdsAndLevel are deliberately left alone.
+      member.dutyPositions.push({
+        value: dutyId + (row[4] == '1' ? ' (A)' : ' (P)') + ' (' + (org ? org.scope : 'Unknown') + ')',
+        id: dutyId,
+        level: String(row[3] || '').trim(),
+        assistant: row[4] == '1',
+        orgName: org ? org.name : '',
+        orgScope: org ? org.scope : '',
+        // Marks where this came from, so a reader of a member object is not left
+        // wondering why one duty is absent from dutyPositionIds.
+        outOfWing: true
+      });
+      added++;
+    });
+  });
+
+  Logger.info('Out-of-wing duty positions merged', {
+    folderId: folderId,
+    dutiesAdded: added,
+    membersAffected: membersTouched,
+    note: 'signature/display only — not added to dutyPositionIds (group matching)'
   });
 }
 
