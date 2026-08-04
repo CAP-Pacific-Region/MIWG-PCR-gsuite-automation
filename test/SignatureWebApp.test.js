@@ -111,7 +111,7 @@ const src = loadModule(SRC_MEMBERS, {
 const tpl = loadModule(path.join(APP, 'SignatureTemplate.gs'), {
   SIG_CONFIG: SIG_CONFIG
 }, ['sigGenerateEmailSignature_', 'sigDutyBlock_', 'sigName_', 'sigFormatPhone_',
-    'sigDutyKey_', 'sigDutyLevelRank_']);
+    'sigDutyKey_', 'sigDutyLevelRank_', 'sigAllDuties_']);
 
 // ---------------------------------------------------------------------------
 // Members, in the shape both generators consume.
@@ -279,6 +279,7 @@ section('3. The phone toggle is the ONLY thing the client can decide');
       sigDutyBlock_: tpl.sigDutyBlock_,
       sigDutyKey_: tpl.sigDutyKey_,
       sigDutyLevelRank_: tpl.sigDutyLevelRank_,
+      sigAllDuties_: tpl.sigAllDuties_,
       sigFormatPhone_: tpl.sigFormatPhone_,
       sigSendAsSnapshot_: () => ({ orgOwned: ['rowan.ashford@example.org'] }),
       sigApplyToSendAsIdentities_: () => applyResult,
@@ -452,6 +453,7 @@ section('3c. A duty selection is checked against the member\'s own record');
     sigDutyBlock_: tpl.sigDutyBlock_,
     sigDutyKey_: tpl.sigDutyKey_,
     sigDutyLevelRank_: tpl.sigDutyLevelRank_,
+    sigAllDuties_: tpl.sigAllDuties_,
     sigName_: tpl.sigName_,
     sigFormatPhone_: tpl.sigFormatPhone_,
     sigSupportSentence_: () => 'Contact it@example.org.'
@@ -704,7 +706,8 @@ function shape(member) {
     suffix: member.suffix || '',
     orgName: member.orgName || '',
     phone: member.phone || '',
-    duties: (member.dutyPositions || []).map(d => [d.id, d.level, !!d.assistant, d.orgName || '', d.orgScope || ''])
+    duties: (member.dutyPositions || []).map(d => [d.id, d.level, !!d.assistant, d.orgName || '', d.orgScope || '']),
+    outOfWing: (member.outOfWingDutyPositions || []).map(d => [d.id, d.level, !!d.assistant, d.orgName || '', d.orgScope || ''])
   };
 }
 
@@ -725,8 +728,7 @@ function shape(member) {
   check('a cadet has no phone at all, DoNotContact or not',
     app.sigBuildMemberRecord_('600003').phone, '');
   check('an assistant duty is carried but flagged',
-    app.sigBuildMemberRecord_('600001').dutyPositions
-      .filter(d => d.assistant && !d.outOfWing).length, 1);
+    app.sigBuildMemberRecord_('600001').dutyPositions.filter(d => d.assistant).length, 1);
   check('a duty at another wing\'s org carries no org name',
     app.sigBuildMemberRecord_('600004').dutyPositions[0].orgName, '');
   check('...so its line names the member\'s own unit',
@@ -747,8 +749,7 @@ section('4b. Duties our own CAPWATCH pull cannot see');
   // the one that could do the most damage, so both guards are pinned here.
   const app = loadRecordModule();
 
-  const region = app.sigBuildMemberRecord_('600001').dutyPositions
-    .filter(d => d.outOfWing);
+  const region = app.sigBuildMemberRecord_('600001').outOfWingDutyPositions;
   check('the region billet appears at all', region.length, 1);
   check('...named by the REGION extract\'s own org list, not ours',
     [region[0].orgName, region[0].orgScope], ['PACIFIC REGION CAP', 'REGION']);
@@ -761,7 +762,7 @@ section('4b. Duties our own CAPWATCH pull cannot see');
     'Pacific Region Assistant Director of Operations');
 
   // A national assignment, which is the same problem one echelon further up.
-  const national = app.sigBuildMemberRecord_('600002').dutyPositions.filter(d => d.outOfWing);
+  const national = app.sigBuildMemberRecord_('600002').outOfWingDutyPositions;
   check('a national billet appears too', national.map(d => [d.level, d.orgName]),
     [['NAT', 'NATIONAL HEADQUARTERS']]);
   check('...and outranks everything, per DUTY_LEVEL_ORDER',
@@ -787,24 +788,34 @@ section('4b. Duties our own CAPWATCH pull cannot see');
     REGION_CAPWATCH_DATA_FOLDER_ID: ''
   }));
   check('with no region folder configured, nothing changes',
-    unset.sigBuildMemberRecord_('600001').dutyPositions.filter(d => d.outOfWing).length, 0);
+    unset.sigBuildMemberRecord_('600001').outOfWingDutyPositions.length, 0);
 
   const unreadable = loadRecordModule({}, Object.assign({}, SIG_CONFIG, {
     REGION_CAPWATCH_DATA_FOLDER_ID: 'not-shared-with-us'
   }));
   check('an unreadable folder degrades to no extra duties, not an error',
-    unreadable.sigBuildMemberRecord_('600001').dutyPositions.filter(d => d.outOfWing).length, 0);
+    unreadable.sigBuildMemberRecord_('600001').outOfWingDutyPositions.length, 0);
   check('...and the member still gets their signature',
     unreadable.sigBuildMemberRecord_('600001').dutyPositions.length > 0, true);
 }
 
 // ---------------------------------------------------------------------------
-section('4c. INVARIANT 2: a region billet never changes group membership');
+section('4c. INVARIANT 2: nothing that already reads a member can see these');
 {
-  // dutyPositionIds / dutyPositionIdsAndLevel are what UpdateGroups.gs matches
-  // duty-based groups on. A wing member's region billet silently adding them to a
-  // wing duty group is not something anyone asked for, so the supplement feeds
-  // dutyPositions — which is what signatures read — and nothing else.
+  // THIS TEST USED TO ASSERT THE WRONG THING, and the wrong thing passed.
+  //
+  // It checked that dutyPositionIds / dutyPositionIdsAndLevel were unchanged, on
+  // the belief that those were the group-matching contract. They are ONE contract.
+  // UpdateGroups.gs also iterates member.dutyPositions directly to match duty ids
+  // and levels; SquadronGroups.gs does the same for unit distribution lists; and
+  // addOrUpdateUser() builds the Workspace DIRECTORY JOB TITLE from it. Pushing
+  // the supplement into dutyPositions would have put a member's region billet in
+  // their GAL title and in any wing duty group whose title happened to match — all
+  // while this test stayed green.
+  //
+  // So the assertion is now on the array itself: dutyPositions comes back
+  // IDENTICAL, which is what every one of those consumers reads. The supplement
+  // lives in its own array and only allSignatureDuties_() merges the two.
   const squadrons = {};
   ORG_ROWS.forEach(row => {
     if (row[2] !== CONFIG.WING) return;
@@ -819,20 +830,32 @@ section('4c. INVARIANT 2: a region billet never changes group membership');
     MEMBER_ROWS.filter(r => r[COL.CAPID] === '600001')[0], squadrons);
   src.addDutyPositions(members, DUTY_ROWS, squadrons);
 
-  const idsBefore = members['600001'].dutyPositionIds.slice();
-  const levelsBefore = members['600001'].dutyPositionIdsAndLevel.slice();
-  const dutiesBefore = members['600001'].dutyPositions.length;
+  const before = JSON.parse(JSON.stringify(members['600001']));
 
   src.addOutOfWingDutyPositions_(members, squadrons);
+  const after = members['600001'];
 
-  check('the signature-facing list grows',
-    members['600001'].dutyPositions.length > dutiesBefore, true);
-  check('dutyPositionIds does NOT', members['600001'].dutyPositionIds, idsBefore);
-  check('nor does dutyPositionIdsAndLevel',
-    members['600001'].dutyPositionIdsAndLevel, levelsBefore);
-  check('and the added duty says where it came from',
-    members['600001'].dutyPositions.filter(d => d.outOfWing).map(d => d.id),
+  // The array the directory title, UpdateGroups.gs and SquadronGroups.gs all read.
+  check('dutyPositions is untouched — the GAL title cannot change',
+    after.dutyPositions, before.dutyPositions);
+  check('dutyPositionIds too', after.dutyPositionIds, before.dutyPositionIds);
+  check('and dutyPositionIdsAndLevel',
+    after.dutyPositionIdsAndLevel, before.dutyPositionIdsAndLevel);
+
+  // Everything a pre-existing consumer could read is byte-identical; the ONLY new
+  // thing on the member is the array those consumers do not know about.
+  const changedKeys = Object.keys(after).filter(k =>
+    JSON.stringify(after[k]) !== JSON.stringify(before[k]));
+  check('the only field that changed at all is the new array',
+    changedKeys, ['outOfWingDutyPositions']);
+
+  check('which holds the region billet', after.outOfWingDutyPositions.map(d => d.id),
     ['Director of Operations']);
+  check('and the signature generator is the one thing that merges them',
+    src.getDutyBlock(Object.assign({}, after, {
+      selectedDutyKeys: ['Director of Operations|REGION|PACIFIC REGION CAP|A']
+    })),
+    'Pacific Region Assistant Director of Operations');
 
   // The out-of-wing member is still absent afterwards.
   check('the region-only member was not created', members['700001'], undefined);
@@ -1053,6 +1076,7 @@ section('7. On the CADETS tenant');
     sigDutyBlock_: tpl.sigDutyBlock_,
     sigDutyKey_: tpl.sigDutyKey_,
     sigDutyLevelRank_: tpl.sigDutyLevelRank_,
+    sigAllDuties_: tpl.sigAllDuties_,
     sigFormatPhone_: tpl.sigFormatPhone_,
     sigSendAsSnapshot_: () => ({ orgOwned: ['imani.brightwater@example-cadets.org'] }),
     sigApplyToSendAsIdentities_: () => ({ updated: [], skipped: [], failed: [] }),

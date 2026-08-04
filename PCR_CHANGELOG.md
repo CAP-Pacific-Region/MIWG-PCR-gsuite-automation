@@ -186,10 +186,19 @@ damage:**
 1. **It never widens the roster.** Rows are read only for CAPIDs the tenant's own extract already
    has. The region extract holds every member of every wing in PCR; treating it as a source of
    members would provision Nevada.
-2. **It never changes group membership.** The duties it adds go into `dutyPositions` — what
-   signatures read — and **not** into `dutyPositionIds` / `dutyPositionIdsAndLevel`, which is the
-   contract `UpdateGroups.gs` matches duty-based groups on. A wing member's region billet quietly
-   adding them to a wing duty group is not something anyone asked for.
+2. **Nothing that already reads a member can see them.** They land in their own array,
+   `member.outOfWingDutyPositions`, merged only by `allSignatureDuties_()` inside the signature
+   generator.
+
+   This shipped wrong first. It originally pushed into `dutyPositions` while staying out of
+   `dutyPositionIds`/`dutyPositionIdsAndLevel`, on the belief that those two arrays were the
+   group-matching contract. **They are one contract, not the only one.** `UpdateGroups.gs` iterates
+   `dutyPositions` directly to match duty ids and levels, `SquadronGroups.gs` does the same for unit
+   distribution lists, and `addOrUpdateUser()` builds the Workspace **directory job title** from it.
+   A member's region billet would have appeared in their GAL title and in any wing duty group whose
+   title happened to match — caught by grepping the consumers *after* the property went live on the
+   main project, and before any sync ran. The separate array makes the invariant structural rather
+   than something ten call sites have to remember.
 
 Only orgs **outside** this wing are taken; our own pull is authoritative for ours. Filtering on the
 org rather than de-duplicating keeps the rule legible — "duties our own pull cannot see" — instead

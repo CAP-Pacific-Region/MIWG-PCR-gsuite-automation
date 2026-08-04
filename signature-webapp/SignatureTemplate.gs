@@ -107,6 +107,22 @@ function sigTitleCase_(str) {
  * @param {Object} dp - one entry of member.dutyPositions
  * @returns {string}
  */
+/**
+ * Every duty a signature may show: the tenant's own extract, plus the out-of-wing
+ * ones (region, national) that a wing CAPWATCH pull cannot see.
+ *
+ * The only place the two are merged. In src/ that separation is load-bearing —
+ * `dutyPositions` there also feeds the Workspace directory title and duty-group
+ * matching, and a region billet belongs in neither — so the port keeps the same
+ * shape rather than inventing a different one.
+ *
+ * @param {Object} member
+ * @returns {Array<Object>}
+ */
+function sigAllDuties_(member) {
+  return (member.dutyPositions || []).concat(member.outOfWingDutyPositions || []);
+}
+
 function sigDutyKey_(dp) {
   return [
     String((dp && dp.id) || '').trim(),
@@ -132,7 +148,7 @@ function sigDutyKey_(dp) {
  * @returns {string} HTML, or '' when there is no duty to show
  */
 function sigDutyBlock_(member) {
-  const all = member.dutyPositions || [];
+  const all = sigAllDuties_(member);
   const chosen = Array.isArray(member.selectedDutyKeys) ? member.selectedDutyKeys : null;
 
   const positions = chosen

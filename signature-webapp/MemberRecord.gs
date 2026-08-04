@@ -227,7 +227,7 @@ function sigDutyPositions_(capid, orgs) {
     }
   });
 
-  return out.concat(sigOutOfWingDutyPositions_(capid, orgs));
+  return out;
 }
 
 /**
@@ -429,7 +429,12 @@ function sigBuildMemberRecord_(capid) {
     type: type,
     orgName: homeOrg ? homeOrg.name : '',
     phone: sigDirectoryPhone_(capid, type),
-    dutyPositions: sigDutyPositions_(capid, orgs)
+    dutyPositions: sigDutyPositions_(capid, orgs),
+    // Kept apart from dutyPositions on purpose — the same separation src/ makes,
+    // where that array feeds directory titles and group matching. Here it costs
+    // nothing and keeps the two records the same shape, which is what the parity
+    // test compares.
+    outOfWingDutyPositions: sigOutOfWingDutyPositions_(capid, orgs)
   };
 }
 

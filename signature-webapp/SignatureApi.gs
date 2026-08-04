@@ -145,7 +145,9 @@ function apiGetState() {
  * @returns {Array<Object>}
  */
 function sigDutyOptions_(member) {
-  const options = (member.dutyPositions || []).map(function (dp) {
+  // Both arrays: the chooser offers every duty the member holds, and a region or
+  // national billet is exactly the kind they most want to show.
+  const options = sigAllDuties_(member).map(function (dp) {
     // One duty in isolation renders as its own line, which is what the page shows
     // beside the checkbox — no second implementation of how a line is written.
     return {
@@ -299,7 +301,9 @@ function sigValidatedDutyKeys_(member, dutyKeys) {
   }
 
   const held = {};
-  (member.dutyPositions || []).forEach(function (dp) { held[sigDutyKey_(dp)] = true; });
+  // Both arrays, so a member may choose the region billet they can see offered —
+  // and still nothing outside their own record is selectable.
+  sigAllDuties_(member).forEach(function (dp) { held[sigDutyKey_(dp)] = true; });
 
   const chosen = [];
   dutyKeys.forEach(function (key) {
