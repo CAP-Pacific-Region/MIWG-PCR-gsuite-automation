@@ -10,8 +10,11 @@
  *   optional region-wide extract (CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID, shared
  *   read-only from the region tenant) to fill that gap. Two invariants: it is read
  *   only for CAPIDs already on this tenant's roster, so it can never widen the
- *   roster; and the duties it adds go to dutyPositions only, NOT to
- *   dutyPositionIds/dutyPositionIdsAndLevel, so duty-group matching is unchanged.
+ *   roster; and the duties it adds go into their OWN array
+ *   (member.outOfWingDutyPositions), which only the signature
+ *   generator reads via allSignatureDuties_() — dutyPositions itself is untouched,
+ *   so directory job titles, UpdateGroups.gs duty matching and SquadronGroups.gs
+ *   distribution lists all behave exactly as before.
  *   Only orgs outside this wing are taken — our own pull is authoritative for
  *   ours. Self-disabling when the property is unset or the folder unreadable.
  *   Adds parseCapwatchFromFolder_().
@@ -633,6 +636,10 @@ function createMemberObject(memberRow, squadrons) {
     group: calculateGroup(memberRow[11], squadrons),
     charter: squadrons[memberRow[11]].charter,
     orgName: squadrons[memberRow[11]].name,
+    // The home org's echelon, carried so a signature can trim its name the way it
+    // trims a duty's org ("PACIFIC REGION CAP" -> "Pacific Region"). Only the
+    // signature's home-unit fallback reads it.
+    orgScope: squadrons[memberRow[11]].scope,
     rank: memberRow[14],
     type: memberRow[21],
     status: memberRow[24],
@@ -942,13 +949,22 @@ function parseCapwatchFromFolder_(folderId, baseName) {
  *      already holds. The region extract contains every member of every wing in
  *      the region; treating it as a source of members would provision Nevada.
  *
- *   2. IT NEVER FEEDS GROUP MATCHING. The new duties go into `dutyPositions`,
- *      which is what signatures read, and NOT into `dutyPositionIds` or
- *      `dutyPositionIdsAndLevel` — those two arrays are the contract
- *      UpdateGroups.gs matches duty-based groups on, and a wing member's region
- *      billet quietly adding them to a wing duty group is not something anyone
- *      asked for. If a group should ever key off a region duty, that is a
- *      deliberate change here, not a side effect.
+ *   2. NOTHING THAT ALREADY READS A MEMBER CAN SEE THESE. They go into their own
+ *      array, `member.outOfWingDutyPositions`, which nothing but the signature
+ *      generator reads. Only allSignatureDuties_() merges the two.
+ *
+ *      This was first written to push into `dutyPositions` while staying out of
+ *      `dutyPositionIds`/`dutyPositionIdsAndLevel`, on the belief that those two
+ *      arrays were the group-matching contract. THEY ARE NOT THE ONLY ONE.
+ *      UpdateGroups.gs iterates `dutyPositions` directly to match duty ids
+ *      (matchesAnyDutyId_) and duty levels, SquadronGroups.gs does the same for
+ *      unit distribution lists, and addOrUpdateUser() builds the Workspace
+ *      DIRECTORY JOB TITLE from it. A member's region billet would have landed in
+ *      their GAL title and in any wing duty group whose title happened to match.
+ *
+ *      A separate array is not tidiness. It is the difference between an
+ *      invariant that holds structurally and one that holds until somebody adds
+ *      an eleventh consumer.
  *
  * Only orgs OUTSIDE this wing are taken. The region extract also carries this
  * wing's own duties, and the wing extract is authoritative for those — filtering
@@ -996,12 +1012,15 @@ function addOutOfWingDutyPositions_(members, squadrons) {
       const dutyId = String(row[1] || '').trim();
       if (!dutyId) return;
 
-      if (!member.outOfWingDutyCount) membersTouched++;
-      member.outOfWingDutyCount = (member.outOfWingDutyCount || 0) + 1;
+      // A SEPARATE ARRAY, not member.dutyPositions. See invariant 2: this is what
+      // makes "no existing consumer sees these" true by construction rather than
+      // by every consumer remembering to filter.
+      if (!member.outOfWingDutyPositions) {
+        member.outOfWingDutyPositions = [];
+        membersTouched++;
+      }
 
-      // NB: dutyPositions only. See invariant 2 — dutyPositionIds and
-      // dutyPositionIdsAndLevel are deliberately left alone.
-      member.dutyPositions.push({
+      member.outOfWingDutyPositions.push({
         value: dutyId + (row[4] == '1' ? ' (A)' : ' (P)') + ' (' + (org ? org.scope : 'Unknown') + ')',
         id: dutyId,
         level: String(row[3] || '').trim(),
@@ -1020,7 +1039,8 @@ function addOutOfWingDutyPositions_(members, squadrons) {
     folderId: folderId,
     dutiesAdded: added,
     membersAffected: membersTouched,
-    note: 'signature/display only — not added to dutyPositionIds (group matching)'
+    note: 'held in member.outOfWingDutyPositions — read by the signature generator ' +
+      'only, so group matching and directory titles are untouched'
   });
 }
 
@@ -2985,6 +3005,24 @@ function dutyTitleRank_(title) {
  * @param {Object} dp - one entry of member.dutyPositions
  * @returns {string}
  */
+/**
+ * Every duty a SIGNATURE may show: the tenant's own, plus the out-of-wing ones
+ * addOutOfWingDutyPositions_() collected.
+ *
+ * THE ONLY PLACE THE TWO ARE MERGED, and deliberately so. `dutyPositions` is read
+ * across this codebase for things that are not signatures — the Workspace
+ * directory job title, duty-group matching in UpdateGroups.gs, unit distribution
+ * lists in SquadronGroups.gs — and a member's region or national billet belongs in
+ * none of them. Keeping the supplement in its own array means those consumers
+ * cannot see it without asking, rather than relying on each of them to filter.
+ *
+ * @param {Object} member
+ * @returns {Array<Object>}
+ */
+function allSignatureDuties_(member) {
+  return (member.dutyPositions || []).concat(member.outOfWingDutyPositions || []);
+}
+
 function dutyKey_(dp) {
   return [
     String((dp && dp.id) || '').trim(),
@@ -3035,7 +3073,7 @@ function dutyKey_(dp) {
  * @returns {string} HTML, or '' when there is no duty to show
  */
 function getDutyBlock(member) {
-  const all = member.dutyPositions || [];
+  const all = allSignatureDuties_(member);
   const chosen = Array.isArray(member.selectedDutyKeys) ? member.selectedDutyKeys : null;
 
   const positions = chosen
@@ -3102,9 +3140,14 @@ function dutyLines_(picked, member) {
     // duty records that predate orgName being carried (see addDutyPositions). The
     // scope describes the duty's own org, so it is dropped on that fallback.
     .map(dp => {
+      // dp.level is the same vocabulary as an org's scope (UNIT/GROUP/WING/REGION/
+      // NAT) and comes straight off the duty row, so it stands in when the org's
+      // own scope is missing. Without it the echelon trim silently does nothing and
+      // the raw org name goes into the signature — "Pacific Region Cap Director of
+      // Safety", "California Wing HQ Commander".
       const org = dp.orgName
-        ? formatOrgName_(dp.orgName, dp.orgScope)
-        : formatOrgName_(member.orgName);
+        ? formatOrgName_(dp.orgName, dp.orgScope || dp.level)
+        : formatOrgName_(member.orgName, member.orgScope);
       return `${org} ${signatureDutyTitle_(dp)}`;
     })
     .join('<br />');
@@ -3227,6 +3270,17 @@ function formatOrgName_(orgName, scope) {
     const m = name.toUpperCase().match(/\b(WING|REGION)\b/);
     if (m) name = name.slice(0, m.index + m[1].length);
   }
+
+  // A trailing "CAP" is the organization's own initials, and CAPWATCH puts them on
+  // some org names — "PACIFIC REGION CAP". Title-cased into a duty line it becomes
+  // a word: "Pacific Region Cap Director of Safety". It also says nothing the next
+  // line of the signature does not already say in full.
+  //
+  // Done AFTER the echelon trim so it catches the case the trim cannot: the trim
+  // needs a scope, and a duty whose org scope did not survive the extract falls
+  // through with the raw name. UpdateChatSpaces.gs carries the same fix as a
+  // one-off replace on this exact string; this generalizes it.
+  name = name.replace(/\s+CAP$/i, '');
 
   return toTitleCase(name)
     .split(/\s+/)
