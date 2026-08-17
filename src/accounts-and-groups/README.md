@@ -17,7 +17,7 @@ This module handles the core automation for synchronizing CAPWATCH member data w
 
 ## Overview
 
-This module consists of six main components:
+This module consists of seven main components:
 
 1. **UpdateMembers.gs** - User account lifecycle management
 2. **UpdateGroups.gs** - Email group membership synchronization
@@ -25,6 +25,7 @@ This module consists of six main components:
 4. **CadetTransition*.gs** - Cadet → senior cross-tenant account transition (PCR only; cadets tenant)
 5. **WelcomeEmailResend.gs** - Welcome email for an account created outside provisioning
 6. **WelcomeEmailAudit.gs** - Detecting accounts that never received one
+7. **TwoSvSetupGroup.gs** - Expiring the 2SV setup group exemption nightly
 
 Together, these scripts ensure that your Google Workspace environment stays synchronized with CAPWATCH membership data automatically.
 
@@ -377,6 +378,54 @@ population is already reported to unit command staff by `notifications/RecoveryE
 now surfaces here too. That failure is caught and logged at the call site and nothing revisits
 it, so it used to be exactly as invisible as an out-of-band account.
 
+### 7. TwoSvSetupGroup.gs - Expiring the 2SV Setup Exemption
+
+**Purpose**: The 2SV setup group is a holding pen — membership exempts a member from 2SV
+enforcement while they enroll. The help-desk app (`admin-webapp/`) parks members in it one at
+a time, and nothing took them back out. An exemption granted for an afternoon quietly became
+permanent, on the least protected accounts in the wing. This closes the loop nightly:
+
+| Condition | Outcome |
+|---|---|
+| enrolled in 2SV | removed — `2sv-enrolled` |
+| `GRACE_DAYS` (7) elapsed, still not enrolled | removed — `grace-expired` |
+| inside the window, not enrolled | kept |
+| inside the window, 2SV state unreadable | kept — `within-grace-2sv-unknown` |
+
+Whichever condition lands first wins, so an enrolled member leaves the same night, even on the
+day they were added.
+
+**Key Functions**:
+- `pruneTwoSvSetupGroup(options)` — the nightly entry point. `{dryRun: true}` decides
+  everything and removes nothing; `{graceDays: n}` overrides the window for a one-off run.
+- `previewTwoSvSetupGroup()` — the dry run, by name. **Run this once before arming the
+  trigger** to see who the first night would take out.
+
+**Configuration**: `TENANT_2SV_SETUP_GROUP` (Script Property). **Blank disables the module**,
+and blank is the default — this is a group whose membership is a security exemption, and it
+will not guess at the address. The help-desk app is a separate Apps Script project with its
+own properties and reads the same group as `WEBAPP_2SV_SETUP_GROUP`; set both.
+
+**Why a ledger**: `AdminDirectory.Members` carries no join timestamp, so "when was this member
+added?" is unanswerable from the directory. Each run stamps a first-seen date into
+`TwoSvSetupGroupLedger.txt` (CAPWATCH data folder) for members it has not seen before, and the
+grace clock runs from there. Consequences worth knowing, both deliberate:
+
+- Members **already in the group** when this first runs have their clock started at that first
+  run, not when they were really added — so they get a full window rather than being removed
+  on night one. That is the safe direction to be wrong in, and it self-corrects after a week.
+- A member who leaves the group is **dropped from the ledger**, so being parked again later
+  starts a fresh window instead of inheriting an expired one.
+
+**Guards** (policy is `evaluateTwoSvSetupGroup_`, tested in `test/TwoSvSetupGroup.test.js`):
+- A failed 2SV read yields `null`, never `false`. "Not enrolled" and "could not tell" are
+  different facts, and only the first may end an exemption early. The grace clock still
+  applies, so an unreadable account is not exempt forever either.
+- **Nested groups and non-USER members are left alone** — removing one would take an unknown
+  number of people's exemption with it.
+- A removal that **fails** keeps its ledger entry, so tomorrow judges it on the original date
+  rather than restarting the clock the failure caused.
+
 ## How It Works
 
 ### Daily Member Sync Flow
@@ -591,6 +640,7 @@ Set up these time-based triggers in Google Apps Script:
 | 5:00 AM | `updateEmailGroups()` | Daily | Update group memberships |
 | 6:00 AM | `updateAdditionalGroupMembers()` | Daily | Update additional group memberships from spreadsheet |
 | 6:00 AM | `updateMissingAliases()` | Daily | Update missing email eliases |
+| 8:00 AM | `pruneTwoSvSetupGroup()` | Daily | Remove from the 2SV setup group on enrollment, or after 7 days |
 | 4:00 AM (15th) | `manageLicenseLifecycle()` | Monthly | Archive/delete old accounts |
 
 ### Manual Execution
