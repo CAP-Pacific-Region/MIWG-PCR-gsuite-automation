@@ -161,6 +161,82 @@ called `WelcomeEmail.gs`. It cannot — Apps Script addresses files without thei
 that name collides with `WelcomeEmail.html` and the push is rejected wholesale with *"A file
 with this name already exists"*.
 
+## [2026-08-03] — sweep phase added to the transition pipeline
+
+### Added
+
+- **`CadetTransition.gs` (v1.2.1)** — **`catchUpTransitionMail` is now a pipeline phase.** The
+  close parks accounts rather than deleting them (see below), so a parked account stays live
+  and keeps receiving mail; this sweep is what actually carries it to the senior tenant, and
+  without it a parked mailbox silently accumulates mail nobody reads. Added a guard that
+  `TRANSITION_TRIGGER_FUNCTIONS_` (the phase order) and the pipeline's phases map agree — they
+  are separate declarations, so an edit to one can orphan a phase that then silently no-ops.
+
+- **`listAllProjectTriggers()`** and **`clearAllTransitionContinuations()`** — Apps Script caps
+  a script at **20 triggers** across the whole project, and nothing surfaced that shared
+  budget; arming failed outright with *"This script has too many triggers."* These show the
+  usage, flag orphaned continuation triggers, and reclaim them.
+
+## [2026-08-03] — the close parks the account instead of deleting it
+
+### Changed
+
+- **`CadetTransitionCleanup.gs` (v2.0.0)** — **the close no longer deletes the cadet
+  account.** Two live attempts proved the original design impossible: a Google Group can only
+  take an address once Google releases it, and Google reserves a former primary address well
+  beyond a single execution — ~20 days after a delete (recovery tombstone) and, measured, >75s
+  after a rename (docs say up to 24h). Both returned `409 Entity already exists`. Any
+  delete-now design therefore guarantees a bounce window of a day to weeks.
+
+  The account is now **parked**: kept live, forwarding to the senior address, so the address
+  never stops existing and no mail ever bounces. The trade is a license seat held until the
+  forwarding window ends, at which point `expireParkedAccounts()` runs a final catch-up sweep
+  and deletes the account.
+
+  Delivery is guaranteed by the **daily catch-up sweep** (`catchUpTransitionMail`, now on the
+  trigger schedule at 09:00), which moves anything arriving at a parked mailbox across to the
+  senior tenant. Gmail auto-forwarding is *also* requested but is best-effort only:
+  cross-domain forwarding requires the member to click a confirmation Google sends to their
+  senior address, so it reports `pending` until they do — it makes delivery instant rather
+  than sweep-delayed, but never gates it. Needs `gmail.settings.basic` +
+  `gmail.settings.sharing` on the cadets local SA; without them it degrades to sweep-only.
+
+  Removed the group/rename machinery (`freeAddressAndForward_`, `createForwardingGroupWhenFree_`,
+  the alias-retention handling and their tests) — that whole approach cannot work, and leaving
+  it invited its reintroduction.
+
+### Fixed
+
+- **`whyNotCloseable_`** now refuses a row whose previous close deleted the account but left no
+  forwarding, routing it to `repairFailedTransitionCloses()` instead. Such rows previously
+  passed every check, so re-running the close would have swept against a deleted mailbox.
+
+## [2026-08-03] — free the address by renaming, not deleting (close incident fix)
+
+### Fixed
+
+- **`CadetTransitionCleanup.gs` (v1.3.0)** — the first live `closeCompletedTransitions(false)`
+  run deleted four cadet accounts and then **failed to create any forwarding group**:
+  `directory.groups.insert` returned `409 Entity already exists` for every one. A deleted
+  Workspace account **holds its address for Google's ~20-day recovery window**, so the
+  delete-then-create-at-the-same-address sequence could never work. (No member data was lost —
+  migration and the final catch-up sweep both completed before each delete, moving 1–15 late
+  messages each; the deleted accounts remained restorable.)
+
+  The address is now freed by **renaming the user off it**: rename → remove the alias the
+  rename auto-retains → create the group (retrying the brief, genuinely transient post-rename
+  409) → delete the renamed shell, whose tombstone holds the `.transitioned` address rather
+  than the real one. The **delete is now LAST**, so any earlier failure leaves a live,
+  recoverable account instead of a deleted one.
+
+  Added **`repairFailedTransitionCloses(dryRun)`** (+ `previewTransitionRepair()`) to finish
+  the stranded rows once their accounts are restored from the Admin console — it rebuilds the
+  forward without re-migrating anything. Added **`testAddressHandover(addr, forwardTo)`**,
+  which exercises the whole sequence on a throwaway *user*; the earlier
+  `testForwardingGroup()` validated only a group at a *fresh* address, which is exactly why
+  this reached production. Removed the now-unused plain create helper so the unsafe order
+  cannot be reintroduced.
+
 ## [2026-07-31] — two spellings, one mailbox
 
 ### Fixed — UpdateGroups.gs 1.11.0: membership compared on account identity, not string equality

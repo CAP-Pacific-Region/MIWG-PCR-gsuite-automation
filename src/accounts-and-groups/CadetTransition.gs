@@ -814,14 +814,27 @@ function previewCadetTransitions() {
  * Lifecycle handlers that run on a daily schedule. Deliberately excludes the
  * close/delete step — deletion is permanent and stays a human decision.
  */
+/**
+ * The pipeline's phase ORDER — runCadetTransitionPipeline() iterates this array
+ * and looks each name up in its phases map, so anything added here must exist
+ * there too.
+ *
+ * catchUpTransitionMail is a phase because the close PARKS accounts rather than
+ * deleting them (see CadetTransitionCleanup v2.0.0): a parked account stays live
+ * and keeps receiving, and this sweep is what actually carries that mail to the
+ * senior tenant. The Gmail auto-forward is only a best-effort accelerator. Without
+ * this phase a parked mailbox silently accumulates mail nobody reads.
+ */
 const TRANSITION_TRIGGER_FUNCTIONS_ = [
   'detectCadetTransitions',
   'resolveTransitionDestinations',
   'migrateCadetTransitions',
   'migrateAllTransitionDrives',
   'migrateAllTransitionContacts',
+  'catchUpTransitionMail',
   'remindPendingTransitionCloses'
 ];
+
 
 /**
  * Installs the daily time-driven triggers that run the transition lifecycle
@@ -860,27 +873,15 @@ function armTransitionTriggers() {
   // phase only acts on rows the previous one made ready, so a member who does
   // not finish one phase in a day is simply picked up the next day — well inside
   // the 14/90-day windows.
-  const schedule = [
-    ['detectCadetTransitions', 3],
-    ['resolveTransitionDestinations', 4],
-    ['migrateCadetTransitions', 5],
-    ['migrateAllTransitionDrives', 6],
-    ['migrateAllTransitionContacts', 7],
-    // After migration, so the ready/stuck picture reflects the day's work.
-    // Deletion is NOT automated; this only emails IT that the timer is up.
-    ['remindPendingTransitionCloses', 8]
-  ];
+  ScriptApp.newTrigger(TRANSITION_PIPELINE_FN_)
+    .timeBased().everyDays(1).atHour(3).create();
+  Logger.info('Transition pipeline trigger armed', { handler: TRANSITION_PIPELINE_FN_ });
 
-  schedule.forEach(function (pair) {
-    ScriptApp.newTrigger(pair[0]).timeBased().everyDays(1).atHour(pair[1]).create();
-    Logger.info('Transition trigger armed', { handler: pair[0], atHour: pair[1] });
-  });
-
-  console.log('Armed ' + schedule.length + ' daily transition triggers (detect → migrate → remind).');
-  console.log('NO close/delete trigger — remindPendingTransitionCloses just EMAILS when the');
-  console.log('timer is up; you still run closeCompletedTransitions(false) by hand.');
-  console.log('These are owned by whoever ran this — confirm it is automation@cawgcadets.org.');
-  return { armed: schedule.length };
+  console.log('Armed 1 daily trigger (' + TRANSITION_PIPELINE_FN_ + ' at 3:00).');
+  console.log('NO close/delete trigger — the pipeline only EMAILS when the timer is up;');
+  console.log('you still run closeCompletedTransitions(false) by hand.');
+  console.log('Owned by whoever ran this — confirm it is automation@cawgcadets.org.');
+  return { armed: 1 };
 }
 
 /**
@@ -889,10 +890,27 @@ function armTransitionTriggers() {
  *
  * @returns {{removed: number}}
  */
+/**
+ * Is this handler one of ours — the pipeline driver, or a phase from the older
+ * one-trigger-per-phase scheme?
+ *
+ * ONE predicate, used by both disarm and list. They were separate before, and
+ * disagreed: list matched the pipeline handler, disarm did not. Since arm calls
+ * disarm first, arming could never clear the trigger it installs — every arm
+ * silently added another duplicate pipeline trigger, against a 20-trigger cap.
+ *
+ * @param {string} handler
+ * @returns {boolean}
+ */
+function isTransitionTriggerHandler_(handler) {
+  return handler === TRANSITION_PIPELINE_FN_ ||
+    TRANSITION_TRIGGER_FUNCTIONS_.indexOf(handler) > -1;
+}
+
 function disarmTransitionTriggers() {
   var removed = 0;
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (TRANSITION_TRIGGER_FUNCTIONS_.indexOf(t.getHandlerFunction()) > -1) {
+    if (isTransitionTriggerHandler_(t.getHandlerFunction())) {
       ScriptApp.deleteTrigger(t);
       removed++;
     }
@@ -977,10 +995,24 @@ function runCadetTransitionPipeline(budgetMinutes) {
     migrateCadetTransitions: migrateCadetTransitions,
     migrateAllTransitionDrives: migrateAllTransitionDrives,
     migrateAllTransitionContacts: migrateAllTransitionContacts,
+    // Parked accounts (the close no longer deletes — see CadetTransitionCleanup
+    // v2.0.0) stay live and keep receiving; this sweep is what delivers that
+    // mail to the senior tenant.
+    catchUpTransitionMail: catchUpTransitionMail,
     remindPendingTransitionCloses: remindPendingTransitionCloses
   };
 
   const order = TRANSITION_TRIGGER_FUNCTIONS_;
+
+  // The order array and the phases map must agree. They are separate
+  // declarations, so an edit to one can silently orphan a phase — a stray name
+  // in `order` would dispatch to undefined and be skipped, and a phase only in
+  // the map would never run at all. Fail loudly instead.
+  const orphans = order.filter(function (n) { return typeof phases[n] !== 'function'; });
+  if (orphans.length) {
+    throw new Error('Transition pipeline misconfigured — these are in the phase ' +
+      'order but have no handler: ' + orphans.join(', '));
+  }
   const budgetMs = Math.max(1, Number(budgetMinutes || TRANSITION_PIPELINE_BUDGET_MIN_)) * 60 * 1000;
   const deadline = Date.now() + budgetMs;
 
@@ -1155,6 +1187,52 @@ function checkTransitionPipelineStatus() {
 }
 
 /**
+ * Lists EVERY trigger on the project, not just this feature's, with a count
+ * against Apps Script's hard limit of 20 per script.
+ *
+ * Worth having because that limit is shared across the whole project: this
+ * feature adding one trigger per phase exhausted it and the arm failed with
+ * "This script has too many triggers." Orphaned continuation triggers (which
+ * normally self-delete) also consume slots, so this separates scheduled work
+ * from leftovers.
+ */
+function listAllProjectTriggers() {
+  const all = ScriptApp.getProjectTriggers();
+  const continuations = ['continueCadetTransitionMigration',
+                         'continueCadetTransitionDriveMigration',
+                         'continueCadetTransitionContactsMigration'];
+  let leftovers = 0;
+
+  console.log('=== ' + all.length + ' of 20 trigger slots used ===');
+  all.forEach(function (t) {
+    const fn = t.getHandlerFunction();
+    const isCont = continuations.indexOf(fn) > -1;
+    if (isCont) leftovers++;
+    console.log('  ' + fn + (isCont ? '   <-- continuation (transient; stale ones are removable)' : ''));
+  });
+
+  console.log('');
+  if (leftovers) {
+    console.log(leftovers + ' continuation trigger(s) present. If no migration is running,');
+    console.log('they are orphans — clear with clearAllTransitionContinuations().');
+  }
+  if (all.length >= 18) {
+    console.log('WARNING: at or near the 20-trigger ceiling. Adding more will fail.');
+  }
+  return { used: all.length, continuations: leftovers };
+}
+
+/** Clears every stale transition continuation trigger (all three kinds). */
+function clearAllTransitionContinuations() {
+  const a = clearMigrationContinuations();
+  const b = clearDriveContinuations();
+  const c = clearContactsContinuations();
+  const total = (a.removed || 0) + (b.removed || 0) + (c.removed || 0);
+  console.log('Cleared ' + total + ' continuation trigger(s).');
+  return { removed: total };
+}
+
+/**
  * Read-only: lists the transition triggers currently installed and who would
  * own them. Run to confirm state after arming.
  */
@@ -1163,9 +1241,7 @@ function listTransitionTriggers() {
   // would report "none installed" on a project running the pipeline, which is
   // the opposite of true.
   const mine = ScriptApp.getProjectTriggers().filter(function (t) {
-    const handler = t.getHandlerFunction();
-    return TRANSITION_TRIGGER_FUNCTIONS_.indexOf(handler) > -1 ||
-      handler === TRANSITION_PIPELINE_FN_;
+    return isTransitionTriggerHandler_(t.getHandlerFunction());
   });
   if (!mine.length) {
     console.log('No transition lifecycle triggers installed.');
@@ -1176,4 +1252,9 @@ function listTransitionTriggers() {
   });
   console.log('');
   console.log(mine.length + ' installed. Continuation triggers (transient) are not listed.');
+  if (mine.length > 1) {
+    console.log('');
+    console.log('WARNING: more than one is installed — they will all fire. Run');
+    console.log('disarmTransitionTriggers() then armTransitionTriggers() to get back to one.');
+  }
 }
