@@ -46,6 +46,7 @@ never repoint one tenant at another's domain. Canonical non-secret values are ve
 - **License lifecycle** — suspends expired members, and deletes long-ineligible accounts to stay under the Workspace-for-Nonprofits seat cap.
 - **Cadet → senior transition** — when a cadet ages out or converts, the cadets tenant carries their mail, Drive, and contacts to their new seniors-tenant account before the old account is deleted, then forwards the freed address (cadets tenant only; the final delete stays a manual step).
 - **Self-service email signature** — a member-facing web app that shows the CAP signature their CAPWATCH record calls for and writes it to their own CAP addresses on approval; all they may change is whether the phone row appears and which of their own duty assignments do (see [signature web app](docs/SIGNATURE_WEB_APP.md)).
+- **Domain admin help desk** — a web app for wing IT staff holding Google's Help Desk Administrator role: look a member up by CAPID, name or address; reset a password; resend the welcome email an out-of-band account never received; add or remove them from the 2SV setup group. Every action is scoped to one member and logged against the admin who ran it (see [admin web app](docs/ADMIN_WEB_APP.md)).
 - **Region features** (Pacific only) — region duty groups + Chat spaces, a region-wide unit-visit report, and an on-demand **mission provisioning webhook** (Group + Chat space + Drive folder per mission).
 
 ### Key characteristics
@@ -127,6 +128,8 @@ src/                          # The shared codebase — deployed unchanged to al
 
 signature-webapp/             # SEPARATE Apps Script project: member self-service email signature
                               # (own manifest, scopes and clasp target — never deployed with src/)
+admin-webapp/                 # SEPARATE Apps Script project: domain admin help desk
+                              # (password resets, welcome-email resends, 2SV setup group)
 
 config-tenants/               # Canonical NON-SECRET per-tenant values (repo-only; never pushed)
 ├── seniors.json  cadets.json  region.json
@@ -157,7 +160,14 @@ npm run open:seniors              # open the project in the browser
 
 npm run push:signature:seniors    # deploy signature-webapp/ — its OWN script project, one per tenant
 npm run push:signature:cadets     # ...same source, the cadets tenant's project
+
+npm run push:admin:seniors        # deploy admin-webapp/ — the domain admin help desk
 ```
+
+> Both web apps are **pushed** from clasp and **deployed by hand from the Apps Script
+> editor**. `clasp update-deployment` replaces a deployment's config wholesale and the
+> web-app entry point does not survive it — visitors get "You need access" until a human
+> redeploys.
 
 **Recommended change flow:** branch → edit `src/` → `push:seniors` → run the relevant `preview…`
 function and check **Executions** → push `cadets`, then `region` → update
@@ -231,6 +241,7 @@ automation account** ([Accounts & Groups module](src/accounts-and-groups/README.
 - **[New Tenant / New Wing Setup](docs/NEW_TENANT_SETUP.md)** — bare-metal, end-to-end runbook for provisioning a brand-new tenant from nothing (Hawaii-Wing worked example).
 - **[Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md)** — seniors ⇄ cadets shared-contact sync.
 - **[Signature Web App](docs/SIGNATURE_WEB_APP.md)** — the member self-service email signature page (`signature-webapp/`, a separate script project).
+- **[Admin Web App](docs/ADMIN_WEB_APP.md)** — the domain admin help-desk page (`admin-webapp/`, a separate script project): password resets, welcome-email resends, 2SV setup group.
 - **[Pacific Diff](docs/REGION_DIFF.md)** / **[GCP Project Migration](docs/GCP_PROJECT_MIGRATION.md)** — Pacific-specific setup and the standard-GCP-project migration.
 - **[Spreadsheet Setup](docs/SPREADSHEET_SETUP.md)** — the automation config spreadsheet tabs.
 - **[API Reference](docs/API_REFERENCE.md)** · **[Utilities](docs/UTILITIES.md)** · **[Development Guide](docs/DEVELOPMENT.md)** · **[Troubleshooting](docs/TROUBLESHOOTING.md)** — internals, inherited from the upstream single-wing project and reconciled for the multi-tenant model (each carries a note on what changed).

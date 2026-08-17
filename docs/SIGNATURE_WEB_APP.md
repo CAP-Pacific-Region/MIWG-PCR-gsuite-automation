@@ -1,8 +1,9 @@
 # Member self-service email signature web app
 
 A member opens a link, signs in as themselves, and sees the CAP email signature their CAPWATCH
-record says they should have. If they approve it, it is written to their own CAP addresses. The
-only thing they may change is whether the phone row is included.
+record says they should have. If they approve it, it is written to their own CAP addresses. Two
+things are theirs to decide — whether the phone row appears, and which of their own duty
+assignments do. Not what any of it says, and not the order.
 
 Source: [`signature-webapp/`](../signature-webapp/README.md) — **a separate Apps Script project**,
 not part of `src/`. Tests: `test/SignatureWebApp.test.js`, run by `npm test`.
@@ -229,7 +230,67 @@ with the phone row included. So:
 If the phone opt-out ever needs to survive a bulk push, that means a shared store both projects can
 read, and it belongs in `src/` — not here.
 
-## 7. On the cadets tenant
+## 7. Region and national duties (the second CAPWATCH extract)
+
+**CAPWATCH scopes an extract to the echelon it was downloaded as.** A wing pull (ORGID 188)
+contains the wing's members and the duties they hold *at wing or below*. A member's region or
+national billet is **not in that file at all** — not filtered, not blank, absent. So a member
+holding a PCR assignment saw a signature that silently omitted it, with nothing in any log to
+explain why, because there was nothing in the data to omit.
+
+The region tenant already downloads a region-wide extract, so the fix is to read that folder as a
+**second, read-only source** — the wing tenant keeps operating as the wing in every other respect.
+
+### Setting it up
+
+1. **Share the folder.** The region tenant's region-wide CAPWATCH folder (`PCR CapWATCH Data`,
+   `1lU9yWHPf1Eij3AEQPmMR8ki7EpgslV9z`) must be shared **read-only** with the tenant's automation
+   account. It lives in a different Workspace, so this is an external share and must be permitted
+   between the two domains.
+2. **Set the property** on the tenant that needs it — remembering that the web app has **its own**
+   Script Properties, separate from the main automation project:
+
+   ```
+   TENANT_REGION_CAPWATCH_DATA_FOLDER_ID = 1lU9yWHPf1Eij3AEQPmMR8ki7EpgslV9z
+   ```
+
+   On the web app project it feeds the signature page. On the main project it feeds `getMembers()`,
+   and therefore provisioning and `pushAllSignatures()`. They are independent — set it on both if
+   you want both.
+3. **Blank is a valid, complete configuration.** Unset property, missing folder, unreadable folder
+   and empty file all degrade to "no extra duties" and never to an error.
+
+### What it may and may not do
+
+| | |
+|---|---|
+| **Never widens the roster** | Rows are read only for CAPIDs the tenant's own extract already has. The region extract holds every member of every wing in the region; treating it as a source of members would provision Nevada. |
+| **Nothing else can see it** | The duties land in their own array, `member.outOfWingDutyPositions`, which only the signature generator reads (via `allSignatureDuties_()`). This was first written to add them to `dutyPositions` while staying clear of `dutyPositionIds` — wrong, because `dutyPositions` is *also* read for the Workspace **directory job title**, for duty-id and duty-level matching in `UpdateGroups.gs`, and for unit distribution lists in `SquadronGroups.gs`. A member's region billet would have reached their GAL title and any wing duty group whose title matched. A separate array makes the guarantee structural instead of a promise each consumer has to keep. |
+| **Only orgs outside this wing** | The region extract also carries this wing's own duties; our own pull is authoritative for those. Filtering on the org rather than de-duplicating keeps the rule legible — "duties our own pull cannot see" — instead of depending on which extract downloaded last. |
+| **Org names come from the supplement** | It is the only place "Pacific Region" and "National Headquarters" exist, so a region billet renders as *"Pacific Region Assistant Director of IT"* rather than falling back to the member's home unit. `DUTY_LEVEL_ORDER` already ranks NAT/NHQ above REGION above WING. |
+
+### When it doesn't work
+
+Run **`previewOutOfWingDuties`** from the web app project's editor (set your CAPID in
+`SIGNATURE_DIAGNOSTIC_RUN_INPUTS` in `MemberRecord.gs` first). It writes nothing, reads no Gmail or
+Directory data, and walks the same path the app takes, reporting where it stops: property unset,
+folder unreadable, file absent, no rows for that CAPID, or rows found — and for each row whether it
+was TAKEN or SKIPPED as ours.
+
+Run it **from the editor**, which executes the project's current code. The deployed app serves
+whatever version was last published, and "pushed but not re-deployed" is a common cause that this
+distinction isolates immediately.
+
+Two things that look like failure and are not:
+
+- **An assistant billet is not in the default pick.** It appears as an *unticked* box in the duty
+  chooser, not in the preview, until the member ticks it. Most region assignments are assistant
+  ones, so this is the usual answer.
+- **The record cache is 10 minutes.** A page load from before the property was set keeps serving the
+  old record. A cache miss logs `Supplementary CAPWATCH consulted for out-of-wing duties` with the
+  counts; if that line is absent from the run, you got a cache hit.
+
+## 8. On the cadets tenant
 
 The **same source** runs on both tenants and there is no `TENANT_PROFILE` branch anywhere in it.
 Everything that differs for cadets differs because their CAPWATCH record differs, or because the
@@ -257,9 +318,9 @@ tenant's own Script Properties differ. What that means in practice:
 - **Duplicate accounts.** The `duplicate_retired_capid` marker is honored, so a dead twin's CAPID
   never resolves. An account carrying two *live* CAPIDs is refused rather than guessed at.
 
-`test/SignatureWebApp.test.js` §7 pins each of these.
+`test/SignatureWebApp.test.js` §8 pins each of these.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Cause |
 |---|---|
@@ -272,7 +333,8 @@ tenant's own Script Properties differ. What that means in practice:
 | Preview loads, applying fails | Delegation. Check `SA_*` properties in **this** project and the DWD grant for the service account's client ID. |
 | `unauthorized_client` on apply, cadets tenant | The seniors service account's key was copied into the cadets project. Each tenant has its own SA and its own DWD grant. |
 | A cadet sees "not available" | They opened the **seniors** deployment's URL. `access: DOMAIN` refuses cross-domain callers before any of this code runs. |
-| A cadet expects a phone row | There is never one. See §7 — this matches what `src/` publishes for cadets. |
+| A cadet expects a phone row | There is never one. See §8 — this matches what `src/` publishes for cadets. |
+| A member's region or national duty is missing | See §7 — usually an assistant billet sitting unticked in the chooser, or the 10-minute record cache. `previewOutOfWingDuties` settles it. |
 | "Can we set the signature's name in Gmail?" | No — the Gmail API has no field for it (§2). The member renames it themselves in Gmail → Settings → General → Signature; the page tells them so after applying. |
 | Send-as addresses could not be read | Same as above — the app shows the preview anyway rather than blocking on it. |
 | Signature applied but Gmail still shows the old one | Gmail caches settings briefly; reload. Check the member is looking at the same Send-As identity. |

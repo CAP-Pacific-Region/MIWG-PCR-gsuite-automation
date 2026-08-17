@@ -10,6 +10,113 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-16] — the help desk stops going through one person
+
+### Added — `admin-webapp/` 1.0.0: a domain admin page for per-member account operations
+
+Wing IT volunteers hold Google's **Help Desk Administrator** role, which covers a password
+reset from the Admin console and nothing else this automation does. Resending the welcome
+email an out-of-band account never received, parking a member in the 2SV setup group,
+finding out *which* of a member's two accounts is the live one — each of those meant asking
+the one person with Apps Script editor access to run a function by hand. That is a
+bottleneck made of one person, and the editor is not somewhere a help-desk volunteer
+belongs: every function in `src/` is one mis-click from a wing-wide run.
+
+`admin-webapp/` is a **fourth standalone script project** (after `src/`, `signature-webapp/`,
+and the alias admin UI that was never merged). One `doGet` per project is the mechanical
+reason; the useful one is that its OAuth scopes are the four actions' and no more — no
+calendar, no chat, no shared contacts, no group *settings*.
+
+Four actions, each scoped to one member: **look up** (CAPWATCH record + every account
+carrying that CAPID, with suspension, 2SV, last sign-in, admin flags, managed-group
+membership and the welcome-ledger verdict), **reset password**, **resend welcome email**,
+**group add/remove**.
+
+**Two gates make it safe to delegate**, and both live in `Auth.gs`:
+
+- *Who may call* — a super admin, or the holder of a directory role in `WEBAPP_ADMIN_ROLES`
+  (default `_HELP_DESK_ADMIN_ROLE`). Roles rather than a maintained group of names, because
+  the Admin console already records this: a volunteer who loses the role loses the app the
+  same day, with nobody remembering to edit anything. A role lookup that *fails* denies.
+- *Whom they may act on* — a non-super-admin may not act on **another admin's account**.
+  This mirrors Google's own rule, and without it a help-desk volunteer could reset a super
+  admin's password here and then sign in as them.
+
+Two further boundaries: `WEBAPP_MANAGED_GROUPS` (plus the 2SV group) is an allow-list
+checked against the address the *browser* sends, so the page cannot be used to join any
+group in the domain; and credentials are never mailed to an address on our own domains —
+not the account being reset, not the secondary domain — which is the rule that makes a
+"sent" welcome email mean anything.
+
+Every action writes one audit row naming the admin, the account and the outcome, to the
+execution log always and to a sheet tab when `TENANT_AUTOMATION_SPREADSHEET_ID` is set.
+The platform's own log names only the DEPLOYER — the app executes as them — so without this
+the one question that matters about a delegated tool has no answer. **The temporary password
+is never recorded**: it exists in the admin's browser and, if mailed, the member's inbox.
+
+**Four things are copies of `src/`** — the welcome template, the resend eligibility policy,
+the authoritative-account ranking, and the welcome-ledger format (which is *shared state*: a
+resend from here records into `WelcomeEmailLedger.txt` so the monthly audit stops reporting
+that member as MISSED). `test/AdminWebApp.test.js` runs both copies over the same inputs and
+fails on divergence; its header records what each drift would cost. Two refusal *sentences*
+differ on purpose — `src/` tells an operator to "pass `{force: true}`", which is meaningless
+next to a checkbox — and those two are pinned by name so a third divergence cannot arrive
+quietly.
+
+Seniors only for now, and **pushed** to project `1miHntSI…Sq6ub` on 2026-08-16 — code only.
+Script Properties and the by-hand deployment are still outstanding; see
+[docs/ADMIN_WEB_APP.md](docs/ADMIN_WEB_APP.md).
+
+### Changed — the 2SV group panel follows the member's 2SV state
+
+Reported from live use: an admin saw **2SV off** on the account card and had nothing obvious
+to do about it — the group panel was a bare Add/Remove pair with no connection to the fact
+sitting directly above it.
+
+The 2SV setup group is not a general-purpose group and no longer looks like one. It covers
+the window while a member enrolls, so at any moment there is a right answer, and both facts
+that decide it are already on the page. The panel now names the state and makes the matching
+action primary: *2SV off and not a member* → **Add** ("add them while they enroll");
+*2SV on and still a member* → **Remove** ("they no longer need the setup group"); the other
+two states recommend nothing. Both buttons remain — an admin may have a reason the page
+cannot know — but the no-op one is disabled rather than silently succeeding. The server side
+was already idempotent in both directions and stays that way.
+
+Group membership is now resolved **per account** rather than once for the authoritative one.
+A duplicate pair can differ in both 2SV state and membership, and the previous build showed
+the authoritative account's membership under whichever radio button was selected, with a
+"membership shown for …" caveat papering over it. The caveat is gone because the gap is.
+
+With no group configured the section now **explains itself instead of vanishing**. Everyone
+reading this page is an administrator, and a section that silently disappears is
+indistinguishable from a broken page — which is exactly how this was first reported.
+
+### Added — cadets in a name search are flagged and pointed at the cadet tools site
+
+CAPWATCH is scoped to the **wing**, not the tenant, so the seniors extract lists every cadet
+in the wing and a name search returns all of them — none with an account here to act on.
+Reported from the first real use of the page.
+
+They are flagged rather than filtered: an admin who searched a name and got nothing back
+would conclude the member does not exist, and one shown "no Workspace account" would
+conclude it needs provisioning and go create one **on the wrong tenant**. Candidates now
+carry an *other Workspace* tag with a count beneath the list; opening one replaces the
+"no account" message with a note naming `WEBAPP_CADET_TOOLS_URL` as a link, repeated inside
+the member card because a banner is replaced by the next action's result and this fact is not.
+
+The rule is derived from `TENANT_PROFILE` against a copy of `MEMBER_TYPES_ACTIVE`, not
+hardcoded to "cadet": **the region profile provisions cadets too**, so hardcoding would have
+broken that tenant the day it deployed. The test compares the table against `src/config.gs`.
+An unrecognised type reads as *not* ours — the worst case is a redundant note above a member
+whose accounts are listed right below it, rather than a help desk quietly failing on someone.
+A member who *does* hold an account here despite the flag (a cadet-to-senior transition in
+flight) keeps the full action set, with the note saying so.
+
+One naming trap worth recording: `Credentials.gs` holds the welcome email and would rather be
+called `WelcomeEmail.gs`. It cannot — Apps Script addresses files without their extension, so
+that name collides with `WelcomeEmail.html` and the push is rejected wholesale with *"A file
+with this name already exists"*.
+
 ## [2026-08-03] — sweep phase added to the transition pipeline
 
 ### Added
@@ -236,6 +343,80 @@ stamped `Add EXT = Y` — one cell; `Category`, `Attribute`, `Values` and `Descr
 author wrote them, since rewriting those would silently redefine who is on the wing's all-hands list.
 Both fixes are covered by `test/UpdateCAWGCadetGroups.nesting.test.js`. Neither was ever
 CAWG-specific — they apply to any wing adopting the split-tenant pattern.
+
+## [2026-08-03] — the duty CAPWATCH never told us about
+
+A member's signature was missing their Pacific Region billet. Not mis-sorted, not filtered —
+**absent from the data**. CAPWATCH scopes an extract to the echelon it is downloaded as, so the
+wing pull (ORGID 188) carries the duties its members hold *at wing or below* and simply has no row
+for a region or national assignment. Nothing logged, because there was nothing to log; the wing
+extract is not aware the billet exists.
+
+Confirmed by downloading the region list by hand and finding the row there, keyed to the same
+CAPID.
+
+### Added — `UpdateMembers.gs` 1.22.0, `signature-webapp/` 1.1.0
+
+The region tenant already downloads a region-wide extract, so the wing tenant now reads **that
+folder** as a second, read-only source — `TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`, shared read-only
+to the automation account. No second download, no additional eServices permission, no duplicated
+quota. The tenant goes on operating as the wing in every other respect; the supplement answers one
+question only: *what duties does this member hold that our own pull cannot see?*
+
+**Two invariants, both pinned by tests, because this source is also the one that could do the most
+damage:**
+
+1. **It never widens the roster.** Rows are read only for CAPIDs the tenant's own extract already
+   has. The region extract holds every member of every wing in PCR; treating it as a source of
+   members would provision Nevada.
+2. **Nothing that already reads a member can see them.** They land in their own array,
+   `member.outOfWingDutyPositions`, merged only by `allSignatureDuties_()` inside the signature
+   generator.
+
+   This shipped wrong first. It originally pushed into `dutyPositions` while staying out of
+   `dutyPositionIds`/`dutyPositionIdsAndLevel`, on the belief that those two arrays were the
+   group-matching contract. **They are one contract, not the only one.** `UpdateGroups.gs` iterates
+   `dutyPositions` directly to match duty ids and levels, `SquadronGroups.gs` does the same for unit
+   distribution lists, and `addOrUpdateUser()` builds the Workspace **directory job title** from it.
+   A member's region billet would have appeared in their GAL title and in any wing duty group whose
+   title happened to match — caught by grepping the consumers *after* the property went live on the
+   main project, and before any sync ran. The separate array makes the invariant structural rather
+   than something ten call sites have to remember.
+
+Only orgs **outside** this wing are taken; our own pull is authoritative for ours. Filtering on the
+org rather than de-duplicating keeps the rule legible — "duties our own pull cannot see" — instead
+of depending on which extract downloaded last. Org names come from the supplement's own
+`Organization.txt`, the only place "Pacific Region" and "National Headquarters" exist, so a region
+billet renders as *"Pacific Region Assistant Director of IT"* rather than falling back to the
+member's home unit. `DUTY_LEVEL_ORDER` already ranked NAT/NHQ above REGION above WING.
+
+Self-disabling throughout: unset property, missing folder, unreadable folder and empty file all
+degrade to "no extra duties", never to an error. A member still gets their signature.
+
+### Added — `previewOutOfWingDuties()`, because the first failure was undiagnosable
+
+When it did not work, the log said nothing — "the supplement is switched off" and "the supplement
+found nothing" were indistinguishable from outside. The normal path now logs whether the supplement
+was consulted and what it found, and `previewOutOfWingDuties()` walks the same path on demand and
+reports where it stops: property unset, folder unreadable, file absent, no rows for that CAPID, or
+rows found and for each whether it was TAKEN or SKIPPED as ours.
+
+Run it **from the editor**, which executes the project's current code — the deployed app serves
+whatever version was last published, and "pushed but not re-deployed" is a common cause that this
+distinction isolates immediately.
+
+> ⚠️ **The share is a manual, cross-tenant grant.** Folder `1lU9…` lives in the PCR Workspace and is
+> shared read-only with the wing's automation account. If that lapses, or the PCR pull stops being
+> armed, out-of-wing duties quietly stop appearing — the failure mode is silence by design, which is
+> why the log line and the diagnostic exist.
+
+> Two things that look like failure and are not: an **assistant** billet is never in the default
+> pick, so it sits unticked in the chooser rather than appearing in the preview (most region
+> assignments are assistant ones); and the resolved record is **cached for ten minutes**, so a page
+> load from before the property was set keeps serving the old one.
+
+`src/` carries the change but has **not been pushed to any tenant**, so provisioning and
+`pushAllSignatures()` do not yet see region duties. The web app is live on seniors.
 
 ## [2026-07-28] — members can set their own signature, and change exactly one thing about it
 

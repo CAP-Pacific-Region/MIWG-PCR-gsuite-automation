@@ -3,9 +3,14 @@
  * Description: Resolves the signed-in caller to their CAPWATCH record — the only
  * source of anything that appears in a signature. Read-only throughout.
  * Author: Maj Isaac Wilson IV, California Wing
- * Version: 1.0.0
- * Date: 2026-07-28
- * Changes: 1.0.0 — initial version.
+ * Version: 1.1.0
+ * Date: 2026-08-03
+ * Changes: 1.1.0 — reads an OPTIONAL region-wide CAPWATCH extract for duties this
+ *            tenant's own pull cannot see (region and national billets), for
+ *            CAPIDs already on this tenant's roster and orgs outside this wing
+ *            only. Adds previewOutOfWingDuties() to diagnose it, and logs whether
+ *            the supplement was consulted. Self-disabling when unset.
+ *          1.0.0 — initial version.
  ***********************************************/
 
 /**
@@ -48,30 +53,45 @@ const SIG_FILE_MEMO = {};
  * @returns {Array<Array<string>>} rows, or [] when the file is absent or empty
  */
 function sigParseCapwatchFile_(baseName) {
-  if (SIG_FILE_MEMO[baseName]) return SIG_FILE_MEMO[baseName];
-
   const folderId = SIG_CONFIG.CAPWATCH_DATA_FOLDER_ID;
   if (!folderId) {
     throw new Error('This tenant is not configured for signatures yet ' +
       '(TENANT_CAPWATCH_DATA_FOLDER_ID is unset).');
   }
+  return sigParseCapwatchFromFolder_(folderId, baseName);
+}
 
-  const files = DriveApp.getFolderById(folderId).getFilesByName(baseName + '.txt');
-  if (!files.hasNext()) {
-    Logger.warn('CAPWATCH file not found', { fileName: baseName + '.txt', folderId: folderId });
-    SIG_FILE_MEMO[baseName] = [];
-    return SIG_FILE_MEMO[baseName];
+/**
+ * The same, from any folder. Missing folder, missing file and empty file all
+ * yield [] rather than throwing: the supplementary region extract is optional,
+ * and a member must still get their signature when it is absent.
+ *
+ * @param {string} folderId
+ * @param {string} baseName
+ * @returns {Array<Array<string>>} rows without the header, or []
+ */
+function sigParseCapwatchFromFolder_(folderId, baseName) {
+  const key = folderId + '/' + baseName;
+  if (SIG_FILE_MEMO[key]) return SIG_FILE_MEMO[key];
+
+  let rows = [];
+  try {
+    const files = DriveApp.getFolderById(folderId).getFilesByName(baseName + '.txt');
+    if (!files.hasNext()) {
+      Logger.warn('CAPWATCH file not found', { fileName: baseName + '.txt', folderId: folderId });
+    } else {
+      const content = files.next().getBlob().getDataAsString();
+      if (content) rows = Utilities.parseCsv(content).slice(1);
+      else Logger.warn('CAPWATCH file is empty', { fileName: baseName + '.txt' });
+    }
+  } catch (err) {
+    Logger.warn('CAPWATCH folder could not be read; continuing without it', {
+      folderId: folderId, fileName: baseName + '.txt', errorMessage: err.message
+    });
   }
 
-  const content = files.next().getBlob().getDataAsString();
-  if (!content) {
-    Logger.warn('CAPWATCH file is empty', { fileName: baseName + '.txt' });
-    SIG_FILE_MEMO[baseName] = [];
-    return SIG_FILE_MEMO[baseName];
-  }
-
-  SIG_FILE_MEMO[baseName] = Utilities.parseCsv(content).slice(1);
-  return SIG_FILE_MEMO[baseName];
+  SIG_FILE_MEMO[key] = rows;
+  return rows;
 }
 
 /**
@@ -206,7 +226,178 @@ function sigDutyPositions_(capid, orgs) {
       });
     }
   });
+
   return out;
+}
+
+/**
+ * Duties this tenant's own CAPWATCH extract CANNOT SEE.
+ *
+ * CAPWATCH scopes an extract to the echelon it was downloaded as: a wing pull
+ * carries the duties its members hold at wing or below, and a member's REGION or
+ * NATIONAL assignment is absent from it entirely — not filtered, not empty,
+ * absent. So a member holding a region billet saw a signature that quietly did
+ * not mention it, with nothing in any log to explain why.
+ *
+ * The region tenant already downloads a region-wide extract, so this reads that
+ * folder (shared read-only) purely to fill the gap. Two rules, matching
+ * addOutOfWingDutyPositions_() in src/ exactly:
+ *
+ *   - only for the CAPID already resolved from this tenant's own roster, so the
+ *     region extract can never introduce a member this tenant does not have;
+ *   - only orgs OUTSIDE this wing, because our own pull is authoritative for
+ *     ours and the region extract carries those too.
+ *
+ * Org names come from the supplementary extract's own Organization.txt, which is
+ * the only place a region or national org's name exists.
+ *
+ * @param {string} capid
+ * @param {Object} wingOrgs - this wing's org map, to tell "ours" from "not"
+ * @returns {Array<Object>}
+ */
+function sigOutOfWingDutyPositions_(capid, wingOrgs) {
+  const folderId = String(SIG_CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID || '').trim();
+  if (!folderId) {
+    // Said once per request, because "the supplement is switched off" and "the
+    // supplement found nothing" look identical from the outside and are not.
+    Logger.info('No supplementary CAPWATCH folder configured; region and national ' +
+      'duties will not appear', { property: 'TENANT_REGION_CAPWATCH_DATA_FOLDER_ID' });
+    return [];
+  }
+
+  const foreignOrgs = {};
+  sigParseCapwatchFromFolder_(folderId, 'Organization').forEach(function (row) {
+    const orgid = String((row || [])[0] || '').trim();
+    if (orgid) {
+      foreignOrgs[orgid] = {
+        name: String(row[5] || '').trim(),
+        scope: String(row[9] || '').trim()
+      };
+    }
+  });
+
+  const out = [];
+  ['DutyPosition', 'CadetDutyPositions'].forEach(function (fileName) {
+    sigParseCapwatchFromFolder_(folderId, fileName).forEach(function (row) {
+      if (String((row || [])[0] || '').trim() !== capid) return;
+
+      const orgid = String(row[7] || '').trim();
+      if (wingOrgs[orgid]) return;               // ours; our own extract has it
+
+      const dutyId = String(row[1] || '').trim();
+      if (!dutyId) return;
+
+      const org = foreignOrgs[orgid];
+      out.push({
+        id: dutyId,
+        level: String(row[3] || '').trim(),
+        assistant: String(row[4] || '').trim() === '1',
+        orgName: org ? org.name : '',
+        orgScope: org ? org.scope : '',
+        outOfWing: true
+      });
+    });
+  });
+
+  // Counted, not just returned: a zero here with a healthy org count means the
+  // extract was read and simply holds nothing for this member, which is a very
+  // different problem from an unreadable folder.
+  Logger.info('Supplementary CAPWATCH consulted for out-of-wing duties', {
+    folderId: folderId,
+    orgsInSupplement: Object.keys(foreignOrgs).length,
+    dutiesFound: out.length
+  });
+
+  return out;
+}
+
+/**
+ * Run-input for previewOutOfWingDuties(). Apps Script cannot pass arguments to a
+ * function you Run from the editor, so set the CAPID here first — the same
+ * pattern as SIGNATURE_PREVIEW_RUN_INPUTS in src/.
+ */
+const SIGNATURE_DIAGNOSTIC_RUN_INPUTS = {
+  CAPID: ''   // e.g. '123456'
+};
+
+/**
+ * Answers "why is my region duty not showing?" in one run. Writes NOTHING, and
+ * reads no Gmail or Directory data at all.
+ *
+ * Run this from the EDITOR, not the deployed app: the editor runs the project's
+ * current code, so it tells you about the code you just pushed even when the live
+ * deployment is still an older version. That distinction is usually the answer.
+ *
+ * It walks the same path sigOutOfWingDutyPositions_() takes and reports where it
+ * stops: property unset, folder unreadable, file absent, no rows for the CAPID,
+ * or rows found and what they say.
+ */
+function previewOutOfWingDuties() {
+  const capid = String(SIGNATURE_DIAGNOSTIC_RUN_INPUTS.CAPID || '').trim();
+  if (!capid) {
+    Logger.error('Set SIGNATURE_DIAGNOSTIC_RUN_INPUTS.CAPID in MemberRecord.gs, then Run again.');
+    return;
+  }
+
+  const folderId = String(SIG_CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID || '').trim();
+  Logger.info('1. Script Property', {
+    TENANT_REGION_CAPWATCH_DATA_FOLDER_ID: folderId || '(NOT SET — this alone explains it)'
+  });
+  if (!folderId) return;
+
+  let folderName = '';
+  try {
+    folderName = DriveApp.getFolderById(folderId).getName();
+    Logger.info('2. Folder is readable by this project', { folderId: folderId, name: folderName });
+  } catch (err) {
+    Logger.error('2. Folder is NOT readable — check the share, and that the id is a FOLDER id', {
+      folderId: folderId, errorMessage: err.message
+    });
+    return;
+  }
+
+  ['Organization', 'DutyPosition', 'CadetDutyPositions'].forEach(function (name) {
+    const rows = sigParseCapwatchFromFolder_(folderId, name);
+    Logger.info('3. ' + name + '.txt', {
+      rows: rows.length,
+      note: rows.length ? '' : 'absent or empty — is this the folder the extract actually lands in?'
+    });
+  });
+
+  const wingOrgs = sigOrgMap_();
+  const foreign = {};
+  sigParseCapwatchFromFolder_(folderId, 'Organization').forEach(function (row) {
+    const orgid = String((row || [])[0] || '').trim();
+    if (orgid) foreign[orgid] = { name: String(row[5] || '').trim(), scope: String(row[9] || '').trim() };
+  });
+
+  const seen = [];
+  ['DutyPosition', 'CadetDutyPositions'].forEach(function (name) {
+    sigParseCapwatchFromFolder_(folderId, name).forEach(function (row) {
+      if (String((row || [])[0] || '').trim() !== capid) return;
+      const orgid = String(row[7] || '').trim();
+      const org = foreign[orgid];
+      seen.push({
+        duty: String(row[1] || '').trim(),
+        level: String(row[3] || '').trim(),
+        assistant: String(row[4] || '').trim() === '1',
+        orgid: orgid,
+        org: org ? org.scope + ' ' + org.name : '(no org row in this extract)',
+        verdict: wingOrgs[orgid]
+          ? 'SKIPPED — this org is in our own wing extract, which is authoritative'
+          : 'TAKEN — this is a duty our own pull cannot see'
+      });
+    });
+  });
+
+  Logger.info('4. Rows for this CAPID in the supplementary extract', {
+    capid: capid,
+    found: seen.length,
+    rows: seen,
+    note: seen.length ? '' :
+      'The extract was read but holds no duty rows for this CAPID. Either it is not ' +
+      'the region-wide pull, or it is stale.'
+  });
 }
 
 /**
@@ -237,8 +428,16 @@ function sigBuildMemberRecord_(capid) {
     suffix: String(row[5] || '').trim(),
     type: type,
     orgName: homeOrg ? homeOrg.name : '',
+    // The home org's echelon, so the signature's home-unit fallback can trim it
+    // the way it trims a duty's org. Mirrors createMemberObject() in src/.
+    orgScope: homeOrg ? homeOrg.scope : '',
     phone: sigDirectoryPhone_(capid, type),
-    dutyPositions: sigDutyPositions_(capid, orgs)
+    dutyPositions: sigDutyPositions_(capid, orgs),
+    // Kept apart from dutyPositions on purpose — the same separation src/ makes,
+    // where that array feeds directory titles and group matching. Here it costs
+    // nothing and keeps the two records the same shape, which is what the parity
+    // test compares.
+    outOfWingDutyPositions: sigOutOfWingDutyPositions_(capid, orgs)
   };
 }
 

@@ -3,9 +3,11 @@
  * Description: Per-tenant configuration for the member self-service email
  * signature web app.
  * Author: Maj Isaac Wilson IV, California Wing
- * Version: 1.0.0
- * Date: 2026-07-28
- * Changes: 1.0.0 — initial version.
+ * Version: 1.1.0
+ * Date: 2026-08-03
+ * Changes: 1.1.0 — REGION_CAPWATCH_DATA_FOLDER_ID, the optional region-wide
+ *            extract consulted for out-of-wing duties.
+ *          1.0.0 — initial version.
  ***********************************************/
 
 /**
@@ -48,6 +50,20 @@ function getSignatureWebAppConfig_() {
     SECONDARY_EMAIL_DOMAIN: get('TENANT_SECONDARY_EMAIL_DOMAIN'),
     /** Drive folder holding today's CAPWATCH extract. Read-only here. */
     CAPWATCH_DATA_FOLDER_ID: get('TENANT_CAPWATCH_DATA_FOLDER_ID'),
+
+    /**
+     * OPTIONAL region-wide extract, read-only, for duties this tenant's own pull
+     * cannot see.
+     *
+     * CAPWATCH scopes an extract to the echelon it was downloaded as, so a wing
+     * pull has no row for a member's REGION or NATIONAL assignment — it is not
+     * hidden, it is absent. The region tenant already downloads a region-wide
+     * extract; pointing this at that folder (shared read-only to this tenant's
+     * automation account) is what lets a wing member's region billet appear.
+     *
+     * Blank means the app behaves exactly as it did before this existed.
+     */
+    REGION_CAPWATCH_DATA_FOLDER_ID: get('TENANT_REGION_CAPWATCH_DATA_FOLDER_ID'),
     /** Two-letter wing code. Feeds the wing website line — see sigWingCode_(). */
     WING: wing,
 

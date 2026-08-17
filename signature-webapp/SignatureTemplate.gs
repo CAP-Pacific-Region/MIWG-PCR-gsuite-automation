@@ -107,6 +107,22 @@ function sigTitleCase_(str) {
  * @param {Object} dp - one entry of member.dutyPositions
  * @returns {string}
  */
+/**
+ * Every duty a signature may show: the tenant's own extract, plus the out-of-wing
+ * ones (region, national) that a wing CAPWATCH pull cannot see.
+ *
+ * The only place the two are merged. In src/ that separation is load-bearing —
+ * `dutyPositions` there also feeds the Workspace directory title and duty-group
+ * matching, and a region billet belongs in neither — so the port keeps the same
+ * shape rather than inventing a different one.
+ *
+ * @param {Object} member
+ * @returns {Array<Object>}
+ */
+function sigAllDuties_(member) {
+  return (member.dutyPositions || []).concat(member.outOfWingDutyPositions || []);
+}
+
 function sigDutyKey_(dp) {
   return [
     String((dp && dp.id) || '').trim(),
@@ -132,7 +148,7 @@ function sigDutyKey_(dp) {
  * @returns {string} HTML, or '' when there is no duty to show
  */
 function sigDutyBlock_(member) {
-  const all = member.dutyPositions || [];
+  const all = sigAllDuties_(member);
   const chosen = Array.isArray(member.selectedDutyKeys) ? member.selectedDutyKeys : null;
 
   const positions = chosen
@@ -181,9 +197,12 @@ function sigDutyBlock_(member) {
 function sigDutyLines_(picked, member) {
   return picked
     .map(dp => {
+      // dp.level is the same vocabulary as an org's scope and comes straight off
+      // the duty row, so it stands in when the org's own scope is missing —
+      // otherwise the echelon trim silently does nothing and the raw name ships.
       const org = dp.orgName
-        ? sigFormatOrgName_(dp.orgName, dp.orgScope)
-        : sigFormatOrgName_(member.orgName);
+        ? sigFormatOrgName_(dp.orgName, dp.orgScope || dp.level)
+        : sigFormatOrgName_(member.orgName, member.orgScope);
       return `${org} ${sigSignatureDutyTitle_(dp)}`;
     })
     .join('<br />');
@@ -230,6 +249,12 @@ function sigFormatOrgName_(orgName, scope) {
     const m = name.toUpperCase().match(/\b(WING|REGION)\b/);
     if (m) name = name.slice(0, m.index + m[1].length);
   }
+
+  // A trailing "CAP" is the organization's own initials ("PACIFIC REGION CAP"),
+  // which title-cases into a word — "Pacific Region Cap Director of Safety" — and
+  // repeats what the line below it already says in full. After the echelon trim,
+  // so it also catches a duty whose org scope did not survive the extract.
+  name = name.replace(/\s+CAP$/i, '');
 
   return sigTitleCase_(name)
     .split(/\s+/)
