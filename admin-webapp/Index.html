@@ -458,31 +458,90 @@ function renderWelcome(res) {
   el('welcomeSendBtn').className = 'danger hidden';
 }
 
+/**
+ * The group panel, driven by the SELECTED account's own membership and 2SV
+ * state.
+ *
+ * The 2SV setup group is not a general-purpose group and is not presented as
+ * one. It exists for the window while a member enrolls, which means there is a
+ * right answer at any moment — and the two facts that decide it (is 2SV on, are
+ * they in the group) are already on this page. An admin should not have to read
+ * a tag off the card above, hold it in their head, and pick between two
+ * identical buttons. So the panel says what state the member is in, and the
+ * action that state calls for is the primary button.
+ */
 function renderGroups(res) {
   var box = el('groupsBox');
-  var groups = (res && res.groups) || [];
-  if (!STATE.config || !STATE.config.managedGroups.length) {
-    box.className = 'hidden';
+  if (!STATE.config) { box.className = 'hidden'; return; }
+
+  if (!STATE.config.managedGroups.length) {
+    // Says so rather than vanishing. Everyone reading this page is an
+    // administrator, and a section that silently disappears reads as a broken
+    // page — which is exactly how this was first reported.
+    box.className = '';
+    el('groupList').innerHTML = '<span class="facts">No group is configured, so there is ' +
+      'nothing this page can add anyone to. Set <code>WEBAPP_2SV_SETUP_GROUP</code> in the ' +
+      'script\'s Script Properties (Project Settings), then reload — the app will not guess ' +
+      'at a group address.</span>';
     return;
   }
   box.className = '';
 
-  // Membership was resolved for the authoritative account. When the admin has
-  // selected a different one, say so rather than showing another account's state.
-  var stale = res && res.chosen && STATE.target && res.chosen !== STATE.target;
+  // Membership now comes from the selected account, not the authoritative one:
+  // a duplicate pair can differ in both 2SV and membership.
+  var account = ((res && res.accounts) || []).filter(function (a) {
+    return a.email === STATE.target;
+  })[0] || {};
+  var groups = account.groups || [];
 
   el('groupList').innerHTML = STATE.config.managedGroups.map(function (g) {
     var row = groups.filter(function (x) { return x.group === g; })[0] || {};
-    var label = (g === STATE.config.twoSvGroup) ? g + ' (2SV setup)' : g;
-    var state = row.error ? esc(row.error)
-      : stale ? 'membership shown for ' + esc(res.chosen)
-      : (row.member ? 'is a member' : 'not a member');
-    return '<div class="row" style="justify-content:space-between">' +
-      '<span><strong>' + esc(label) + '</strong><br><span class="facts">' + state + '</span></span>' +
-      '<span>' +
-      '<button class="grp" data-group="' + esc(g) + '" data-add="1">Add</button> ' +
-      '<button class="grp" data-group="' + esc(g) + '" data-add="0">Remove</button>' +
-      '</span></div>';
+    var isTwoSv = (g === STATE.config.twoSvGroup);
+    var member = row.member === true;
+
+    var label = esc(g) + (isTwoSv ? ' <span class="tag">2SV setup</span>' : '');
+    var state, advice, primary;
+
+    if (row.error) {
+      state = esc(row.error);
+      advice = '';
+      primary = null;
+    } else if (!isTwoSv) {
+      state = member ? 'is a member' : 'not a member';
+      advice = '';
+      primary = member ? 0 : 1;
+    } else if (!account.enrolledIn2Sv && !member) {
+      state = 'not a member';
+      advice = '2SV is <strong>off</strong> — add them while they enroll.';
+      primary = 1;
+    } else if (!account.enrolledIn2Sv && member) {
+      state = 'is a member';
+      advice = '2SV is still <strong>off</strong>. Leave them here until it is on.';
+      primary = null;
+    } else if (account.enrolledIn2Sv && member) {
+      state = 'is a member';
+      advice = '2SV is <strong>on</strong> — they no longer need the setup group.';
+      primary = 0;
+    } else {
+      state = 'not a member';
+      advice = '2SV is <strong>on</strong>. Nothing to do.';
+      primary = null;
+    }
+
+    // Both buttons are always present — an admin may have a reason the page
+    // cannot know — but the no-op one is disabled rather than silently
+    // succeeding, and the one this state calls for is the primary.
+    var addBtn = '<button class="grp' + (primary === 1 ? ' primary' : '') + '"' +
+      (member ? ' disabled' : '') +
+      ' data-group="' + esc(g) + '" data-add="1">Add</button>';
+    var remBtn = '<button class="grp' + (primary === 0 ? ' primary' : '') + '"' +
+      (member ? '' : ' disabled') +
+      ' data-group="' + esc(g) + '" data-add="0">Remove</button>';
+
+    return '<div class="row" style="justify-content:space-between;align-items:flex-start">' +
+      '<span><strong>' + label + '</strong><br><span class="facts">' + state +
+      (advice ? ' &middot; ' + advice : '') + '</span></span>' +
+      '<span style="white-space:nowrap">' + addBtn + ' ' + remBtn + '</span></div>';
   }).join('');
 
   Array.prototype.forEach.call(document.querySelectorAll('.grp'), function (b) {
@@ -604,13 +663,9 @@ function setGroup(group, add) {
 google.script.run
   .withSuccessHandler(function (config) {
     STATE.config = config;
-    if (!config.managedGroups.length) {
-      el('groupsBox').className = 'hidden';
-    } else if (STATE.lookup) {
-      // A fast typist can complete a lookup before this call returns, and the
-      // group panel needs the managed list to draw itself. Draw it now.
-      renderGroups(STATE.lookup);
-    }
+    // A fast typist can complete a lookup before this call returns, and the
+    // group panel needs the managed list to draw itself. Draw it now.
+    if (STATE.lookup) renderGroups(STATE.lookup);
     if (!config.auditVisible) {
       // Worth saying once: the sheet is where anyone would go looking, and its
       // absence is a configuration gap rather than a missing feature.

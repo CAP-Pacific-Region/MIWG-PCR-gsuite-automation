@@ -109,7 +109,6 @@ function apiLookup(query) {
     member: null,
     accounts: [],
     chosen: resolved.chosen ? resolved.chosen.email : '',
-    groups: [],
     welcome: null,
     // Set when the member belongs to a tenant this app does not serve; the page
     // shows it instead of "no account — that's a provisioning job", which would
@@ -158,6 +157,12 @@ function apiLookup(query) {
       changePasswordAtNextLogin: a.changePasswordAtNextLogin,
       orgUnitPath: a.orgUnitPath,
       recoveryEmail: a.recoveryEmail,
+      // Resolved PER ACCOUNT rather than only for the authoritative one. A
+      // duplicate pair can differ in both 2SV state and group membership, and
+      // showing one account's membership under another's radio button is how an
+      // admin ends up adding the wrong one. Costs accounts × managed-groups
+      // hasMember calls, and both numbers are 1 or 2 in practice.
+      groups: admManagedGroupMembership_(a.email),
       isChosen: !!resolved.chosen && a.email === resolved.chosen.email,
       // Told to the page so it can grey the buttons rather than let an admin
       // click into a refusal. The server refuses regardless — see
@@ -166,9 +171,6 @@ function apiLookup(query) {
     };
   });
 
-  if (resolved.chosen) {
-    out.groups = admManagedGroupMembership_(resolved.chosen.email);
-  }
   if (resolved.capid) {
     out.welcome = admWelcomeLedgerStatus_(resolved.capid);
   }
