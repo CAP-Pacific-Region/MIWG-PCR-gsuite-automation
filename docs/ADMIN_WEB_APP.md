@@ -194,7 +194,38 @@ not "cadets are somebody else's problem". An unrecognised type reads as *not*
 ours — the worst case is an unnecessary note above a member whose accounts are
 listed right below it. The table is compared against `src/config.gs` by the test.
 
-## 6. What the actions refuse, and why
+## 6. The 2SV setup group
+
+`WEBAPP_2SV_SETUP_GROUP` is not treated as a general-purpose group, because it
+is not one: it exists for the window while a member enrolls in 2SV, so at any
+moment there is a right answer. The panel states which of four states the member
+is in and makes the matching action the primary button.
+
+| Account state | Panel says | Primary |
+| --- | --- | --- |
+| 2SV off, not a member | 2SV is **off** — add them while they enroll | **Add** |
+| 2SV off, is a member | still off; leave them here until it is on | neither |
+| 2SV on, is a member | 2SV is **on** — they no longer need the setup group | **Remove** |
+| 2SV on, not a member | nothing to do | neither |
+
+Both buttons are always present — an admin may have a reason the page cannot
+know — but the no-op one is disabled rather than silently succeeding. Server
+side, add and remove remain **idempotent** in both directions: adding an existing
+member or removing a non-member reports success, so a stale page never punishes
+a repeated click.
+
+Membership is resolved **per account**, not once for the authoritative one: a
+duplicate pair can differ in both 2SV state and group membership, and showing
+one account's membership under another's radio button is how an admin ends up
+adding the wrong one. Membership is read with `hasMember`, so nested membership
+counts as membership.
+
+**If the panel says no group is configured**, `WEBAPP_2SV_SETUP_GROUP` is unset
+on that project — the app will not guess at a group address. It says so on the
+page rather than hiding the section, because a section that silently disappears
+reads as a broken page.
+
+## 7. What the actions refuse, and why
 
 The welcome resend carries the guards from `src/WelcomeEmailResend.gs`, because a
 resend is a **password reset plus a send** — the original temporary password was
@@ -220,7 +251,7 @@ A successful resend records the send in `WelcomeEmailLedger.txt` — the same fi
 reporting that member as MISSED. This is shared state: the format, including its
 version number, must match, and the test pins both.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 **"This page is not set up for … yet."** A required Script Property is unset. The
 names are in the execution log, not on the page — an admin cannot act on a
@@ -232,9 +263,11 @@ Google's internal names (`_HELP_DESK_ADMIN_ROLE`); custom roles use the name you
 gave them. A role lookup that *fails* also denies — look for
 `Role assignment lookup failed` in the log.
 
-**The group panel is missing.** `WEBAPP_2SV_SETUP_GROUP` is unset and no
-`WEBAPP_MANAGED_GROUPS` are configured. That is the fail-safe: the app will not
-guess at a group address.
+**The group panel says no group is configured.** `WEBAPP_2SV_SETUP_GROUP` is
+unset on that project, or set under a different name — check Project Settings →
+Script Properties, or run `checkAdminWebAppSetup()`, which prints the managed
+list. Properties are read at request time, so setting one needs a reload, not a
+redeploy.
 
 **"This app may only change membership of the groups it is configured for."** The
 group is not on the managed list. Widening the list is an Admin console edit, on

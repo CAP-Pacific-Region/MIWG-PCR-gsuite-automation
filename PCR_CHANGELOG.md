@@ -67,6 +67,30 @@ Seniors only for now, and **pushed** to project `1miHntSI…Sq6ub` on 2026-08-16
 Script Properties and the by-hand deployment are still outstanding; see
 [docs/ADMIN_WEB_APP.md](docs/ADMIN_WEB_APP.md).
 
+### Changed — the 2SV group panel follows the member's 2SV state
+
+Reported from live use: an admin saw **2SV off** on the account card and had nothing obvious
+to do about it — the group panel was a bare Add/Remove pair with no connection to the fact
+sitting directly above it.
+
+The 2SV setup group is not a general-purpose group and no longer looks like one. It covers
+the window while a member enrolls, so at any moment there is a right answer, and both facts
+that decide it are already on the page. The panel now names the state and makes the matching
+action primary: *2SV off and not a member* → **Add** ("add them while they enroll");
+*2SV on and still a member* → **Remove** ("they no longer need the setup group"); the other
+two states recommend nothing. Both buttons remain — an admin may have a reason the page
+cannot know — but the no-op one is disabled rather than silently succeeding. The server side
+was already idempotent in both directions and stays that way.
+
+Group membership is now resolved **per account** rather than once for the authoritative one.
+A duplicate pair can differ in both 2SV state and membership, and the previous build showed
+the authoritative account's membership under whichever radio button was selected, with a
+"membership shown for …" caveat papering over it. The caveat is gone because the gap is.
+
+With no group configured the section now **explains itself instead of vanishing**. Everyone
+reading this page is an administrator, and a section that silently disappears is
+indistinguishable from a broken page — which is exactly how this was first reported.
+
 ### Added — cadets in a name search are flagged and pointed at the cadet tools site
 
 CAPWATCH is scoped to the **wing**, not the tenant, so the seniors extract lists every cadet
