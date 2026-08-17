@@ -4,9 +4,13 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.13.0
- * Date: 2026-07-25
- * Changes: Added RETENTION_CONFIG.CC_DUTY_TITLES — the unit duty positions CC'd
+ * Version: 1.14.0
+ * Date: 2026-08-16
+ * Changes: Added the optional Script Property TENANT_2SV_SETUP_GROUP
+ *   (TENANT.TWO_SV_SETUP_GROUP), the 2SV setup group pruned nightly by
+ *   accounts-and-groups/TwoSvSetupGroup.gs. Blank — the default — disables that
+ *   prune; nothing else reads it, so an unset tenant is unaffected.
+ *   1.13.0: Added RETENTION_CONFIG.CC_DUTY_TITLES — the unit duty positions CC'd
  *   alongside the commander on retention mail, per email type. Turning 18/21 adds
  *   the Deputy Commander for Cadets; renewals add the Recruiting Officer.
  *   1.12.0: Added PROFILE_.RUN_RETENTION_EMAILS — true on seniors, false on cadets
@@ -157,6 +161,14 @@ function getTenantConfig_() {
     // deliberate act rather than something a deploy does quietly. Consumed by
     // squadron-groups/SquadronGroups.gs.
     RECRUITING_MAILBOX: get('TENANT_RECRUITING_MAILBOX'),
+    // The 2SV setup group — the holding pen that exempts a member from 2SV
+    // enforcement while they enroll. accounts-and-groups/TwoSvSetupGroup.gs
+    // prunes it nightly; BLANK DISABLES that prune rather than guessing at an
+    // address, because the guess would be a group whose membership is a security
+    // exemption. NB the help-desk app (admin-webapp/) is a separate Apps Script
+    // project and reads the same address from its own WEBAPP_2SV_SETUP_GROUP
+    // property — set both, to the same group.
+    TWO_SV_SETUP_GROUP: get('TENANT_2SV_SETUP_GROUP'),
     DIRECTOR_RECRUITING_EMAIL: get('TENANT_DIRECTOR_RECRUITING_EMAIL'),
     // Signature name rendered into the member-facing retention templates
     // ({{directorName}}). Like the address above this is an individual, so it is
@@ -493,6 +505,7 @@ function setupTenantConfig() {
     TENANT_RETENTION_LOG_SPREADSHEET_ID: '',
     TENANT_RETENTION_EMAIL: '',
     TENANT_RECRUITING_MAILBOX: '',         // wing recruiting mailbox added to every squadron public-contact group; '' disables
+    TENANT_2SV_SETUP_GROUP: '',            // e.g. ca.2sv-setup@cawgcap.org; '' disables the nightly prune. Same address as the help-desk app's WEBAPP_2SV_SETUP_GROUP
     TENANT_DIRECTOR_RECRUITING_EMAIL: '',
     TENANT_DIRECTOR_RECRUITING_NAME: '',   // e.g. Maj Jane Doe; '' signs retention mail with the office title only
     TENANT_AUTOMATION_SENDER_EMAIL: '',

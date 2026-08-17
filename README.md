@@ -206,10 +206,11 @@ blackout, so downloads run after ~4 AM and everything else consumes the data aft
 | 4 | `updateEmailGroups()` | Daily 5–6 AM | Wing / duty / specialty distribution groups |
 | 5 | `updateAllSquadronGroups()` | Daily 6–7 AM | Per-squadron lists; batched via `SQUADRON_BATCH_INDEX` |
 | 6 | `updateAdditionalGroupMembers()` | Daily 6–7 AM | Manual additions from the `User Additions` sheet |
-| 7 | `syncMemberCalendarsDaily()` | Daily | Share unit calendars with new/transferred members |
-| 8 | `updateChatSpaces()` | Daily/weekly | Squadron & committee Chat spaces |
-| 9 | `updateResources()` | Weekly (Sun) | Aircraft/vehicle resources + buildings — **seniors only** |
-| 10 | `manageLicenseLifecycle()` | Monthly | Reactivate renewed; delete long-ineligible to free seats |
+| 7 | `pruneTwoSvSetupGroup()` | Daily 8–9 AM | Remove from the 2SV setup group on enrollment, or after 7 days — whichever first. `TENANT_2SV_SETUP_GROUP` blank = off |
+| 8 | `syncMemberCalendarsDaily()` | Daily | Share unit calendars with new/transferred members |
+| 9 | `updateChatSpaces()` | Daily/weekly | Squadron & committee Chat spaces |
+| 10 | `updateResources()` | Weekly (Sun) | Aircraft/vehicle resources + buildings — **seniors only** |
+| 11 | `manageLicenseLifecycle()` | Monthly | Reactivate renewed; delete long-ineligible to free seats |
 
 Cross-tenant (`updateCAWGCadetGroups()`, `syncCrossTenantContacts`) and region-only functions
 (`updateRegionGroupChats()`, `buildRegionUnitVisitReport()`, `runExternalContactsToDomainSharedContacts()`)

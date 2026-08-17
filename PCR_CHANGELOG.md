@@ -10,6 +10,50 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-16] — the 2SV setup exemption stops being permanent
+
+### Added — `src/accounts-and-groups/TwoSvSetupGroup.gs` 1.0.0: a nightly prune of the 2SV setup group
+
+Membership of the 2SV setup group is a **security exemption**: it holds a member out of 2SV
+enforcement for the window while they enroll. The help-desk app parks them there one at a
+time, and nothing ever took them back out. An exemption granted for an afternoon quietly
+became permanent — on precisely the accounts that have no second factor, which is why they
+were put there.
+
+`pruneTwoSvSetupGroup()` cross-references the group against 2SV enrollment nightly and
+removes a member when **either** condition lands, whichever is first:
+
+| Condition | Reason logged |
+|---|---|
+| enrolled in 2SV | `2sv-enrolled` |
+| 7 days elapsed, still not enrolled | `grace-expired` |
+
+Enrollment wins even on the day the member was added — the group's whole purpose has been
+served at that point.
+
+**Why a ledger.** `AdminDirectory.Members` carries no join timestamp, so "when was this
+member added?" cannot be answered from the directory; the Reports API keeps admin activity
+for six months but is a much heavier read for a group meant to hold a handful of people. So
+each run stamps a first-seen date into `TwoSvSetupGroupLedger.txt` (CAPWATCH data folder)
+for members it has not seen before, and the grace clock runs from there. **Members already
+in the group when this first runs therefore get a full window from that first run, not from
+whenever they were really added.** That is the safe direction to be wrong in — the
+alternative is pulling the exemption out from under someone mid-enrollment — and it
+self-corrects after one window. Leaving the group drops the ledger entry, so being parked
+again later starts a fresh window rather than inheriting an expired one.
+
+**What it will not do**, each pinned in `test/TwoSvSetupGroup.test.js`: end an exemption on
+a 2SV read that *failed* (unreadable state is `null`, never `false` — but the grace clock
+still applies, so it cannot keep anyone exempt forever either); touch a nested group or any
+non-USER member; or restart the clock for a removal that failed, which would let a failing
+removal renew the exemption it was trying to end.
+
+`TENANT_2SV_SETUP_GROUP` (config.gs 1.14.0) is the group address and **blank disables the
+module** — this one will not guess at an address. The help-desk app is a separate script
+project and reads the same group as `WEBAPP_2SV_SETUP_GROUP`; set both. Run
+`previewTwoSvSetupGroup()` once before arming the daily trigger (Admin Guide §8, slot 9) to
+see who the first night would take out.
+
 ## [2026-08-16] — the help desk stops going through one person
 
 ### Added — `admin-webapp/` 1.0.0: a domain admin page for per-member account operations

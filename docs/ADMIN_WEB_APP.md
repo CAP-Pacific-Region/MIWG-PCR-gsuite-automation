@@ -220,6 +220,14 @@ one account's membership under another's radio button is how an admin ends up
 adding the wrong one. Membership is read with `hasMember`, so nested membership
 counts as membership.
 
+**Nobody has to remember to take them back out.** The main automation project prunes this
+group nightly (`pruneTwoSvSetupGroup()` in `src/accounts-and-groups/TwoSvSetupGroup.gs`):
+a member leaves it the night they enroll in 2SV, or after 7 days, whichever comes first. The
+Remove button here is still worth pressing when an admin watches the member finish — it just
+is no longer the only thing standing between an afternoon's exemption and a permanent one.
+That job reads the group address from **its own** project's `TENANT_2SV_SETUP_GROUP`
+property, so set both to the same group ([Admin Guide §7–8](ADMIN_GUIDE.md)).
+
 **If the panel says no group is configured**, `WEBAPP_2SV_SETUP_GROUP` is unset
 on that project — the app will not guess at a group address. It says so on the
 page rather than hiding the section, because a section that silently disappears
