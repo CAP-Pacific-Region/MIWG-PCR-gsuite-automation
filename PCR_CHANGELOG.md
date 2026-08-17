@@ -10,6 +10,113 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-16] — the help desk stops going through one person
+
+### Added — `admin-webapp/` 1.0.0: a domain admin page for per-member account operations
+
+Wing IT volunteers hold Google's **Help Desk Administrator** role, which covers a password
+reset from the Admin console and nothing else this automation does. Resending the welcome
+email an out-of-band account never received, parking a member in the 2SV setup group,
+finding out *which* of a member's two accounts is the live one — each of those meant asking
+the one person with Apps Script editor access to run a function by hand. That is a
+bottleneck made of one person, and the editor is not somewhere a help-desk volunteer
+belongs: every function in `src/` is one mis-click from a wing-wide run.
+
+`admin-webapp/` is a **fourth standalone script project** (after `src/`, `signature-webapp/`,
+and the alias admin UI that was never merged). One `doGet` per project is the mechanical
+reason; the useful one is that its OAuth scopes are the four actions' and no more — no
+calendar, no chat, no shared contacts, no group *settings*.
+
+Four actions, each scoped to one member: **look up** (CAPWATCH record + every account
+carrying that CAPID, with suspension, 2SV, last sign-in, admin flags, managed-group
+membership and the welcome-ledger verdict), **reset password**, **resend welcome email**,
+**group add/remove**.
+
+**Two gates make it safe to delegate**, and both live in `Auth.gs`:
+
+- *Who may call* — a super admin, or the holder of a directory role in `WEBAPP_ADMIN_ROLES`
+  (default `_HELP_DESK_ADMIN_ROLE`). Roles rather than a maintained group of names, because
+  the Admin console already records this: a volunteer who loses the role loses the app the
+  same day, with nobody remembering to edit anything. A role lookup that *fails* denies.
+- *Whom they may act on* — a non-super-admin may not act on **another admin's account**.
+  This mirrors Google's own rule, and without it a help-desk volunteer could reset a super
+  admin's password here and then sign in as them.
+
+Two further boundaries: `WEBAPP_MANAGED_GROUPS` (plus the 2SV group) is an allow-list
+checked against the address the *browser* sends, so the page cannot be used to join any
+group in the domain; and credentials are never mailed to an address on our own domains —
+not the account being reset, not the secondary domain — which is the rule that makes a
+"sent" welcome email mean anything.
+
+Every action writes one audit row naming the admin, the account and the outcome, to the
+execution log always and to a sheet tab when `TENANT_AUTOMATION_SPREADSHEET_ID` is set.
+The platform's own log names only the DEPLOYER — the app executes as them — so without this
+the one question that matters about a delegated tool has no answer. **The temporary password
+is never recorded**: it exists in the admin's browser and, if mailed, the member's inbox.
+
+**Four things are copies of `src/`** — the welcome template, the resend eligibility policy,
+the authoritative-account ranking, and the welcome-ledger format (which is *shared state*: a
+resend from here records into `WelcomeEmailLedger.txt` so the monthly audit stops reporting
+that member as MISSED). `test/AdminWebApp.test.js` runs both copies over the same inputs and
+fails on divergence; its header records what each drift would cost. Two refusal *sentences*
+differ on purpose — `src/` tells an operator to "pass `{force: true}`", which is meaningless
+next to a checkbox — and those two are pinned by name so a third divergence cannot arrive
+quietly.
+
+Seniors only for now, and **pushed** to project `1miHntSI…Sq6ub` on 2026-08-16 — code only.
+Script Properties and the by-hand deployment are still outstanding; see
+[docs/ADMIN_WEB_APP.md](docs/ADMIN_WEB_APP.md).
+
+### Changed — the 2SV group panel follows the member's 2SV state
+
+Reported from live use: an admin saw **2SV off** on the account card and had nothing obvious
+to do about it — the group panel was a bare Add/Remove pair with no connection to the fact
+sitting directly above it.
+
+The 2SV setup group is not a general-purpose group and no longer looks like one. It covers
+the window while a member enrolls, so at any moment there is a right answer, and both facts
+that decide it are already on the page. The panel now names the state and makes the matching
+action primary: *2SV off and not a member* → **Add** ("add them while they enroll");
+*2SV on and still a member* → **Remove** ("they no longer need the setup group"); the other
+two states recommend nothing. Both buttons remain — an admin may have a reason the page
+cannot know — but the no-op one is disabled rather than silently succeeding. The server side
+was already idempotent in both directions and stays that way.
+
+Group membership is now resolved **per account** rather than once for the authoritative one.
+A duplicate pair can differ in both 2SV state and membership, and the previous build showed
+the authoritative account's membership under whichever radio button was selected, with a
+"membership shown for …" caveat papering over it. The caveat is gone because the gap is.
+
+With no group configured the section now **explains itself instead of vanishing**. Everyone
+reading this page is an administrator, and a section that silently disappears is
+indistinguishable from a broken page — which is exactly how this was first reported.
+
+### Added — cadets in a name search are flagged and pointed at the cadet tools site
+
+CAPWATCH is scoped to the **wing**, not the tenant, so the seniors extract lists every cadet
+in the wing and a name search returns all of them — none with an account here to act on.
+Reported from the first real use of the page.
+
+They are flagged rather than filtered: an admin who searched a name and got nothing back
+would conclude the member does not exist, and one shown "no Workspace account" would
+conclude it needs provisioning and go create one **on the wrong tenant**. Candidates now
+carry an *other Workspace* tag with a count beneath the list; opening one replaces the
+"no account" message with a note naming `WEBAPP_CADET_TOOLS_URL` as a link, repeated inside
+the member card because a banner is replaced by the next action's result and this fact is not.
+
+The rule is derived from `TENANT_PROFILE` against a copy of `MEMBER_TYPES_ACTIVE`, not
+hardcoded to "cadet": **the region profile provisions cadets too**, so hardcoding would have
+broken that tenant the day it deployed. The test compares the table against `src/config.gs`.
+An unrecognised type reads as *not* ours — the worst case is a redundant note above a member
+whose accounts are listed right below it, rather than a help desk quietly failing on someone.
+A member who *does* hold an account here despite the flag (a cadet-to-senior transition in
+flight) keeps the full action set, with the note saying so.
+
+One naming trap worth recording: `Credentials.gs` holds the welcome email and would rather be
+called `WelcomeEmail.gs`. It cannot — Apps Script addresses files without their extension, so
+that name collides with `WelcomeEmail.html` and the push is rejected wholesale with *"A file
+with this name already exists"*.
+
 ## [2026-07-31] — two spellings, one mailbox
 
 ### Fixed — UpdateGroups.gs 1.11.0: membership compared on account identity, not string equality

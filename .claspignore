@@ -7,3 +7,6 @@
 # src/ never collects these files and a push of signature-webapp/ never collects
 # src/.
 !signature-webapp/**
+# ...and admin-webapp/, the domain admin help-desk app. Also a SEPARATE script
+# project with its own clasp target and rootDir.
+!admin-webapp/**

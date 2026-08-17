@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css?family=Rajdhani:700|Ubuntu:400,700" rel="stylesheet" type="text/css">
+    <style>
+        body {
+            font-family: "Ubuntu", sans-serif;
+            line-height: 1.6;
+            color: #000000;
+            margin: 0;
+            padding: 0;
+            background-color: #ececec;
+        }
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+        }
+        .header {
+            background-color: #001871;
+            color: #ffffff;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            font-family: "Rajdhani", sans-serif;
+            font-weight: 700;
+            font-size: 28px;
+            margin: 0;
+            letter-spacing: 1px;
+        }
+        .content {
+            padding: 30px 20px;
+            font-size: 16px;
+        }
+        .content p {
+            margin: 0 0 15px 0;
+        }
+        .user-box {
+            background-color: #f3f6ff;
+            border-left: 4px solid #001871;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        .user-box strong {
+            color: #001871;
+        }
+        .footer {
+            background-color: #001871;
+            color: #ffffff;
+            padding: 20px;
+            text-align: center;
+            font-size: 14px;
+        }
+        @media only screen and (max-width: 600px) {
+            .header h1 { font-size: 24px; }
+            .content { padding: 20px 15px; }
+        }
+    </style>
+</head>
+<body>
+<div class="email-container">
+
+    <div class="header">
+        <h1>WELCOME TO {{WING}}WG GOOGLE WORKSPACE</h1>
+    </div>
+
+    <div class="content">
+        <p class="greeting"><strong>{{rank}} {{firstName}} {{lastName}}</strong>,</p>
+
+        <p>This welcome message has been delivered to your primary and secondary email addresses on file. If this is not correct, please update your contact information in eServices.</p>
+
+        <p>{{WING}}WG is proud to provide each of our members with a Google Workspace account in order
+            to provide the highest level of security to our members and our customers.</p>
+
+        <p>Below you will find a user name and temporary password (expires in 90 days) for your
+            {{WING}}WG Email Account.</p>
+
+        <div class="user-box">
+            <p><strong>Account information:</strong></p>
+            <p><strong>User Name:</strong> {{email}}</p>
+            <p><strong>Temporary Password:</strong> {{password}}</p>
+        </div>
+
+        <div class="user-box">
+            <p><strong>eServices Information:</strong></p>
+            <p><strong>eServices primary Email:</strong> {{primaryEmail}}</p>
+            <p><strong>eServices secondary Email:</strong> {{secondaryEmail}}</p>
+        </div>
+
+        <p>When you are ready to sign in, please navigate to the
+            <strong>Google Workspace Portal</strong>:</p>
+
+        <p>
+            <a href="https://accounts.google.com/AccountChooser?hd={{DOMAIN}}">
+                https://accounts.google.com/AccountChooser?hd={{DOMAIN}}
+            </a>
+        </p>
+
+        <p>Enter the username and temporary password above. You will then be prompted to change your
+            password and complete your account security setup. Once you have logged in, go to
+            <a href="https://myaccount.google.com/signinoptions/two-step-verification">turn on Two-Step Verification</a>
+            as this is required to retain access to your account.</p>
+
+        <p>If you need additional help after signing in, please view the Google Workspace Quick
+            Reference here:</p>
+
+        <p>
+            <a href="https://sites.google.com/cawgcap.org/cawgintranet/cawg-help-desk/google-workspace">
+                Click for Google Workplace Quick Reference
+            </a>
+        </p>
+
+        <p>If further assistance is needed, please submit a support ticket:</p>
+
+        <p><strong>IT Support:</strong> <a href="https://support.pcrcap.org">https://support.pcrcap.org</a></p>
+
+        <p>Regards,<br>
+            <strong>{{WING}}WG IT Team</strong></p>
+    </div>
+
+    <div class="footer">
+        Civil Air Patrol • {{WING}}WG<br>
+        Questions? Reply to this email
+    </div>
+
+</div>
+</body>
+</html>
