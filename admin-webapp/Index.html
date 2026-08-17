@@ -1,0 +1,625 @@
+<!--
+  File: Index.html
+  Description: Single-page UI for the domain admin help-desk app. Talks to
+  AdminApi.gs over google.script.run and holds no authority of its own: the
+  caller's identity comes from the signed-in session server-side, every target is
+  re-resolved from the directory before anything happens to it, and the group
+  addresses this page offers are checked against the managed list again on the
+  server. Greying a button here is a courtesy, never a control.
+  Author: Maj Isaac Wilson IV, California Wing
+  Version: 1.0.0
+  Date: 2026-08-16
+  Changes: 1.0.0 — initial version.
+-->
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    :root {
+      --ink: #1f2328; --muted: #59636e; --line: #d8dee4; --bg: #fff;
+      --accent: #0a3d62; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+      --chip: #f6f8fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 1.5rem; background: var(--bg); color: var(--ink);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    .wrap { max-width: 820px; margin: 0 auto; }
+    header { border-bottom: 1px solid var(--line); padding-bottom: .9rem; margin-bottom: 1.4rem; }
+    h1 { margin: 0 0 .2rem; font-size: 1.35rem; }
+    .sub { color: var(--muted); font-size: .875rem; }
+    h2 { font-size: 1rem; margin: 1.8rem 0 .6rem; }
+
+    .banner { padding: .7rem .9rem; border-radius: 6px; margin-bottom: 1rem; font-size: .875rem; }
+    .banner.warn { background: #fff8c5; border: 1px solid #d4a72c; color: #4d2d00; }
+    .banner.bad { background: #ffebe9; border: 1px solid #ff818266; color: #82071e; }
+    .banner.ok { background: #dafbe1; border: 1px solid #1a7f3733; color: #0a3622; }
+    .banner.hidden, .hidden { display: none; }
+
+    .card { border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; margin-bottom: .8rem; }
+    .card dl { margin: 0; display: grid; grid-template-columns: 9.5rem 1fr; gap: .35rem .8rem; font-size: .9rem; }
+    .card dt { color: var(--muted); }
+    .card dd { margin: 0; }
+    .note { color: var(--muted); font-size: .8rem; margin-top: .7rem; }
+
+    .acct { border: 1px solid var(--line); border-radius: 8px; padding: .8rem .9rem; margin-bottom: .6rem; }
+    .acct.chosen { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+    .acct label { display: flex; gap: .55rem; align-items: flex-start; cursor: pointer; }
+    .acct .addr { font-weight: 600; }
+    .acct .facts { font-size: .82rem; color: var(--muted); margin-top: .25rem; }
+    .tag {
+      display: inline-block; font-size: .72rem; padding: .05rem .4rem; border-radius: 999px;
+      border: 1px solid var(--line); background: var(--chip); margin-right: .3rem;
+    }
+    .tag.bad { border-color: #ff818266; background: #ffebe9; color: #82071e; }
+    .tag.warn { border-color: #d4a72c; background: #fff8c5; color: #4d2d00; }
+    .tag.ok { border-color: #1a7f3733; background: #dafbe1; color: #0a3622; }
+
+    .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: .8rem; }
+    input[type=text] {
+      font: inherit; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 6px;
+      min-width: 22rem; flex: 1;
+    }
+    button {
+      font: inherit; padding: .5rem 1rem; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger { background: #ffebe9; border-color: #ff818266; color: #82071e; }
+    button:disabled { opacity: .5; cursor: default; }
+    button.link {
+      border: 0; background: none; color: var(--accent); padding: 0; text-decoration: underline;
+    }
+    label.toggle { display: flex; gap: .5rem; align-items: center; font-size: .875rem; cursor: pointer; }
+    .spinner { color: var(--muted); font-size: .85rem; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.05em;
+      background: var(--chip); padding: .15rem .35rem; border-radius: 4px;
+    }
+    ul.plain { margin: .3rem 0 0; padding-left: 1.1rem; font-size: .875rem; }
+    .foot {
+      margin-top: 2.2rem; padding-top: .9rem; border-top: 1px solid var(--line);
+      color: var(--muted); font-size: .8rem;
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><?= orgLabel ?> Account Admin</h1>
+    <div class="sub">
+      Signed in as <?= actor ?> &middot; every action on this page is recorded
+      against your name.
+    </div>
+  </header>
+
+  <div id="flash" class="banner hidden"></div>
+
+  <div class="row">
+    <input type="text" id="query" placeholder="CAPID, email address, or name" autofocus>
+    <button class="primary" id="lookupBtn">Look up</button>
+    <span class="spinner hidden" id="lookupSpin">Searching&hellip;</span>
+  </div>
+  <p class="note">
+    A CAPID goes straight to the member. An address looks up whoever holds it. A
+    name returns a list to pick from &mdash; nothing acts on a name.
+  </p>
+
+  <div id="results" class="hidden">
+    <div id="candidates" class="hidden">
+      <h2>Which member?</h2>
+      <div id="candidateList"></div>
+      <p class="note" id="candidateNote"></p>
+    </div>
+
+    <div id="memberBox" class="hidden">
+      <h2>CAPWATCH</h2>
+      <div class="card" id="memberCard"></div>
+    </div>
+
+    <div id="accountsBox" class="hidden">
+      <h2>Workspace accounts</h2>
+      <div id="accountList"></div>
+      <p class="note" id="accountNote"></p>
+    </div>
+
+    <div id="actionsBox" class="hidden">
+      <h2>Reset password</h2>
+      <div class="card">
+        <div>Issues a new temporary password for <strong id="pwTarget"></strong> and
+          requires a change at next sign-in.</div>
+        <div class="row">
+          <label class="toggle">
+            <input type="checkbox" id="pwEmail">
+            <span>Also email it to the member&rsquo;s eServices address</span>
+          </label>
+        </div>
+        <div class="row">
+          <button class="danger" id="pwBtn">Reset password</button>
+          <span class="spinner hidden" id="pwSpin">Resetting&hellip;</span>
+        </div>
+        <div id="pwResult" class="hidden">
+          <p class="row"><code id="pwValue"></code>
+            <button class="link" id="pwCopy">copy</button></p>
+          <p class="note">
+            This is the only time it is shown. Nothing stores it &mdash; not this page,
+            not the audit log. If it is lost, reset again.
+          </p>
+        </div>
+        <p class="note">
+          The member&rsquo;s own <?= orgLabel ?> mailbox is never a recipient: credentials
+          cannot be mailed into the mailbox they unlock.
+        </p>
+      </div>
+
+      <h2>Welcome email</h2>
+      <div class="card" id="welcomeCard">
+        <div id="welcomeLedger" class="note"></div>
+        <div id="welcomeVerdict"></div>
+        <div class="row">
+          <label class="toggle">
+            <input type="checkbox" id="welcomeForce">
+            <span>Force past the guards</span>
+          </label>
+        </div>
+        <div class="row">
+          <button id="welcomePreviewBtn">Check</button>
+          <button class="danger hidden" id="welcomeSendBtn">Reset password and send</button>
+          <span class="spinner hidden" id="welcomeSpin">Working&hellip;</span>
+        </div>
+        <p class="note">
+          A resend is a password reset plus a fresh send &mdash; the original temporary
+          password was never stored, so nothing else is possible. That is why it
+          refuses an account someone is already signing into unless you force it.
+        </p>
+      </div>
+
+      <div id="groupsBox">
+        <h2>Groups</h2>
+        <div class="card" id="groupList"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="foot">
+    Actions here run with the deploying account&rsquo;s directory rights, not yours,
+    and each one is written to the log with your address, the account you acted on,
+    and what happened.
+  </footer>
+</div>
+
+<script>
+var STATE = { config: null, lookup: null, target: '' };
+
+function el(id) { return document.getElementById(id); }
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function flash(message, kind) {
+  var f = el('flash');
+  f.textContent = message;
+  f.className = 'banner ' + (kind || 'ok');
+  window.scrollTo(0, 0);
+}
+
+function clearFlash() { el('flash').className = 'banner hidden'; }
+
+/**
+ * The "this member is on the other Workspace" banner. Rendered as markup rather
+ * than text so the cadet tools site is a link — an admin who has to retype a URL
+ * from a banner will just go and ask someone instead.
+ */
+function flashElsewhere(sentence) {
+  var f = el('flash');
+  var url = STATE.config && STATE.config.cadetToolsUrl;
+  f.innerHTML = url
+    ? esc(sentence.replace(url, '')).replace(/\s+$/, '') +
+      ' <a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>'
+    : esc(sentence);
+  f.className = 'banner warn';
+  window.scrollTo(0, 0);
+}
+
+/**
+ * google.script.run failures arrive as an Error whose message is whatever the
+ * server threw — which for this app is always a sentence written for the admin
+ * reading it (see requireAdmin_ and the guards in Actions.gs). Show it as-is.
+ */
+function failure(err) {
+  flash(err && err.message ? err.message : String(err), 'bad');
+}
+
+function busy(spinnerId, buttons, on) {
+  el(spinnerId).className = on ? 'spinner' : 'spinner hidden';
+  buttons.forEach(function (id) { el(id).disabled = on; });
+}
+
+function shortDate(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  return isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 10);
+}
+
+// ---------------------------------------------------------------- lookup
+
+function lookup(query) {
+  clearFlash();
+  el('query').value = query;
+  busy('lookupSpin', ['lookupBtn'], true);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      busy('lookupSpin', ['lookupBtn'], false);
+      render(res);
+    })
+    .withFailureHandler(function (err) {
+      busy('lookupSpin', ['lookupBtn'], false);
+      failure(err);
+    })
+    .apiLookup(query);
+}
+
+function render(res) {
+  STATE.lookup = res;
+  el('results').className = '';
+
+  renderCandidates(res);
+  renderMember(res);
+  renderAccounts(res);
+
+  if (res.kind === 'no-such-account') {
+    flash('No account with that address exists in this directory.', 'warn');
+  } else if (res.kind === 'ambiguous-capid') {
+    flash('That account carries more than one CAPID, so it cannot be resolved to a ' +
+      'single member. Look the member up by CAPID instead.', 'warn');
+  } else if (res.elsewhere && !res.accounts.length) {
+    // Said first and INSTEAD OF "no account": a cadet has no account *here*, and
+    // telling a help desk that this is a provisioning gap would send them off to
+    // create one on the wrong Workspace. When such a member does have an account
+    // here, the card's own notice covers it and this banner would overstate the
+    // case, so it is skipped.
+    flashElsewhere(res.elsewhere);
+  } else if (res.kind === 'member' && !res.accounts.length) {
+    flash('This member has no Workspace account. That is a provisioning job, not a ' +
+      'help-desk one — nothing on this page will create one.', 'warn');
+  } else if (res.kind === 'candidates' && !res.candidates.length) {
+    flash('Nothing in CAPWATCH matches that name.', 'warn');
+  }
+}
+
+function renderCandidates(res) {
+  var box = el('candidates');
+  if (res.kind !== 'candidates' || !res.candidates.length) {
+    box.className = 'hidden';
+    return;
+  }
+  box.className = '';
+  el('candidateList').innerHTML = res.candidates.map(function (c) {
+    // CAPWATCH is scoped to the WING, so a name search on the seniors tenant
+    // finds every cadet in the wing too. Marked here rather than filtered out:
+    // an admin who searched a name and got nothing would conclude the member
+    // does not exist, when they are simply on the other Workspace.
+    var tag = c.offTenant
+      ? ' <span class="tag warn">other Workspace</span>'
+      : '';
+    return '<div class="acct"><div class="addr">' + esc(c.name) + tag + '</div>' +
+      '<div class="facts">CAPID ' + esc(c.capid) + ' &middot; ' + esc(c.type || '') +
+      ' &middot; ' + esc(c.status || '') + '</div>' +
+      '<div class="row"><button class="pick" data-capid="' + esc(c.capid) + '">Open</button></div></div>';
+  }).join('');
+
+  var offTenant = res.candidates.filter(function (c) { return c.offTenant; }).length;
+  el('candidateNote').innerHTML = offTenant
+    ? offTenant + ' of these ' + (offTenant === 1 ? 'is' : 'are') + ' on another Workspace — ' +
+      'CAPWATCH covers the whole wing, this page covers one tenant. Opening one will say ' +
+      'where to go instead.'
+    : '';
+
+  Array.prototype.forEach.call(document.querySelectorAll('.pick'), function (b) {
+    b.onclick = function () { lookup(b.getAttribute('data-capid')); };
+  });
+}
+
+function renderMember(res) {
+  var box = el('memberBox');
+  if (!res.member) { box.className = 'hidden'; return; }
+  box.className = '';
+
+  var m = res.member;
+  var dnc = function (flag) {
+    return flag ? ' <span class="tag warn">do not contact</span>' : '';
+  };
+  // Repeated inside the card, not only in the banner: the banner is replaced by
+  // the next action's result, and this fact does not stop being true.
+  var elsewhere = '';
+  if (m.offTenant) {
+    elsewhere = '<div class="banner warn">' + esc(res.elsewhere || '') +
+      (STATE.config && STATE.config.cadetToolsUrl
+        ? ' <a href="' + esc(STATE.config.cadetToolsUrl) + '" target="_blank" rel="noopener">Open it</a>'
+        : '') +
+      (res.accounts.length
+        ? ' <strong>This member does also hold an account on this Workspace</strong>, shown ' +
+          'below — unusual, and normally a cadet-to-senior transition in progress. The ' +
+          'actions below act on that account only.'
+        : '') +
+      '</div>';
+  }
+
+  el('memberCard').innerHTML = elsewhere +
+    '<dl>' +
+    '<dt>Name</dt><dd>' + esc(m.name) +
+      (m.offTenant ? ' <span class="tag warn">other Workspace</span>' : '') + '</dd>' +
+    '<dt>CAPID</dt><dd>' + esc(m.capid) + '</dd>' +
+    '<dt>Type / status</dt><dd>' + esc(m.type || '—') + ' &middot; ' +
+      esc(m.status || '—') + (m.expiration ? ' (expires ' + esc(m.expiration) + ')' : '') + '</dd>' +
+    '<dt>Unit</dt><dd>' + esc(m.orgName || '—') +
+      (m.charter ? ' (' + esc(m.charter) + ')' : '') + '</dd>' +
+    '<dt>eServices primary</dt><dd>' + (esc(m.email) || '—') + dnc(m.primaryEmailDNC) + '</dd>' +
+    '<dt>eServices secondary</dt><dd>' + (esc(m.secondaryEmail) || '—') + dnc(m.secondaryEmailDNC) + '</dd>' +
+    '</dl>' +
+    '<p class="note">From today&rsquo;s CAPWATCH extract. Corrections are made in ' +
+    'eServices and arrive with the next daily pull.</p>';
+}
+
+function renderAccounts(res) {
+  var box = el('accountsBox');
+  if (!res.accounts.length) {
+    box.className = 'hidden';
+    el('actionsBox').className = 'hidden';
+    return;
+  }
+  box.className = '';
+
+  el('accountList').innerHTML = res.accounts.map(function (a, i) {
+    var tags = [];
+    if (a.suspended) tags.push('<span class="tag bad">suspended</span>');
+    if (a.archived) tags.push('<span class="tag bad">archived</span>');
+    if (a.superAdmin) tags.push('<span class="tag warn">super admin</span>');
+    else if (a.admin) tags.push('<span class="tag warn">admin</span>');
+    tags.push(a.enrolledIn2Sv
+      ? '<span class="tag ok">2SV on</span>'
+      : '<span class="tag warn">2SV off</span>');
+    if (a.neverSignedIn) tags.push('<span class="tag warn">never signed in</span>');
+    if (a.changePasswordAtNextLogin) tags.push('<span class="tag">must change password</span>');
+    if (a.isChosen && res.accounts.length > 1) tags.push('<span class="tag ok">authoritative</span>');
+
+    var facts = [
+      a.fullName,
+      'created ' + (shortDate(a.created) || '?'),
+      a.neverSignedIn ? 'never signed in' : 'last sign-in ' + shortDate(a.lastLogin),
+      a.orgUnitPath || '/'
+    ].filter(Boolean).join(' &middot; ');
+
+    return '<div class="acct' + (a.isChosen ? ' chosen' : '') + '">' +
+      '<label><input type="radio" name="target" value="' + esc(a.email) + '"' +
+      (a.isChosen ? ' checked' : '') + (a.actionable ? '' : ' disabled') + '>' +
+      '<span><span class="addr">' + esc(a.email) + '</span><br>' +
+      '<span class="facts">' + facts + '</span><br>' + tags.join('') +
+      (a.actionable ? '' :
+        '<div class="facts">Only a super admin may act on an administrator account.</div>') +
+      '</span></label></div>';
+  }).join('');
+
+  el('accountNote').innerHTML = res.accounts.length > 1
+    ? 'This CAPID carries ' + res.accounts.length + ' accounts. The one marked ' +
+      '<em>authoritative</em> is the one provisioning maintains — most recent sign-in ' +
+      'first. Two live accounts for one member is itself worth reporting.'
+    : '';
+
+  Array.prototype.forEach.call(document.getElementsByName('target'), function (r) {
+    r.onchange = function () { setTarget(r.value); };
+  });
+
+  var chosen = res.accounts.filter(function (a) { return a.isChosen && a.actionable; })[0] ||
+    res.accounts.filter(function (a) { return a.actionable; })[0];
+  if (chosen) { setTarget(chosen.email); el('actionsBox').className = ''; }
+  else { el('actionsBox').className = 'hidden'; }
+
+  renderWelcome(res);
+  renderGroups(res);
+}
+
+function setTarget(email) {
+  // Only clear a displayed password when the admin actually switches accounts.
+  // A re-render after some other action must not wipe it: the browser is the
+  // only place that password exists, and it cannot be recovered.
+  if (STATE.target !== email) el('pwResult').className = 'hidden';
+  STATE.target = email;
+  el('pwTarget').textContent = email;
+  renderGroups(STATE.lookup);
+}
+
+function renderWelcome(res) {
+  var card = el('welcomeCard');
+  // The resend is CAPID-driven: it acts on the authoritative account by
+  // definition, so an admin who has selected a different one is not offered it.
+  if (!res.capid || !res.member) {
+    card.className = 'card hidden';
+    return;
+  }
+  card.className = 'card';
+
+  var w = res.welcome || {};
+  var text = {
+    'welcomed': 'A welcome email was recorded for this member on ' + esc(w.on || '') + '.',
+    'assumed-welcomed': 'Assumed welcomed — seeded from login history on ' + esc(w.on || '') +
+      ', not from a recorded send.',
+    'no-record': 'No welcome email has ever been recorded for this member.',
+    'unseeded': 'The welcome-email ledger has not been seeded, so it says nothing either way.',
+    'unavailable': 'The welcome-email ledger could not be read: ' + esc(w.note || '')
+  }[w.state] || '';
+  el('welcomeLedger').innerHTML = text;
+  el('welcomeVerdict').innerHTML = '';
+  el('welcomeSendBtn').className = 'danger hidden';
+}
+
+function renderGroups(res) {
+  var box = el('groupsBox');
+  var groups = (res && res.groups) || [];
+  if (!STATE.config || !STATE.config.managedGroups.length) {
+    box.className = 'hidden';
+    return;
+  }
+  box.className = '';
+
+  // Membership was resolved for the authoritative account. When the admin has
+  // selected a different one, say so rather than showing another account's state.
+  var stale = res && res.chosen && STATE.target && res.chosen !== STATE.target;
+
+  el('groupList').innerHTML = STATE.config.managedGroups.map(function (g) {
+    var row = groups.filter(function (x) { return x.group === g; })[0] || {};
+    var label = (g === STATE.config.twoSvGroup) ? g + ' (2SV setup)' : g;
+    var state = row.error ? esc(row.error)
+      : stale ? 'membership shown for ' + esc(res.chosen)
+      : (row.member ? 'is a member' : 'not a member');
+    return '<div class="row" style="justify-content:space-between">' +
+      '<span><strong>' + esc(label) + '</strong><br><span class="facts">' + state + '</span></span>' +
+      '<span>' +
+      '<button class="grp" data-group="' + esc(g) + '" data-add="1">Add</button> ' +
+      '<button class="grp" data-group="' + esc(g) + '" data-add="0">Remove</button>' +
+      '</span></div>';
+  }).join('');
+
+  Array.prototype.forEach.call(document.querySelectorAll('.grp'), function (b) {
+    b.onclick = function () {
+      setGroup(b.getAttribute('data-group'), b.getAttribute('data-add') === '1');
+    };
+  });
+}
+
+// ---------------------------------------------------------------- actions
+
+el('lookupBtn').onclick = function () { lookup(el('query').value); };
+el('query').onkeydown = function (e) { if (e.key === 'Enter') lookup(el('query').value); };
+
+el('pwBtn').onclick = function () {
+  if (!STATE.target) return;
+  var alsoEmail = el('pwEmail').checked;
+  if (!confirm('Reset the password on ' + STATE.target + '?\n\n' +
+      'Whoever is using this account will be signed out of it and will need the new ' +
+      'temporary password.')) return;
+
+  clearFlash();
+  busy('pwSpin', ['pwBtn'], true);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      busy('pwSpin', ['pwBtn'], false);
+      el('pwValue').textContent = res.password;
+      el('pwResult').className = '';
+      flash(res.message, 'ok');
+      // Deliberately NOT re-running the lookup here. The only card field this
+      // changes is "must change password", and a refresh risks taking the
+      // password off the screen while the admin is still reading it out.
+    })
+    .withFailureHandler(function (err) {
+      busy('pwSpin', ['pwBtn'], false);
+      failure(err);
+    })
+    .apiResetPassword(STATE.target, alsoEmail);
+};
+
+el('pwCopy').onclick = function () {
+  var node = el('pwValue');
+  // The page runs in a sandboxed iframe, where the clipboard API is often
+  // refused outright. Falling back to SELECTING the text leaves the admin one
+  // keystroke away rather than with a button that silently does nothing.
+  try {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(node.textContent).catch(selectPassword);
+      return;
+    }
+  } catch (e) { /* fall through */ }
+  selectPassword();
+};
+
+function selectPassword() {
+  var range = document.createRange();
+  range.selectNodeContents(el('pwValue'));
+  var sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+el('welcomePreviewBtn').onclick = function () {
+  clearFlash();
+  busy('welcomeSpin', ['welcomePreviewBtn', 'welcomeSendBtn'], true);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      busy('welcomeSpin', ['welcomePreviewBtn', 'welcomeSendBtn'], false);
+      var v = res.verdict;
+      el('welcomeVerdict').innerHTML = v.ok
+        ? '<div class="banner ok">Would reset the password on <strong>' + esc(res.account) +
+          '</strong> and mail credentials to <strong>' + esc(v.recipients.join(', ')) +
+          '</strong>' + (res.cc ? ' (cc ' + esc(res.cc) + ')' : '') + '.</div>'
+        : '<div class="banner warn">Blocked (' + esc(v.reason) + '): ' + esc(v.detail) + '</div>';
+      el('welcomeSendBtn').className = v.ok ? 'danger' : 'danger hidden';
+    })
+    .withFailureHandler(function (err) {
+      busy('welcomeSpin', ['welcomePreviewBtn', 'welcomeSendBtn'], false);
+      failure(err);
+    })
+    .apiPreviewWelcomeResend(STATE.lookup.capid, el('welcomeForce').checked);
+};
+
+el('welcomeSendBtn').onclick = function () {
+  if (!confirm('Reset this member\'s password and send them the welcome email?\n\n' +
+      'The current password stops working immediately.')) return;
+
+  clearFlash();
+  busy('welcomeSpin', ['welcomePreviewBtn', 'welcomeSendBtn'], true);
+  google.script.run
+    .withSuccessHandler(function (res) {
+      busy('welcomeSpin', ['welcomePreviewBtn', 'welcomeSendBtn'], false);
+      flash(res.message, res.ok ? 'ok' : 'bad');
+      lookup(el('query').value);
+    })
+    .withFailureHandler(function (err) {
+      busy('welcomeSpin', ['welcomePreviewBtn', 'welcomeSendBtn'], false);
+      failure(err);
+    })
+    .apiResendWelcome(STATE.lookup.capid, el('welcomeForce').checked);
+};
+
+function setGroup(group, add) {
+  if (!STATE.target) return;
+  if (!confirm((add ? 'Add ' : 'Remove ') + STATE.target + (add ? ' to ' : ' from ') + group + '?')) return;
+
+  clearFlash();
+  google.script.run
+    .withSuccessHandler(function (res) {
+      flash(res.message, 'ok');
+      lookup(el('query').value);
+    })
+    .withFailureHandler(failure)
+    .apiSetGroupMembership(group, STATE.target, add);
+}
+
+// ---------------------------------------------------------------- boot
+
+google.script.run
+  .withSuccessHandler(function (config) {
+    STATE.config = config;
+    if (!config.managedGroups.length) {
+      el('groupsBox').className = 'hidden';
+    } else if (STATE.lookup) {
+      // A fast typist can complete a lookup before this call returns, and the
+      // group panel needs the managed list to draw itself. Draw it now.
+      renderGroups(STATE.lookup);
+    }
+    if (!config.auditVisible) {
+      // Worth saying once: the sheet is where anyone would go looking, and its
+      // absence is a configuration gap rather than a missing feature.
+      console.log('No audit spreadsheet is configured; actions are logged to the ' +
+        'execution log only.');
+    }
+  })
+  .withFailureHandler(failure)
+  .apiGetState();
+</script>
+</body>
+</html>
