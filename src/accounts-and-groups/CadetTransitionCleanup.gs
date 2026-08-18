@@ -1,9 +1,15 @@
 /**
  * Cadet → senior transition: closing the old account.
  *
- * Version: 2.0.0
- * Date: 2026-08-03
- * Changes: 2.0.0 — the close no longer DELETES the cadet account. Two live
+ * Version: 2.1.0
+ * Date: 2026-08-18
+ * Changes: 2.1.0 — the Drive/Contacts destruction guards moved to EXPIRY,
+ *   where the account is actually deleted. They sat on the close, which was
+ *   right when the close deleted; since v2.0.0 it only parks, so expiry became
+ *   the irreversible step while still checking mail alone. Expiry now refuses on
+ *   whyNotExpirable_ and re-sweeps mail, Drive AND contacts first — a parked
+ *   account is live for the whole window, so all three can accumulate.
+ *   2.0.0 — 2.0.0 — the close no longer DELETES the cadet account. Two live
  *   attempts proved the old design impossible: a Group cannot take an address
  *   while Google still reserves it, and Google reserves a former primary address
  *   for ~20 days after a delete (recovery tombstone) and for longer than an
@@ -691,6 +697,35 @@ function userExists_(email) {
 // ============================================================================
 
 /**
+ * Every reason a parked account must not be deleted at expiry. '' means safe.
+ *
+ * Mirrors whyNotCloseable_, and exists because the destruction point MOVED. The
+ * close used to delete, so guarding it there was right; the close now only parks
+ * and expiry is the irreversible step — but the Drive/Contacts guards stayed
+ * behind at the close, leaving expiry checking mail alone. A parked account is
+ * live for the whole window, so anything added to it in that time was destroyed
+ * unchecked.
+ *
+ * @param {Object} row
+ * @returns {string}
+ */
+function whyNotExpirable_(row) {
+  if (String(row.Notes || '').indexOf('DO NOT DELETE') > -1) {
+    return 'a DO NOT DELETE note is present — handle it, then clear the note';
+  }
+  if (isBlankField_(row.DriveMigrated)) {
+    return 'Drive never handled — deleting now would destroy it';
+  }
+  if (isBlankField_(row.ContactsMigrated)) {
+    return 'Contacts never handled — deleting now would destroy them';
+  }
+  if (!row.SeniorEmail) {
+    return 'no destination recorded — cannot verify anything was moved';
+  }
+  return '';
+}
+
+/**
  * Removes forwarding groups whose 12 months are up.
  *
  * Without this they accumulate forever. They cost no seat, but they do hold
@@ -724,16 +759,44 @@ function expireParkedAccounts_(isDry) {
       continue;
     }
 
+    // Expiry is where the account is actually destroyed, so the refusals that
+    // used to guard the close belong HERE. When the close deleted, guarding it
+    // was right; now the close only parks and this is the real point of no
+    // return — the guards did not move with it.
+    const refusal = whyNotExpirable_(row);
+    if (refusal) {
+      console.log(`${capid} | ${row.Name} | expiry blocked — ${refusal}`);
+      Logger.warn('Parked account not expirable', { capid: capid, reason: refusal });
+      continue;
+    }
+
     try {
-      // Final sweep before the mailbox goes: anything that arrived since the
-      // last one would otherwise die with the account.
+      // Re-sweep ALL THREE before the account goes. It has been live and usable
+      // for the whole parking window, so mail, Drive files and contacts can all
+      // have accumulated since the migration. Every sweep is idempotent — mail
+      // by cursor, Drive by appProperties, contacts by userDefined marker — so
+      // this moves only what is new.
       const sweep = catchUpOneTransition_(row);
       if (!sweep.ok) {
-        Logger.error('Refusing to delete parked account — final sweep failed', {
+        Logger.error('Refusing to delete parked account — final mail sweep failed', {
           capid: capid, errorMessage: sweep.error
         });
         setTransitionField_(row._rowNumber, 'Notes',
-          `Expiry blocked ${new Date().toISOString()} — final sweep failed: ${sweep.error}`);
+          `Expiry blocked ${new Date().toISOString()} — final mail sweep failed: ${sweep.error}`);
+        continue;
+      }
+
+      try {
+        migrateOneDrive_(row, new Date());
+        migrateOneContacts_(row, new Date());
+      } catch (sweepErr) {
+        // Anything added to Drive/Contacts during the park would be destroyed.
+        Logger.error('Refusing to delete parked account — final Drive/Contacts sweep failed', {
+          capid: capid, errorMessage: (sweepErr && sweepErr.message) || String(sweepErr)
+        });
+        setTransitionField_(row._rowNumber, 'Notes',
+          `Expiry blocked ${new Date().toISOString()} — final Drive/Contacts sweep failed: ` +
+          ((sweepErr && sweepErr.message) || String(sweepErr)));
         continue;
       }
 

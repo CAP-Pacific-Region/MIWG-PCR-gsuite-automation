@@ -10,6 +10,21 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-18] — move the destruction guards to expiry
+
+### Fixed
+
+- **`CadetTransitionCleanup.gs`** — since v2.0.0 the close **parks** the account instead of
+  deleting it, which moved the irreversible step to `expireParkedAccounts()` — but the
+  Drive/Contacts guards stayed behind on the close. Expiry checked **mail only**, so a parked
+  account (live for the full 12-month window) had anything added to its Drive or Contacts in
+  that year deleted unchecked, and a `DO NOT DELETE` note did not block it.
+
+  Expiry now refuses via `whyNotExpirable_` (DO NOT DELETE note, unhandled Drive or Contacts,
+  missing destination) and **re-sweeps all three** — mail, Drive, contacts — before deleting.
+  Every sweep is idempotent (cursor / appProperties / userDefined marker), so it moves only
+  what is new.
+
 ## [2026-08-18] — reap triggers whose function no longer exists
 
 ### Fixed
