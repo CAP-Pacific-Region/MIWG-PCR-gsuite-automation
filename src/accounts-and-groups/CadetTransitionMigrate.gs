@@ -1,9 +1,13 @@
 /**
  * Cadet → senior mail migration.
  *
- * Version: 1.1.0
- * Date: 2026-07-25
- * Changes: 1.1.0 — the commander CC on the transition-complete email now goes to
+ * Version: 1.2.0
+ * Date: 2026-08-18
+ * Changes: 1.2.0 — retry when fetchAll throws a transient limit (Gmail's
+ *   raw-download bandwidth quota surfaces there, not as a per-request 429, and
+ *   was failing whole migrations); diagnose a 400 "Precondition check failed"
+ *   on import as an uninitialised destination mailbox.
+ *   1.1.0 — 1.1.0 — the commander CC on the transition-complete email now goes to
  *   the commander's CAP account rather than the personal address on their
  *   CAPWATCH record. No code here changed: getCommanderInfo() in
  *   recruiting-and-retention/SendRetentionEmail.gs (1.2.0) changed how it
@@ -1005,6 +1009,15 @@ const MIGRATE_MAX_ATTEMPTS_ = 5;
 const MIGRATE_BACKOFF_BASE_MS_ = 2000;
 
 /**
+ * Backoff when fetchAll throws a bandwidth/rate limit for the WHOLE batch.
+ *
+ * Much longer than the per-request backoff: Gmail's raw-download bandwidth quota
+ * is not a per-call rate limit and a couple of seconds does not clear it. 30s,
+ * 60s, 90s… across the retry budget.
+ */
+const MIGRATE_BANDWIDTH_BACKOFF_MS_ = 30000;
+
+/**
  * Size above which an UNPARSEABLE 200 is treated as truncation rather than a
  * mystery.
  *
@@ -1063,9 +1076,29 @@ function fetchAllWithRetry_(requests, what) {
     try {
       responses = UrlFetchApp.fetchAll(pending.map(i => requests[i]));
     } catch (e) {
-      // fetchAll itself threw — the whole batch is unusable. Not per-request, so
-      // there is nothing to retry selectively.
-      const message = `${what}: fetchAll failed (${e && e.message ? e.message : String(e)})`;
+      // fetchAll itself threw, so there are no per-request results to inspect.
+      // Some of these are transient and MUST be retried rather than failing the
+      // migration: Gmail enforces a bandwidth quota on raw-message downloads and
+      // throws "Bandwidth quota exceeded ... Try reducing the rate of data
+      // transfer" at this level, not as a per-request 429. Treating that as
+      // fatal marked a member FAILED at 1500 messages (2026-08-05).
+      const raw = (e && e.message) ? e.message : String(e);
+      const message = `${what}: fetchAll failed (${raw})`;
+      const transientThrow = /bandwidth quota|quota exceeded|rate of data transfer|timeout|timed out|too many requests|try again/i.test(raw);
+
+      if (transientThrow && attempt < MIGRATE_MAX_ATTEMPTS_) {
+        // Back off HARD — a bandwidth ceiling needs a real pause, not the
+        // 2s-doubling used for a single rate-limited request. The batch size is
+        // left alone: if a mailbox keeps hitting this even after the backoff,
+        // the fix is lowering MIGRATE_PARALLEL_, not retrying differently.
+        const wait = MIGRATE_BANDWIDTH_BACKOFF_MS_ * attempt;
+        Logger.warn('fetchAll hit a transient limit — backing off', {
+          what: what, attempt: attempt, waitMs: wait, error: raw.slice(0, 160)
+        });
+        Utilities.sleep(wait);
+        continue;   // same pending set, retried whole
+      }
+
       pending.forEach(i => { results[i] = { ok: false, error: message }; });
       return results;
     }
@@ -1098,7 +1131,21 @@ function fetchAllWithRetry_(requests, what) {
         retry.push(index);
         return;
       }
-      results[index] = { ok: false, error: `${what} failed (${code}): ${text}` };
+
+      // A 400 "Precondition check failed" on messages.import almost always means
+      // the DESTINATION mailbox is not initialised — a new senior account whose
+      // owner has never signed in, so Gmail is not provisioned for them yet. It
+      // is not a bad message, and it resolves once they log in, so say so rather
+      // than leaving a bare API error in the sheet.
+      const notReady = code === 400 && /precondition check failed/i.test(text);
+      results[index] = {
+        ok: false,
+        error: notReady
+          ? `${what} failed (400): destination mailbox not initialised — the member ` +
+            `has probably never signed in to their senior account, so Gmail is not ` +
+            `provisioned for it yet. Have them sign in once, then retry. (${text.slice(0, 120)})`
+          : `${what} failed (${code}): ${text}`
+      };
     });
 
     pending = retry;

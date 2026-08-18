@@ -10,6 +10,53 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-18] — two stuck migrations: bandwidth quota and an uninitialised mailbox
+
+### Fixed
+
+- **`CadetTransitionMigrate.gs`** — a migration failed outright at 1500 messages with
+  *"Bandwidth quota exceeded … Try reducing the rate of data transfer"*. Gmail enforces that
+  ceiling on raw-message downloads and throws it from `UrlFetchApp.fetchAll` **for the whole
+  batch**, not as a per-request 429 — and the handler treated any fetchAll-level throw as
+  fatal, so the retry logic never engaged. Transient throws (bandwidth/quota/rate/timeout) now
+  back off hard (30s, 60s, 90s…) and retry the batch. If a mailbox keeps hitting it after
+  that, lower `MIGRATE_PARALLEL_`.
+
+- A 400 *"Precondition check failed"* on `messages.import` now reports what it actually means:
+  the **destination mailbox is not initialised** — a new senior account whose owner has never
+  signed in, so Gmail is not provisioned for it. Previously it landed in the sheet as a bare
+  API error with no indication that the fix is "have the member sign in once, then retry".
+
+## [2026-08-18] — move the destruction guards to expiry
+
+### Fixed
+
+- **`CadetTransitionCleanup.gs`** — since v2.0.0 the close **parks** the account instead of
+  deleting it, which moved the irreversible step to `expireParkedAccounts()` — but the
+  Drive/Contacts guards stayed behind on the close. Expiry checked **mail only**, so a parked
+  account (live for the full 12-month window) had anything added to its Drive or Contacts in
+  that year deleted unchecked, and a `DO NOT DELETE` note did not block it.
+
+  Expiry now refuses via `whyNotExpirable_` (DO NOT DELETE note, unhandled Drive or Contacts,
+  missing destination) and **re-sweeps all three** — mail, Drive, contacts — before deleting.
+  Every sweep is idempotent (cursor / appProperties / userDefined marker), so it moves only
+  what is new.
+
+## [2026-08-18] — reap triggers whose function no longer exists
+
+### Fixed
+
+- **`CadetTransition.gs`** — a trigger for `runCadetTransitionLifecycle` (a duplicate
+  orchestrator added and removed on 2026-08-03) kept firing nightly at 03:05, failing with
+  *"Script function not found"* until 2026-08-16. **Deleting a function does not delete its
+  triggers**, and triggers are owned by — and visible only to — the account that created them,
+  so one armed under a different identity cannot be seen or removed by anyone else.
+
+  `TRANSITION_RETIRED_HANDLERS_` now lists handler names that no longer exist, so
+  `disarmTransitionTriggers()` reaps them; run it as **each** account that may have armed
+  triggers. `listAllProjectTriggers()` also flags any trigger whose handler is missing, since
+  nothing previously surfaced that — which is why this ran broken for two weeks.
+
 ## [2026-08-16] — the 2SV setup exemption stops being permanent
 
 ### Added — `src/accounts-and-groups/TwoSvSetupGroup.gs` 1.0.0: a nightly prune of the 2SV setup group
