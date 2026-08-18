@@ -1,9 +1,14 @@
 /**
  * Cadet → senior tenant transition.
  *
- * Version: 1.2.0
- * Date: 2026-07-27
- * Changes: 1.2.0 — runCadetTransitionPipeline() runs all six phases from ONE
+ * Version: 1.3.0
+ * Date: 2026-08-18
+ * Changes: 1.3.0 — added TRANSITION_RETIRED_HANDLERS_ so disarm can reap
+ *   triggers whose handler was deleted, and orphan detection in
+ *   listAllProjectTriggers(). A trigger outlives its function and keeps failing
+ *   nightly; triggers are also per-creator, so one armed under another account
+ *   is invisible to everyone else.
+ *   1.2.0 — 1.2.0 — runCadetTransitionPipeline() runs all six phases from ONE
  *   trigger, freeing five of the twenty Apps Script allows per script. Safe to
  *   collapse because the phases were never an hour apart for duration — each
  *   acts only on rows the previous made ready, and the three expensive ones
@@ -891,6 +896,28 @@ function armTransitionTriggers() {
  * @returns {{removed: number}}
  */
 /**
+ * Handlers that no longer exist in the code but may still have live triggers.
+ *
+ * Deleting a function does NOT delete its triggers: the trigger survives and
+ * fires on schedule, failing with "Script function not found: <name>" every
+ * time, forever. And because triggers are owned by — and visible only to — the
+ * account that created them, one armed under a different identity is invisible
+ * to getProjectTriggers() run as anyone else, so it cannot be found, only
+ * inherited.
+ *
+ * Concretely: runCadetTransitionLifecycle was a duplicate orchestrator added and
+ * then removed on 2026-08-03. A trigger for it survived under another account
+ * and errored nightly at 03:05 until 2026-08-16. Listing retired names here lets
+ * disarmTransitionTriggers() reap them — run it as EACH account that may have
+ * armed triggers, since no single account can see them all.
+ *
+ * Only remove a name once you are confident no trigger for it exists anywhere.
+ */
+const TRANSITION_RETIRED_HANDLERS_ = [
+  'runCadetTransitionLifecycle'
+];
+
+/**
  * Is this handler one of ours — the pipeline driver, or a phase from the older
  * one-trigger-per-phase scheme?
  *
@@ -904,7 +931,8 @@ function armTransitionTriggers() {
  */
 function isTransitionTriggerHandler_(handler) {
   return handler === TRANSITION_PIPELINE_FN_ ||
-    TRANSITION_TRIGGER_FUNCTIONS_.indexOf(handler) > -1;
+    TRANSITION_TRIGGER_FUNCTIONS_.indexOf(handler) > -1 ||
+    TRANSITION_RETIRED_HANDLERS_.indexOf(handler) > -1;
 }
 
 function disarmTransitionTriggers() {
@@ -1203,18 +1231,43 @@ function listAllProjectTriggers() {
                          'continueCadetTransitionContactsMigration'];
   let leftovers = 0;
 
+  let dead = 0;
   console.log('=== ' + all.length + ' of 20 trigger slots used ===');
   all.forEach(function (t) {
     const fn = t.getHandlerFunction();
     const isCont = continuations.indexOf(fn) > -1;
     if (isCont) leftovers++;
-    console.log('  ' + fn + (isCont ? '   <-- continuation (transient; stale ones are removable)' : ''));
+
+    // A trigger whose handler no longer exists fires and fails on schedule,
+    // forever, and nothing else reports it — this is how a deleted function's
+    // trigger errored nightly for two weeks unnoticed.
+    // `typeof <name>` does not throw for an undeclared identifier, so this is
+    // the safe way to ask "does this global function exist?". Not `this[fn]` —
+    // inside a forEach callback `this` is undefined, which would report every
+    // trigger as an orphan.
+    let missing = false;
+    try {
+      missing = eval('typeof ' + fn) !== 'function';
+    } catch (err) {
+      missing = true;   // not even a valid identifier
+    }
+    if (missing) dead++;
+
+    console.log('  ' + fn +
+      (isCont ? '   <-- continuation (transient; stale ones are removable)' : '') +
+      (missing ? '   <-- ORPHAN: no such function; fires and fails every run' : ''));
   });
 
   console.log('');
   if (leftovers) {
     console.log(leftovers + ' continuation trigger(s) present. If no migration is running,');
     console.log('they are orphans — clear with clearAllTransitionContinuations().');
+  }
+  if (dead) {
+    console.log(dead + ' trigger(s) point at functions that no longer exist. They fail on');
+    console.log('every run. disarmTransitionTriggers() clears ours; anything else must be');
+    console.log('deleted from the Triggers panel — AS THE ACCOUNT THAT CREATED IT, since');
+    console.log('triggers are invisible to every other account.');
   }
   if (all.length >= 18) {
     console.log('WARNING: at or near the 20-trigger ceiling. Adding more will fail.');

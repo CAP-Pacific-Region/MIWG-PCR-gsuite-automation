@@ -10,6 +10,21 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-18] — reap triggers whose function no longer exists
+
+### Fixed
+
+- **`CadetTransition.gs`** — a trigger for `runCadetTransitionLifecycle` (a duplicate
+  orchestrator added and removed on 2026-08-03) kept firing nightly at 03:05, failing with
+  *"Script function not found"* until 2026-08-16. **Deleting a function does not delete its
+  triggers**, and triggers are owned by — and visible only to — the account that created them,
+  so one armed under a different identity cannot be seen or removed by anyone else.
+
+  `TRANSITION_RETIRED_HANDLERS_` now lists handler names that no longer exist, so
+  `disarmTransitionTriggers()` reaps them; run it as **each** account that may have armed
+  triggers. `listAllProjectTriggers()` also flags any trigger whose handler is missing, since
+  nothing previously surfaced that — which is why this ran broken for two weeks.
+
 ## [2026-08-16] — the 2SV setup exemption stops being permanent
 
 ### Added — `src/accounts-and-groups/TwoSvSetupGroup.gs` 1.0.0: a nightly prune of the 2SV setup group
