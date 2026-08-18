@@ -641,10 +641,15 @@ function dumpTransitionRowState() {
 
   for (const capid in rows) {
     const row = rows[capid];
-    if (row.MigrationStatus !== TRANSITION_CONFIG.STATUS.COMPLETE) continue;
+    // Every row that has gone anywhere — NOT just COMPLETE. Filtering to
+    // COMPLETE hid the FAILED rows, which are exactly the ones worth dumping.
+    if (row.MigrationStatus === TRANSITION_CONFIG.STATUS.PENDING &&
+        !row.SeniorEmail && !row.Notes) continue;
     n++;
     const da = row.DeleteAfter ? new Date(row.DeleteAfter) : null;
-    console.log('--- ' + capid + '  ' + row.Name + ' ---');
+    const flag = (row.MigrationStatus === TRANSITION_CONFIG.STATUS.FAILED)
+      ? '   *** FAILED ***' : '';
+    console.log('--- ' + capid + '  ' + row.Name + flag + ' ---');
     console.log('  CadetEmail        : ' + row.CadetEmail +
       '   (account exists now: ' + userExists_(row.CadetEmail) + ')');
     console.log('  SeniorEmail       : ' + row.SeniorEmail);
@@ -663,7 +668,8 @@ function dumpTransitionRowState() {
   }
 
   console.log('');
-  console.log(n + ' COMPLETE row(s) shown.');
+  console.log(n + ' row(s) shown (COMPLETE, FAILED, and anything part-way).');
+  console.log('Bare PENDING rows with no destination and no notes are omitted.');
   return { shown: n };
 }
 
