@@ -10,6 +10,23 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-18] — two stuck migrations: bandwidth quota and an uninitialised mailbox
+
+### Fixed
+
+- **`CadetTransitionMigrate.gs`** — a migration failed outright at 1500 messages with
+  *"Bandwidth quota exceeded … Try reducing the rate of data transfer"*. Gmail enforces that
+  ceiling on raw-message downloads and throws it from `UrlFetchApp.fetchAll` **for the whole
+  batch**, not as a per-request 429 — and the handler treated any fetchAll-level throw as
+  fatal, so the retry logic never engaged. Transient throws (bandwidth/quota/rate/timeout) now
+  back off hard (30s, 60s, 90s…) and retry the batch. If a mailbox keeps hitting it after
+  that, lower `MIGRATE_PARALLEL_`.
+
+- A 400 *"Precondition check failed"* on `messages.import` now reports what it actually means:
+  the **destination mailbox is not initialised** — a new senior account whose owner has never
+  signed in, so Gmail is not provisioned for it. Previously it landed in the sheet as a bare
+  API error with no indication that the fix is "have the member sign in once, then retry".
+
 ## [2026-08-18] — move the destruction guards to expiry
 
 ### Fixed
