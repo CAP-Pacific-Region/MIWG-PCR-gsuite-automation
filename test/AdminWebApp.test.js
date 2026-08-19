@@ -367,6 +367,28 @@ function loadConfigFor(profile, extras) {
   }, ['admTenantProvisionsType_', 'admElsewhereSentence_', 'ADM_PROFILE_MEMBER_TYPES']);
 }
 
+/**
+ * The managed-group list as the running app would compute it: Config.gs reads
+ * the properties, Accounts.gs turns them into the allow-list. Loaded together
+ * because the fallback between the two property names lives in the first and
+ * only shows up in the second.
+ */
+function loadGroupsFor(props) {
+  const all = Object.assign({ TENANT_PROFILE: 'seniors', TENANT_WING: 'CA' }, props);
+  const cfg = loadModule(path.join(APP, 'Config.gs'), {
+    PropertiesService: {
+      getScriptProperties: () => ({ getProperty: (key) => all[key] || null })
+    },
+    console: console
+  }, ['ADMIN_CONFIG']);
+
+  return loadModule(path.join(APP, 'Accounts.gs'), {
+    Logger: makeLogger().logger, ADMIN_CONFIG: cfg.ADMIN_CONFIG, ADM_CAPID_RE: /^\d{5,7}$/,
+    AdminDirectory: {}, admDirectoryUser_: () => null, admBuildMemberRecord_: () => null,
+    admSearchMembersByName_: () => [], ADM_SEARCH_LIMIT: 25, console: console
+  }, ['admManagedGroups_']).admManagedGroups_();
+}
+
 const seniorsCfg = loadConfigFor('seniors');
 check('a senior is ours on the seniors tenant', seniorsCfg.admTenantProvisionsType_('SENIOR'), true);
 check('so is a fifty-year member', seniorsCfg.admTenantProvisionsType_('FIFTY YEAR'), true);
@@ -404,14 +426,19 @@ check('the profile→member-type table matches src/config.gs',
    seniorsCfg.ADM_PROFILE_MEMBER_TYPES.region],
   srcTypes);
 
-check('the sentence names the configured cadet tools site',
-  loadConfigFor('seniors', { WEBAPP_CADET_TOOLS_URL: 'https://cadets.example.org/admin' })
+check('the sentence names the configured peer admin site',
+  loadConfigFor('seniors', { WEBAPP_PEER_ADMIN_URL: 'https://cadets.example.org/admin' })
     .admElsewhereSentence_('CADET'),
   'Cadet accounts are not on this Workspace, so nothing on this page can act on them. ' +
-  'Use the cadet tools site instead: https://cadets.example.org/admin');
+  'Use the other tenant\'s admin site instead: https://cadets.example.org/admin');
 
-check('with no URL it still names where the accounts live',
-  loadConfigFor('seniors', { TENANT_CADETS_TENANT_DOMAIN: 'cawgcadets.org' })
+check('the earlier property name still works where it was set',
+  loadConfigFor('seniors', { WEBAPP_CADET_TOOLS_URL: 'https://cadets.example.org/admin' })
+    .admElsewhereSentence_('CADET')
+    .indexOf('https://cadets.example.org/admin') > 0, true);
+
+check('with no URL it names the peer domain from XT_PEER_DOMAIN',
+  loadConfigFor('seniors', { XT_PEER_DOMAIN: 'cawgcadets.org' })
     .admElsewhereSentence_('CADET'),
   'Cadet accounts are not on this Workspace, so nothing on this page can act on them. ' +
   'Their accounts live on cawgcadets.org, which has its own admin page.');
@@ -419,11 +446,37 @@ check('with no URL it still names where the accounts live',
 check('with neither configured it is still not a dead end',
   loadConfigFor('seniors').admElsewhereSentence_('CADET'),
   'Cadet accounts are not on this Workspace, so nothing on this page can act on them. ' +
-  'Their accounts live on the cadet Workspace, which has its own admin page.');
+  'Their accounts live on the other tenant\'s Workspace, which has its own admin page.');
 
-check('a non-cadet foreign type is not called a cadet',
+/**
+ * The direction that matters for the cadet deployment. On the CADETS tenant the
+ * members this app cannot help are SENIORS, and the notice must point at the
+ * seniors site — telling a cadet-tenant admin "their accounts live on
+ * cawgcadets.org" would point them at the page they are already standing on.
+ */
+check('on the cadets tenant a senior is the one who is elsewhere',
+  loadConfigFor('cadets', { XT_PEER_DOMAIN: 'cawgcap.org' }).admElsewhereSentence_('SENIOR'),
+  'Senior accounts are not on this Workspace, so nothing on this page can act on them. ' +
+  'Their accounts live on cawgcap.org, which has its own admin page.');
+
+check('…and a cadet there is not elsewhere at all',
+  loadConfigFor('cadets').admTenantProvisionsType_('CADET'), true);
+
+check('an unrecognised type is named neutrally',
   loadConfigFor('seniors').admElsewhereSentence_('PATRON')
     .indexOf('This member\'s accounts are not on this Workspace'), 0);
+
+section('The 2SV group address is accepted under either property name');
+
+check('WEBAPP_2SV_SETUP_GROUP is read',
+  loadGroupsFor({ WEBAPP_2SV_SETUP_GROUP: 'a@x.org' }), ['a@x.org']);
+// src/TwoSvSetupGroup.gs prunes the same group under the TENANT_ name; accepting
+// it here means copying a tenant's canonical values across does the right thing.
+check('TENANT_2SV_SETUP_GROUP is accepted as a fallback',
+  loadGroupsFor({ TENANT_2SV_SETUP_GROUP: 'b@x.org' }), ['b@x.org']);
+check('the WEBAPP_ name wins when both are set',
+  loadGroupsFor({ WEBAPP_2SV_SETUP_GROUP: 'a@x.org', TENANT_2SV_SETUP_GROUP: 'b@x.org' }),
+  ['a@x.org']);
 
 section('Who may use the app, and whom they may act on');
 

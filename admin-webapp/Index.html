@@ -217,7 +217,7 @@ function clearFlash() { el('flash').className = 'banner hidden'; }
  */
 function flashElsewhere(sentence) {
   var f = el('flash');
-  var url = STATE.config && STATE.config.cadetToolsUrl;
+  var url = STATE.config && STATE.config.peerAdminUrl;
   f.innerHTML = url
     ? esc(sentence.replace(url, '')).replace(/\s+$/, '') +
       ' <a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>'
@@ -339,8 +339,8 @@ function renderMember(res) {
   var elsewhere = '';
   if (m.offTenant) {
     elsewhere = '<div class="banner warn">' + esc(res.elsewhere || '') +
-      (STATE.config && STATE.config.cadetToolsUrl
-        ? ' <a href="' + esc(STATE.config.cadetToolsUrl) + '" target="_blank" rel="noopener">Open it</a>'
+      (STATE.config && STATE.config.peerAdminUrl
+        ? ' <a href="' + esc(STATE.config.peerAdminUrl) + '" target="_blank" rel="noopener">Open it</a>'
         : '') +
       (res.accounts.length
         ? ' <strong>This member does also hold an account on this Workspace</strong>, shown ' +

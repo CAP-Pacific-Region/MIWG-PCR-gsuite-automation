@@ -102,7 +102,15 @@ function getAdminWebAppConfig_() {
      * address: adding a member to the wrong group is not a mistake this app
      * should be capable of making.
      */
-    TWO_SV_GROUP: get('WEBAPP_2SV_SETUP_GROUP'),
+    /**
+     * `TENANT_2SV_SETUP_GROUP` is accepted as a fallback because src/ reads the
+     * SAME group under that name (TwoSvSetupGroup.gs, which prunes the group
+     * this app fills). They are separate script projects with separate property
+     * stores, so both must be set somewhere — but accepting the canonical
+     * TENANT_ name here means copying a tenant's values across does the right
+     * thing, instead of leaving the group panel mysteriously empty.
+     */
+    TWO_SV_GROUP: get('WEBAPP_2SV_SETUP_GROUP', get('TENANT_2SV_SETUP_GROUP')),
 
     /**
      * OPTIONAL further groups this app may add to and remove from, comma
@@ -138,11 +146,23 @@ function getAdminWebAppConfig_() {
 
     /**
      * Where to send an admin holding a member this tenant does not provision.
-     * Blank falls back to naming the peer domain, which is still better than a
-     * dead end.
+     *
+     * NOT cadet-specific, despite the original name: this app runs on the cadet
+     * tenant too, where the members it cannot help are SENIORS. Pointing them at
+     * "the cadet tools site" from the cadet tenant would be pointing at the page
+     * they are already on. `WEBAPP_CADET_TOOLS_URL` is still read so the earlier
+     * name keeps working where it was set.
      */
-    CADET_TOOLS_URL: get('WEBAPP_CADET_TOOLS_URL'),
-    CADETS_TENANT_DOMAIN: get('TENANT_CADETS_TENANT_DOMAIN'),
+    PEER_ADMIN_URL: get('WEBAPP_PEER_ADMIN_URL', get('WEBAPP_CADET_TOOLS_URL')),
+
+    /**
+     * The OTHER tenant's mail domain, named when no peer URL is configured.
+     *
+     * XT_PEER_DOMAIN is exactly this on both tenants already — cawgcadets.org on
+     * seniors, cawgcap.org on cadets — so it is the honest source. The cadet
+     * property is a fallback for a tenant that sets one and not the other.
+     */
+    PEER_DOMAIN: get('XT_PEER_DOMAIN', get('TENANT_CADETS_TENANT_DOMAIN')),
 
     /** Shown to an admin the app cannot help, and CC'd on credentials it mails. */
     SUPPORT_EMAIL: get('TENANT_ITSUPPORT_EMAIL'),
@@ -228,12 +248,20 @@ function admTenantProvisionsType_(type) {
  * @returns {string}
  */
 function admElsewhereSentence_(type) {
-  const kind = String(type || '').trim().toUpperCase() === 'CADET' ? 'Cadet' : 'This member\'s';
-  const where = ADMIN_CONFIG.CADET_TOOLS_URL
-    ? 'Use the cadet tools site instead: ' + ADMIN_CONFIG.CADET_TOOLS_URL
-    : (ADMIN_CONFIG.CADETS_TENANT_DOMAIN
-      ? 'Their accounts live on ' + ADMIN_CONFIG.CADETS_TENANT_DOMAIN + ', which has its own admin page.'
-      : 'Their accounts live on the cadet Workspace, which has its own admin page.');
+  // Named from the MEMBER's type, not from this tenant's profile, so it reads
+  // correctly in both directions: "Cadet accounts…" on the seniors tenant and
+  // "Senior accounts…" on the cadet one. Getting this backwards would send an
+  // admin to the page they are already standing on.
+  const wanted = String(type || '').trim().toUpperCase();
+  let kind = 'This member\'s';
+  if (wanted === 'CADET') kind = 'Cadet';
+  else if (ADM_PROFILE_MEMBER_TYPES.seniors.indexOf(wanted) !== -1) kind = 'Senior';
+
+  const where = ADMIN_CONFIG.PEER_ADMIN_URL
+    ? 'Use the other tenant\'s admin site instead: ' + ADMIN_CONFIG.PEER_ADMIN_URL
+    : (ADMIN_CONFIG.PEER_DOMAIN
+      ? 'Their accounts live on ' + ADMIN_CONFIG.PEER_DOMAIN + ', which has its own admin page.'
+      : 'Their accounts live on the other tenant\'s Workspace, which has its own admin page.');
   return kind + ' accounts are not on this Workspace, so nothing on this page can ' +
     'act on them. ' + where;
 }
