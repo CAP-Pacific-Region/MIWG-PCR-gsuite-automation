@@ -76,7 +76,7 @@ function apiGetState() {
     twoSvGroup: ADMIN_CONFIG.TWO_SV_GROUP,
     // So the page can offer the cadet tools site as a link rather than as text
     // an admin has to retype.
-    cadetToolsUrl: ADMIN_CONFIG.CADET_TOOLS_URL,
+    peerAdminUrl: ADMIN_CONFIG.PEER_ADMIN_URL,
     managedGroups: admManagedGroups_(),
     auditVisible: !!ADMIN_CONFIG.AUDIT_SPREADSHEET_ID
   };
