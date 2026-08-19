@@ -102,14 +102,15 @@ const ADMIN_WEBAPP_SETUP_VALUES = {
     TENANT_AUTOMATION_SPREADSHEET_ID: '1tsVoGIbTztl9esydyiFt5Gc6pxIJRlcGdV7oLhXZbF4',
 
     /**
-     * FILL IN. The cadet tenant's own 2SV setup group — almost certainly NOT
-     * 2sv-setup@cawgcap.org, which is a group on the other Workspace and cannot
-     * hold cadet accounts. Blank until someone confirms the address.
+     * The cadet tenant's OWN 2SV setup group, confirmed on the tenant and filled
+     * in there by hand 2026-08-19. Deliberately NOT 2sv-setup@cawgcap.org: that
+     * group lives on the other Workspace and cannot hold cadet accounts. Like
+     * the seniors entry it carries no prefix — typed exactly as it exists.
      */
-    WEBAPP_2SV_SETUP_GROUP: '',
+    WEBAPP_2SV_SETUP_GROUP: '2sv-setup@cawgcadets.org',
 
     /** Linked when an admin opens a SENIOR here: the seniors admin site. */
-    WEBAPP_PEER_ADMIN_URL: '',
+    WEBAPP_PEER_ADMIN_URL: 'https://script.google.com/a/macros/cawgcap.org/s/AKfycby1lqAHHsPq9hHU4ACfuGrZ1wCDOQYX38mA19s-LOtgirB1fP6bN4ZwbJ20nRaOaAcL/exec',
 
     WEBAPP_MANAGED_GROUPS: ''
   }
