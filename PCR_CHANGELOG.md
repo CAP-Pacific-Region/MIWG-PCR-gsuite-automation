@@ -10,6 +10,44 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-19] — The ".gov Account Processing" web app now runs the whole process on Add (`secondary-alias-webapp/` 1.1.0)
+
+The live secondary-alias add/remove page (deployment `AKfycbz5mBOJ…`, its own script
+project) already created the directory alias the instant you clicked Add. It now also
+configures Gmail *Send mail as* and emails the member **at that moment** — so a member added
+through the page gets the same complete treatment the nightly run gives a hand-added row,
+without waiting until morning.
+
+### Added
+
+- **`secondary-alias-webapp/`** pulled into the repo and version-controlled (it previously
+  existed only in the cloud). New clasp target `clasp-targets/secondary-alias-webapp.clasp.json`
+  and npm scripts `*:alias:seniors`; `.claspignore` whitelists the dir like the other
+  web-app projects.
+- **`Notify.gs`** — `apiAddByCapid`, on a genuine new alias (`ADDED —`), now calls
+  `webappConfigureSendAs_` (auto Send-As via the same impersonation `src/` uses) and
+  `webappMaybeSendWelcome_` (the CAPR 120-1 §6.9 + compose-switching email). Both run
+  **outside the sheet lock** and are **best-effort** — a Gmail hiccup cannot undo the alias
+  or fail the request. Response gains `sendAsConfigured` / `welcomeSent`, surfaced in the UI.
+
+### Why it had to live in the web app
+
+An alias the page creates reads as `already present` by the time the nightly
+`addSecondaryDomainAliases()` fires, so the nightly notifier would skip it — the member would
+get an alias and **nothing else**. `Notify.gs` is a hand copy of the nightly logic;
+`test/SecondaryAliasWebAppNotify.test.js` (30 assertions) pins the two together, including a
+byte-for-byte template check and a render-parity check across all send-as outcomes.
+
+### Deploy requirements (see `secondary-alias-webapp/README.md`)
+
+- New scopes (`gmail.settings.sharing`/`.basic`, `gmail.send`, `script.send_mail`,
+  `script.external_request`) — the deploying account must **re-authorize**.
+- New Script Properties on that project: `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` (Send-As),
+  `TENANT_AUTOMATION_SENDER_EMAIL` / `TENANT_ITSUPPORT_EMAIL` / `TENANT_WING_NAME` (email).
+- The live deployment is pinned to `@1`, so `clasp push` updates HEAD only; it goes live only
+  on a **new version deploy**. Until then the alias still creates and Send-As/email degrade
+  gracefully.
+
 ## [2026-08-19] — New secondary aliases are made send-ready and the member is told (`SecondaryDomainAliases.gs` 1.4.0)
 
 When `addSecondaryDomainAliases()` newly **ADDs** a secondary-domain alias, it now makes the
