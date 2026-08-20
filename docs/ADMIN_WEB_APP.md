@@ -233,6 +233,30 @@ on that project — the app will not guess at a group address. It says so on the
 page rather than hiding the section, because a section that silently disappears
 reads as a broken page.
 
+### 6.1 2SV instructions in credentials mail
+
+Both mails this app sends — the welcome email and the password-reset notice —
+carry step-by-step 2SV setup instructions **when, and only when, the target
+account is not enrolled**. That is the one moment a member can act on it: they
+have a working password in hand and the setup flow is three clicks from where
+they are about to land.
+
+The condition is the directory's own `isEnrolledIn2Sv` flag, not an assumption
+about whether the account is new. Telling someone who already has 2SV on to go
+and turn it on reads as a system that does not know what it is talking about,
+and the next real instruction from IT gets skimmed. It matters for a **forced**
+welcome resend in particular, which can land on an established account that
+already has 2SV.
+
+The block is **inserted at send time**, not written into `WelcomeEmail.html`.
+That file is a byte-for-byte copy of the one `src/` sends and is pinned by the
+test; editing it would either break the pin or push the same conditional into
+provisioning, which only ever mails accounts that cannot have 2SV yet. The
+template's own one-line mention stays in both cases — this adds the *how*, not
+the *whether*. If the template ever loses its footer marker the block is appended
+further down rather than dropped: by the time it runs, the password is already
+live, and a formatting problem must never become a failed send.
+
 ## 7. What the actions refuse, and why
 
 The welcome resend carries the guards from `src/WelcomeEmailResend.gs`, because a

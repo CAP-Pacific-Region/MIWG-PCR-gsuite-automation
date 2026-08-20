@@ -246,6 +246,31 @@ Seniors only for now, and **pushed** to project `1miHntSI…Sq6ub` on 2026-08-16
 Script Properties and the by-hand deployment are still outstanding; see
 [docs/ADMIN_WEB_APP.md](docs/ADMIN_WEB_APP.md).
 
+### Added — credentials mail carries 2SV setup steps when the account lacks it
+
+Both mails the help-desk app sends — the welcome email and the password-reset notice — now
+include step-by-step 2-Step Verification instructions **when the target account is not
+enrolled**. That is the one moment a member can act on it: they have a working password in
+hand and the setup flow is three clicks from where they are about to land.
+
+Conditional on the directory’s own `isEnrolledIn2Sv`, not on whether the account looks new.
+Telling a member who already has 2SV on to go and turn it on reads as a system that does not
+know what it is talking about, and the next real instruction from IT gets skimmed. It matters
+for a FORCED welcome resend in particular, which can land on an established account.
+
+The block is INSERTED AT SEND TIME rather than written into `WelcomeEmail.html`, which is a
+byte-for-byte copy of the template `src/` sends and is pinned by the parity test. Editing it
+would either break that pin or force the same conditional into provisioning, which only ever
+mails accounts that cannot have 2SV yet. The template’s existing one-line mention stays in
+both cases — this adds the how, not the whether. A template missing its footer marker gets
+the block appended lower down rather than dropped: the password is live by then, and a
+formatting problem must never become a failed send.
+
+Also fixes the structural test that checks every client-reachable `api*` function is behind
+`requireAdmin_()`. It matched a literal newline-brace, so on a CRLF checkout it tested an
+empty string and reported all six entry points as ungated — failing loudly for a reason
+unrelated to the property it guards.
+
 ### Changed — the 2SV group panel follows the member's 2SV state
 
 Reported from live use: an admin saw **2SV off** on the account card and had nothing obvious
