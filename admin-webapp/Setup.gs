@@ -79,8 +79,14 @@ const ADMIN_WEBAPP_SETUP_VALUES = {
      */
     WEBAPP_2SV_SETUP_GROUP: '2sv-setup@cawgcap.org',
 
-    /** Linked when an admin opens a CADET here. Blank names cawgcadets.org. */
-    WEBAPP_PEER_ADMIN_URL: '',
+    /**
+     * Linked when an admin opens a CADET here — the cadet tenant's own copy of
+     * this app. Derived from that deployment's id; the two apps point at each
+     * other, so a help desk that lands on the wrong one is one click from the
+     * right one.
+     */
+    WEBAPP_PEER_ADMIN_URL: 'https://script.google.com/a/macros/cawgcadets.org/s/' +
+      'AKfycbx7yMbuNp2So9PbKMzwrn7OL1X6oSddxaml5re_YkHWF6b-ZQEWGsC8-3P8N6mpXM2AeA/exec',
 
     /** Extra groups this app may change. A security boundary — see Config.gs. */
     WEBAPP_MANAGED_GROUPS: ''
