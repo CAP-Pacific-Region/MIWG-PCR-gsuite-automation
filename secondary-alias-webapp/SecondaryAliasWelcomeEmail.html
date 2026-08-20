@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css?family=Rajdhani:700|Ubuntu:400,700" rel="stylesheet" type="text/css">
+    <style>
+        body {
+            font-family: "Ubuntu", sans-serif;
+            line-height: 1.6;
+            color: #000000;
+            margin: 0;
+            padding: 0;
+            background-color: #ececec;
+        }
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+        }
+        .header {
+            background-color: #001871;
+            color: #ffffff;
+            padding: 30px 20px;
+            text-align: center;
+        }
+        .header h1 {
+            font-family: "Rajdhani", sans-serif;
+            font-weight: 700;
+            font-size: 26px;
+            margin: 0;
+            letter-spacing: 1px;
+        }
+        .content {
+            padding: 30px 20px;
+            font-size: 16px;
+        }
+        .content p { margin: 0 0 15px 0; }
+        .alias-box {
+            background-color: #f3f6ff;
+            border-left: 4px solid #001871;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+            font-size: 18px;
+        }
+        .alias-box strong { color: #001871; }
+        /* The regulatory notice is the point of this message; it must not read as
+           boilerplate, so it gets its own weight and an amber rule. */
+        .official-use {
+            background-color: #fff8e6;
+            border-left: 4px solid #b8860b;
+            padding: 15px 18px;
+            margin: 24px 0;
+            border-radius: 4px;
+            font-size: 15px;
+        }
+        .official-use strong { color: #8a6100; }
+        ol.steps { margin: 0 0 15px 0; padding-left: 22px; }
+        ol.steps li { margin: 0 0 10px 0; }
+        .muted { color: #444444; font-size: 14px; }
+        .footer {
+            background-color: #001871;
+            color: #ffffff;
+            padding: 20px;
+            text-align: center;
+            font-size: 14px;
+        }
+        @media only screen and (max-width: 600px) {
+            .header h1 { font-size: 22px; }
+            .content { padding: 20px 15px; }
+        }
+    </style>
+</head>
+<body>
+<div class="email-container">
+
+    <div class="header">
+        <h1>YOUR NEW {{orgLabel}} EMAIL ADDRESS</h1>
+    </div>
+
+    <div class="content">
+        <p class="greeting"><strong>{{fullName}}</strong>,</p>
+
+        <p>A second email address has been added to your {{wingName}} Google Workspace
+            account. Mail sent to it now lands in the same inbox you already use — you do
+            not have a new mailbox or a second password, and nothing about how you sign in
+            changes.</p>
+
+        <div class="alias-box">
+            <p style="margin:0"><strong>New address:</strong> {{aliasEmail}}</p>
+            <p style="margin:8px 0 0 0" class="muted">delivers to {{primaryEmail}}</p>
+        </div>
+
+        <div class="official-use">
+            <p style="margin:0 0 8px 0"><strong>Official use only.</strong></p>
+            <p style="margin:0">This is a U.S. Government (<code>.gov</code>) address. Per
+                <strong>CAPR 120-1, paragraph 6.9</strong>, it — like all Civil Air Patrol
+                information-technology resources — is to be used for official CAP business
+                only. It may <strong>not</strong> be used for commercial purposes or for
+                fundraising. Personal, commercial, or fundraising use is a violation of the
+                regulation.</p>
+        </div>
+
+        {{sendAsSection}}
+
+        <p>If you did not expect this change, or believe it was made in error, please contact
+            IT support before using the address.</p>
+
+        <p>Regards,<br>
+            {{signature}}</p>
+    </div>
+
+    <div class="footer">
+        Civil Air Patrol &bull; {{wingName}}<br>
+        IT Support: <a href="{{itSupportUrl}}" style="color:#ffffff">{{itSupportUrl}}</a>
+    </div>
+
+</div>
+</body>
+</html>

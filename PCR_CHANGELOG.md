@@ -10,6 +10,94 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-19] — The ".gov Account Processing" web app now runs the whole process on Add (`secondary-alias-webapp/` 1.1.0)
+
+The live secondary-alias add/remove page (deployment `AKfycbz5mBOJ…`, its own script
+project) already created the directory alias the instant you clicked Add. It now also
+configures Gmail *Send mail as* and emails the member **at that moment** — so a member added
+through the page gets the same complete treatment the nightly run gives a hand-added row,
+without waiting until morning.
+
+### Added
+
+- **`secondary-alias-webapp/`** pulled into the repo and version-controlled (it previously
+  existed only in the cloud). New clasp target `clasp-targets/secondary-alias-webapp.clasp.json`
+  and npm scripts `*:alias:seniors`; `.claspignore` whitelists the dir like the other
+  web-app projects.
+- **`Notify.gs`** — `apiAddByCapid`, on a genuine new alias (`ADDED —`), now calls
+  `webappConfigureSendAs_` (auto Send-As via the same impersonation `src/` uses) and
+  `webappMaybeSendWelcome_` (the CAPR 120-1 §6.9 + compose-switching email). Both run
+  **outside the sheet lock** and are **best-effort** — a Gmail hiccup cannot undo the alias
+  or fail the request. Response gains `sendAsConfigured` / `welcomeSent`, surfaced in the UI.
+
+### Why it had to live in the web app
+
+An alias the page creates reads as `already present` by the time the nightly
+`addSecondaryDomainAliases()` fires, so the nightly notifier would skip it — the member would
+get an alias and **nothing else**. `Notify.gs` is a hand copy of the nightly logic;
+`test/SecondaryAliasWebAppNotify.test.js` (30 assertions) pins the two together, including a
+byte-for-byte template check and a render-parity check across all send-as outcomes.
+
+### Deploy requirements (see `secondary-alias-webapp/README.md`)
+
+- New scopes (`gmail.settings.sharing`/`.basic`, `gmail.send`, `script.send_mail`,
+  `script.external_request`, `userinfo.email`) — the deploying account must **re-authorize**.
+  `userinfo.email` is required by `Session.getActiveUser().getEmail()` in `Auth.gs`; without
+  it the app denies everyone (fails closed — an availability bug, not a security hole). The
+  original code relied on the old runtime behavior of handing a same-domain web app the
+  caller's address without the scope; the current runtime requires it.
+- New Script Properties on that project: `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` (Send-As),
+  `TENANT_AUTOMATION_SENDER_EMAIL` / `TENANT_ITSUPPORT_EMAIL` (email). The email's wing name
+  and ORG label DERIVE from `TENANT_WING` (`CA` → `California Wing` / `CAWG`), mirroring
+  `src/config.gs`, so no separate `TENANT_WING_NAME` is needed.
+- The live deployment is pinned to `@1`, so `clasp push` updates HEAD only; it goes live only
+  on a **new version deploy**. Until then the alias still creates and Send-As/email degrade
+  gracefully.
+
+## [2026-08-19] — New secondary aliases are made send-ready and the member is told (`SecondaryDomainAliases.gs` 1.4.0)
+
+When `addSecondaryDomainAliases()` newly **ADDs** a secondary-domain alias, it now makes the
+address immediately usable and tells the member — so nobody follows setup steps only to find
+the address does not work.
+
+### Added
+
+- **Auto-configures Gmail *Send mail as*** for the member on a new alias, so the address can
+  **send**, not just receive — via the same service-account impersonation
+  (`getImpersonatedToken_` + the `sendAs` REST endpoint) the send-as **name** sync already
+  uses. Admin accounts (which cannot be impersonated for settings) and any setup error fall
+  back to manual steps in the email. Uses `gmail.settings.sharing`, already in the manifest.
+- **Emails the member** (`SecondaryAliasWelcomeEmail.html`): that the address exists; whether
+  sending was set up for them or the manual *Send mail as* steps; **how to switch between
+  their primary and the new address in the Compose window** (the From menu, per message, on
+  desktop and mobile); and the **CAPR 120-1 §6.9** reminder that a `.gov` address is for
+  official CAP business only — no commercial or fundraising use. Sent from
+  `TENANT_AUTOMATION_SENDER_EMAIL`, reply-to `TENANT_ITSUPPORT_EMAIL`.
+- The email sets the expectation that a brand-new address can take **up to a day** before
+  Gmail will send from it (matching the existing "sendable within ~24 hours" note), so a
+  not-yet-propagated address is not mistaken for a broken one.
+
+### Behavior / safety
+
+- Both actions fire **only on a genuine insert**, so a settled list (`OK — already present`)
+  does nothing and re-runs never re-notify — no backfill blast.
+- **Best-effort by contract:** the alias is already created before either runs, so a failure
+  in Send-As setup or the email is swallowed to a `WARN` and never fails the run or the
+  alias. A flaky Gmail call must never make a successful provisioning look broken and get
+  "fixed."
+- Opt out of the email per tenant with Script Property `SECONDARY_ALIAS_NOTIFY=false`.
+  Optional `TENANT_ITSUPPORT_URL` sets the footer link (defaults to `https://support.pcrcap.org`).
+- `test/SecondaryAliasWelcome.test.js` — 65 assertions: the opt-out toggle; Send-As setup
+  degrading safely on admin / missing-credentials / API-error / token-throw; the email
+  adapting between the "already set up" and manual variants; both variants carrying the CAPR
+  citation and the compose-window switching note with no stray `{{placeholder}}`; and neither
+  a throwing send nor a throwing Send-As call propagating.
+
+> **Scope note.** This covers the nightly/hand-added path, the only secondary-alias creator
+> present in this branch. The separate CAPID-driven alias web app (commit `330c99c`, never
+> merged) would need the same wiring if revived — separate script projects cannot share the
+> code.
+
 ## [2026-08-18] — two stuck migrations: bandwidth quota and an uninitialised mailbox
 
 ### Fixed

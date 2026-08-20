@@ -6,9 +6,23 @@
  * curated opt-in list, not the whole roster — only listed accounts are touched.
  * Safe to run unattended on a daily trigger.
  * Author: Maj Isaac Wilson IV, California Wing
- * Version: 1.3.0
- * Date: 2026-07-19
- * Changes: 1.3.0 — added findSecondaryDomainAliasBlockers(), a READ-ONLY diagnostic
+ * Version: 1.4.0
+ * Date: 2026-08-19
+ * Changes: 1.4.0 — when an alias is newly ADDED, make the address usable and tell
+ *   the member. (1) configureSecondaryAliasSendAs_ turns on Gmail "Send mail as"
+ *   for the member via the existing service-account impersonation, so the address
+ *   is ready to SEND from, not just receive — the member has no setup steps to
+ *   follow and fail. Admin accounts (which cannot be impersonated for settings) and
+ *   any failure fall back to manual steps. (2) The member is emailed: whether we
+ *   set sending up for them or they must, plus the CAPR 120-1 §6.9 reminder that a
+ *   .gov address is for official CAP business only — no commercial or fundraising
+ *   use. Both fire ONLY on a real insert, so a settled list does nothing (an
+ *   already-present alias never reaches this path). Both are best-effort and never
+ *   throw — the alias is already created and must not read as failed. Opt-out via
+ *   Script Property SECONDARY_ALIAS_NOTIFY=false. New template
+ *   SecondaryAliasWelcomeEmail.html. Uses gmail.send/script.send_mail and
+ *   gmail.settings.sharing, all already in the manifest.
+ *   1.3.0 — added findSecondaryDomainAliasBlockers(), a READ-ONLY diagnostic
  *   for the silent failure this module's latching creates. The secondary domain is meant
  *   to carry ALIASES on primary-domain accounts, but a separate ACCOUNT sitting on
  *   first.last@<secondary> occupies that exact address, so Users.Aliases.insert 409s and
@@ -178,6 +192,7 @@ function processSecondaryDomainAliases_(dryRun) {
   let alreadyPresent = 0;
   let latched = 0;
   let failed = 0;
+  let notified = 0;
 
   // Row 0 is the header; sheet rows are 1-based, so sheet row = i + 1.
   for (let i = 1; i < rows.length; i++) {
@@ -206,7 +221,7 @@ function processSecondaryDomainAliases_(dryRun) {
 
     let user;
     try {
-      user = AdminDirectory.Users.get(primaryEmail, { fields: 'primaryEmail,aliases' });
+      user = AdminDirectory.Users.get(primaryEmail, { fields: 'primaryEmail,aliases,name,isAdmin' });
     } catch (err) {
       // Left un-latched deliberately: unlike a conflict this may be transient (an
       // API blip) or pending (the row was added before the account exists), so a
@@ -235,6 +250,21 @@ function processSecondaryDomainAliases_(dryRun) {
       Logger.info('Secondary-domain alias added', { user: primaryEmail, alias: aliasEmail });
       writeBack[w] = ['ADDED — ' + aliasEmail, timestamp];
       added++;
+
+      // Set up "Send mail as" for the member so they have nothing manual to do —
+      // the address is ready to send from, not just receive. Best-effort: on an
+      // admin account (which cannot be impersonated for settings) or any failure
+      // this returns a non-'configured' outcome and the email falls back to the
+      // manual Gmail steps. Never throws; the alias is already created.
+      const sendAs = configureSecondaryAliasSendAs_(
+        primaryEmail, aliasEmail, user.name ? user.name.fullName : '', !!user.isAdmin);
+
+      // Tell the member their new address exists, how (or that we already set up)
+      // sending from it, and that a .gov address is official-use-only
+      // (CAPR 120-1 §6.9). Sent ONLY on a real insert, so a settled list makes no
+      // mail. Best-effort: a mail failure must not fail the run or lose the alias.
+      notified += maybeSendSecondaryAliasWelcome_(
+        primaryEmail, aliasEmail, user.name ? user.name.fullName : '', sendAs) ? 1 : 0;
     } catch (err) {
       // 409 means the address is taken somewhere else in the tenant — another
       // account, or a group. Unlike addAlias() in UpdateMembers.gs we do NOT
@@ -266,7 +296,8 @@ function processSecondaryDomainAliases_(dryRun) {
     added: added,
     alreadyPresent: alreadyPresent,
     skippedLatchedConflicts: latched,
-    failed: failed
+    failed: failed,
+    welcomeEmailsSent: notified
   });
 }
 
@@ -332,6 +363,314 @@ function isDomainVerified_(secondaryDomain) {
 function secondaryAliasCell_(row, index) {
   const v = row[index];
   return (v === undefined || v === null) ? '' : v;
+}
+
+/**
+ * Template name (folder + basename, no extension). A file at
+ * src/accounts-and-groups/SecondaryAliasWelcomeEmail.html deploys under Apps
+ * Script as this exact name, and HtmlService needs it verbatim — see ADMIN_GUIDE.
+ */
+const SECONDARY_ALIAS_WELCOME_TEMPLATE = 'accounts-and-groups/SecondaryAliasWelcomeEmail';
+
+/**
+ * True unless an admin has switched member notification off. The address is minted
+ * either way; this only governs whether the member is told. Opt-OUT (default on),
+ * via Script Property SECONDARY_ALIAS_NOTIFY, so a deliberate bulk backfill can be
+ * run quietly — although in practice a settled list sends nothing anyway, since
+ * only a genuine insert reaches the send path.
+ */
+function secondaryAliasNotifyEnabled_() {
+  const raw = String(
+    PropertiesService.getScriptProperties().getProperty('SECONDARY_ALIAS_NOTIFY') || ''
+  ).trim().toLowerCase();
+  return !(raw === 'false' || raw === '0' || raw === 'no' || raw === 'off');
+}
+
+/**
+ * Turns on Gmail "Send mail as" for the member so the new address is ready to
+ * SEND from, not just receive — the whole point being that the member should not
+ * follow setup steps only to find the address unusable.
+ *
+ * Reuses the service-account impersonation the send-as name sync already relies on
+ * (getImpersonatedToken_ + the sendAs REST endpoint in UpdateMembers.gs). Because
+ * the address is on a domain this tenant owns, Gmail auto-accepts it: no
+ * verification email, no SMTP.
+ *
+ * BEST-EFFORT, and NEVER throws — the alias is already created before this runs.
+ * The outcome only steers what the member is told: a 'configured'/'exists' result
+ * lets the email say "already set up," anything else falls back to manual steps.
+ *
+ * @returns {'configured'|'exists'|'skipped-admin'|'unavailable'|'failed'}
+ */
+function configureSecondaryAliasSendAs_(primaryEmail, aliasEmail, fullName, isAdmin) {
+  // Google refuses to impersonate an admin for user settings (the sendAs call
+  // 403s), and addAliasesFromSheet() skips admins for the same reason. Rare on
+  // this tab; hand them the manual steps instead of logging a scary failure.
+  if (isAdmin) {
+    Logger.info('Auto Send-As skipped for an admin account; manual steps will be sent', {
+      user: primaryEmail, alias: aliasEmail
+    });
+    return 'skipped-admin';
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('SA_IMPERSONATION_EMAIL') || !props.getProperty('SA_PRIVATE_KEY')) {
+    // Not an error: a tenant may not have set up impersonation. The member simply
+    // gets the manual steps.
+    Logger.warn('Auto Send-As unavailable — no impersonation credentials; sending manual steps', {
+      user: primaryEmail
+    });
+    return 'unavailable';
+  }
+
+  const scope = 'https://www.googleapis.com/auth/gmail.settings.basic ' +
+                'https://www.googleapis.com/auth/gmail.settings.sharing';
+  try {
+    const token = getImpersonatedToken_(primaryEmail, scope);
+    const resp = UrlFetchApp.fetch(
+      'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs', {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + token },
+        payload: JSON.stringify({
+          sendAsEmail: aliasEmail,
+          displayName: String(fullName || '').trim(),
+          treatAsAlias: true
+        }),
+        muteHttpExceptions: true
+      });
+
+    const code = resp.getResponseCode();
+    if (code >= 200 && code < 300) {
+      Logger.info('Send-As configured for secondary alias', { user: primaryEmail, alias: aliasEmail });
+      return 'configured';
+    }
+    if (code === 409) {
+      // Already a send-as identity on the account — nothing to do, still "ready".
+      Logger.info('Send-As already present for secondary alias', { user: primaryEmail, alias: aliasEmail });
+      return 'exists';
+    }
+    Logger.warn('Send-As setup failed for secondary alias (member can add it manually)', {
+      user: primaryEmail, alias: aliasEmail, code: code, response: resp.getContentText()
+    });
+    return 'failed';
+  } catch (err) {
+    Logger.warn('Send-As setup errored for secondary alias (member can add it manually)', {
+      user: primaryEmail, alias: aliasEmail, errorMessage: err.message
+    });
+    return 'failed';
+  }
+}
+
+/** True once the send-as identity exists, so the email can skip the manual steps. */
+function secondaryAliasSendAsReady_(outcome) {
+  return outcome === 'configured' || outcome === 'exists';
+}
+
+/**
+ * Emails the member that their secondary-domain address now exists: how to send
+ * from it in Gmail, and the CAPR 120-1 §6.9 reminder that a .gov address is for
+ * official CAP business only (no commercial or fundraising use).
+ *
+ * BEST-EFFORT BY CONTRACT. The caller has already created the alias; a mail
+ * failure here must neither throw nor be reported as an alias failure, or a flaky
+ * mail send would make a successful provisioning look broken and get "fixed". So
+ * every failure is swallowed to a warning and returns false.
+ *
+ * @returns {boolean} true iff a message was actually sent.
+ */
+function maybeSendSecondaryAliasWelcome_(primaryEmail, aliasEmail, fullName, sendAsOutcome) {
+  if (!secondaryAliasNotifyEnabled_()) return false;
+
+  // Without a from-identity the mail would go out as whatever account holds the
+  // trigger, which is not what a member should see. Treat a missing sender as
+  // "notifications not configured" rather than guessing.
+  const sender = String(CONFIG.AUTOMATION_SENDER_EMAIL || '').trim();
+  if (!sender) {
+    Logger.warn('Secondary-alias welcome not sent: no TENANT_AUTOMATION_SENDER_EMAIL configured', {
+      user: primaryEmail, alias: aliasEmail
+    });
+    return false;
+  }
+
+  try {
+    const html = renderSecondaryAliasWelcome_(primaryEmail, aliasEmail, fullName, sendAsOutcome);
+    const subject = 'Your new ' + CONFIG.ORG_LABEL + ' email address: ' + aliasEmail;
+    const options = {
+      htmlBody: html,
+      from: sender,
+      name: SENDER_NAME
+    };
+    const replyTo = String(CONFIG.ITSUPPORT_EMAIL || '').trim();
+    if (replyTo) options.replyTo = replyTo;
+
+    // Same retrying send the retention mail uses, so a transient Gmail quota blip
+    // does not drop the notice.
+    executeWithRetry(function () {
+      GmailApp.sendEmail(primaryEmail, subject, htmlToPlainText_(html), options);
+    });
+
+    Logger.info('Secondary-alias welcome sent', { user: primaryEmail, alias: aliasEmail });
+    return true;
+  } catch (err) {
+    Logger.warn('Secondary-alias welcome failed to send (alias was still created)', {
+      user: primaryEmail, alias: aliasEmail, errorMessage: err.message
+    });
+    return false;
+  }
+}
+
+/**
+ * Builds the "sending from your new address" block of the email, which differs by
+ * whether we already turned on Send-As for the member.
+ *
+ * The alias address is inlined here rather than left as a {{placeholder}}: this
+ * fragment is substituted INTO the template as a replacement value, and a global
+ * replace does not re-scan what it just inserted, so any {{...}} left inside would
+ * ship to the member raw.
+ */
+function secondaryAliasSendAsSectionHtml_(primaryEmail, aliasEmail, sendAsOutcome) {
+  const addr = '<strong>' + aliasEmail + '</strong>';
+  const primary = '<strong>' + primaryEmail + '</strong>';
+
+  // How to pick which address a single message goes out from. Shown in both
+  // variants — it is the same action whether we set the address up or the member
+  // did, and it is the step people most often miss.
+  const switching = '<p><strong>Choosing which address a message is sent from.</strong> ' +
+    'You decide per message, right in the compose window. Click <strong>Compose</strong>, ' +
+    'then click the <strong>From</strong> line near the top of the new message — a menu drops ' +
+    'down listing both ' + primary + ' and ' + addr + '. Pick whichever you want this message ' +
+    'to come from. Your primary address, ' + primary + ', stays the default; switching to ' +
+    addr + ' affects only the message you are writing.</p>' +
+    '<p class="muted">On phones, tap the <strong>From</strong> field in the Gmail app the same ' +
+    'way to switch addresses before sending.</p>';
+
+  const timing = '<p class="muted">A brand-new address can take up to a day for Google to ' +
+    'finish registering. If it is not selectable yet, check back later that day — nothing ' +
+    'is wrong and you do not need to do anything.</p>';
+
+  if (secondaryAliasSendAsReady_(sendAsOutcome)) {
+    return '<p><strong>Sending mail from your new address — already set up.</strong> ' +
+      'We have turned on sending from ' + addr + ' for you, so there is nothing to install.</p>' +
+      switching +
+      timing;
+  }
+
+  // Fallback: the member sets it up themselves (admin accounts, or if the
+  // automatic setup did not succeed).
+  return '<p><strong>Sending mail from your new address.</strong> Incoming mail already ' +
+    'arrives without any setup. To also <em>send</em> as ' + addr + ', add it to Gmail once:</p>' +
+    '<ol class="steps">' +
+      '<li>In Gmail, click the <strong>gear icon</strong> (top right) &rarr; ' +
+        '<strong>See all settings</strong>.</li>' +
+      '<li>Open the <strong>Accounts</strong> tab.</li>' +
+      '<li>Under <strong>&ldquo;Send mail as&rdquo;</strong>, click ' +
+        '<strong>Add another email address</strong>.</li>' +
+      '<li>Enter your name and ' + addr + '. Leave <strong>&ldquo;Treat as an alias&rdquo;</strong> ' +
+        'checked, then click <strong>Next Step</strong> and <strong>Add</strong>.</li>' +
+      '<li>Because this address is on a domain your account already owns, there is no ' +
+        'confirmation email to wait for and no separate password or SMTP server to configure. ' +
+        '(If Gmail says it cannot verify the address, it has not finished registering yet — ' +
+        'try again later that day.)</li>' +
+    '</ol>' +
+    switching +
+    timing;
+}
+
+/**
+ * Renders SecondaryAliasWelcomeEmail.html with this member's and tenant's values.
+ * Uses a replacer FUNCTION, not a string, so a value containing '$&' cannot
+ * corrupt the output; an unrecognized {{placeholder}} is left visible so a typo
+ * surfaces in the mail rather than silently blanking.
+ */
+function renderSecondaryAliasWelcome_(primaryEmail, aliasEmail, fullName, sendAsOutcome) {
+  const itSupportUrl = String(
+    PropertiesService.getScriptProperties().getProperty('TENANT_ITSUPPORT_URL') || ''
+  ).trim() || 'https://support.pcrcap.org';
+
+  const fields = {
+    fullName: String(fullName || '').trim() || 'Member',
+    primaryEmail: primaryEmail,
+    aliasEmail: aliasEmail,
+    wingName: CONFIG.WING_NAME,
+    orgLabel: CONFIG.ORG_LABEL,
+    itSupportUrl: itSupportUrl,
+    // The send-from instructions differ depending on whether we already set up
+    // "Send mail as" for them — see secondaryAliasSendAsSectionHtml_.
+    sendAsSection: secondaryAliasSendAsSectionHtml_(primaryEmail, aliasEmail, sendAsOutcome),
+    signature: '<strong>' + CONFIG.ORG_LABEL + ' IT Team</strong><br>' +
+      CONFIG.WING_NAME + ' Civil Air Patrol'
+  };
+
+  return HtmlService
+    .createHtmlOutputFromFile(SECONDARY_ALIAS_WELCOME_TEMPLATE)
+    .getContent()
+    .replace(/{{(\w+)}}/g, function (match, key) {
+      return Object.prototype.hasOwnProperty.call(fields, key) ? fields[key] : match;
+    });
+}
+
+/**
+ * Minimal HTML-to-text for the plain-text alternative part. Not a general
+ * converter — just enough that a client with images/HTML disabled still gets a
+ * readable body instead of raw markup. The HTML part carries the real formatting.
+ */
+function htmlToPlainText_(html) {
+  // NOT a security sanitizer, and it contains NO regex that matches HTML tags —
+  // regex HTML filtering is both unreliable and flagged by scanners. It renders
+  // our OWN template to the text/plain part: take only the <body> (plain indexOf),
+  // then remove markup with a character scanner (htmlBodyToText_) that drops
+  // everything between '<' and '>' and cannot leave a partial tag, then decode the
+  // few entities in ONE pass so &amp; -> & cannot re-form an entity.
+  var s = htmlBodyToText_(bodyInnerHtml_(String(html)));
+  var ENT = { amp: '&', bull: '•', rarr: '->', ldquo: '"', rdquo: '"', nbsp: ' ' };
+  s = s.replace(/&(amp|bull|rarr|ldquo|rdquo|nbsp);/g, function (m, name) { return ENT[name]; });
+  return s.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
+}
+
+/**
+ * Removes HTML markup with a plain character scan — NOT a regex — so there is no
+ * tag-matching pattern for a scanner to call an incomplete sanitizer, and an
+ * unclosed '<' simply drops the rest. A handful of block-level tags become a
+ * newline so paragraphs survive into the plaintext.
+ */
+function htmlBodyToText_(s) {
+  var BREAKS = { 'br': 1, '/p': 1, '/li': 1, '/h1': 1, '/div': 1 };
+  var out = '';
+  var i = 0;
+  while (i < s.length) {
+    var ch = s.charAt(i);
+    if (ch === '<') {
+      var end = s.indexOf('>', i);
+      if (end === -1) break;                 // unclosed tag: drop the remainder
+      var tag = s.slice(i + 1, end).trim().toLowerCase();
+      var sp = tag.indexOf(' ');
+      if (sp !== -1) tag = tag.slice(0, sp); // tag name only, ignore attributes
+      if (BREAKS[tag]) out += '\n';
+      i = end + 1;
+    } else if (ch === '>') {
+      i++;                                    // stray '>' dropped
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * The content between <body ...> and </body>, located with plain indexOf (no
+ * regex), so the head/style block is excluded from the plaintext. Falls back to
+ * the whole string if there is no body element.
+ */
+function bodyInnerHtml_(s) {
+  var lower = s.toLowerCase();
+  var open = lower.indexOf('<body');
+  if (open === -1) return s;
+  var contentStart = s.indexOf('>', open);
+  if (contentStart === -1) return s;
+  var close = lower.indexOf('</body>', contentStart);
+  return s.slice(contentStart + 1, close === -1 ? s.length : close);
 }
 
 /**

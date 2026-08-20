@@ -10,3 +10,7 @@
 # ...and admin-webapp/, the domain admin help-desk app. Also a SEPARATE script
 # project with its own clasp target and rootDir.
 !admin-webapp/**
+# ...and secondary-alias-webapp/, the ".gov Account Processing" page that adds and
+# removes members on the Secondary Aliases tab by CAPID. Also a SEPARATE script
+# project with its own clasp target and rootDir.
+!secondary-alias-webapp/**
