@@ -161,7 +161,23 @@ section('4. PARITY — web app and src render the same email for the same inputs
 }
 
 // ---------------------------------------------------------------------------
-section('5. Config wing derivation — TENANT_WING alone yields CAWG / California Wing');
+section('5. webappHtmlToPlainText_ — no residual markup, no double-unescape (CodeQL)');
+{
+  const t = build().fns.webappHtmlToPlainText_;
+  check('strips whole tags', /<[a-z/]/i.test(t('<p>Hi <strong>there</strong></p>')), false);
+  check('removes script blocks entirely, content included', t('<script>alert(1)</script>Hello'), 'Hello');
+  check('removes style blocks entirely', t('<style>.a{}</style>Hello'), 'Hello');
+  // The incomplete-sanitization worry: an unclosed "<script" must not survive.
+  check('an unclosed <script leaves no angle bracket', /[<>]/.test(t('safe <script foo')), false);
+  // The double-unescape worry: &amp; decodes to a literal & in ONE pass and does
+  // not re-form an entity for a second pass.
+  check('&amp; decodes once', t('a &amp; b'), 'a & b');
+  check('&amp;bull; does not become a bullet', t('x &amp;bull; y'), 'x &bull; y');
+  check('real entities still decode', t('<p>see &rarr; here &bull; done</p>'), 'see -> here • done');
+}
+
+// ---------------------------------------------------------------------------
+section('6. Config wing derivation — TENANT_WING alone yields CAWG / California Wing');
 {
   // Config.gs declares its own Logger, so do NOT inject one (a param + `const
   // Logger` would be a redeclaration). It only needs PropertiesService at load.

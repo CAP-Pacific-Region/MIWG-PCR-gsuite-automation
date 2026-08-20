@@ -204,17 +204,22 @@ function webappRenderWelcome_(primaryEmail, aliasEmail, fullName, sendAsOutcome)
 
 /** Minimal HTML->text for the plain-text alternative part. */
 function webappHtmlToPlainText_(html) {
-  return String(html)
+  // NOT a security sanitizer — it renders our OWN template to the text/plain
+  // alternative part. It is still written to leave no markup or half-tags: whole
+  // non-text blocks go first, then every complete tag, then any stray angle
+  // bracket, so an unclosed "<script"/"<style" cannot survive. Entities are then
+  // decoded in a SINGLE pass, so decoding &amp; -> & cannot re-form an entity for
+  // a later pass to decode again.
+  var s = String(html)
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<head[\s\S]*?<\/head>/gi, '')
-    .replace(/<(br|\/p|\/li|\/h1|\/div)>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&bull;/g, '•').replace(/&rarr;/g, '->')
-    .replace(/&ldquo;|&rdquo;/g, '"').replace(/&amp;/g, '&')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]+\n/g, '\n')
-    .trim();
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<(?:br|\/p|\/li|\/h1|\/div)>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/[<>]/g, '');
+  var ENT = { amp: '&', bull: '•', rarr: '->', ldquo: '"', rdquo: '"', nbsp: ' ' };
+  s = s.replace(/&(amp|bull|rarr|ldquo|rdquo|nbsp);/g, function (m, name) { return ENT[name]; });
+  return s.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
 }
 
 /**
