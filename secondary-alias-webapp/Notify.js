@@ -204,17 +204,13 @@ function webappRenderWelcome_(primaryEmail, aliasEmail, fullName, sendAsOutcome)
 
 /** Minimal HTML->text for the plain-text alternative part. */
 function webappHtmlToPlainText_(html) {
-  // NOT a security sanitizer, and deliberately NOT a regex HTML filter (those are
-  // both unreliable and flagged by scanners). It renders our OWN template to the
-  // text/plain part. Strategy: take only the <body> — found by plain string search,
-  // not a filtering regex — so the <head>/<style> CSS is excluded outright rather
-  // than stripped. Then drop tags and any stray angle bracket, so no partial tag
-  // survives, and decode the few entities in ONE pass so &amp; -> & cannot re-form
-  // an entity for a later pass.
-  var s = webappBodyInnerHtml_(String(html));
-  s = s.replace(/<(?:br|\/p|\/li|\/h1|\/div)>/gi, '\n')
-       .replace(/<[^>]*>/g, '')
-       .replace(/[<>]/g, '');
+  // NOT a security sanitizer, and it contains NO regex that matches HTML tags —
+  // regex HTML filtering is both unreliable and flagged by scanners. It renders
+  // our OWN template to the text/plain part: take only the <body> (plain indexOf),
+  // then remove markup with a character scanner (webappHtmlBodyToText_) that drops
+  // everything between '<' and '>' and cannot leave a partial tag, then decode the
+  // few entities in ONE pass so &amp; -> & cannot re-form an entity.
+  var s = webappHtmlBodyToText_(webappBodyInnerHtml_(String(html)));
   var ENT = { amp: '&', bull: '•', rarr: '->', ldquo: '"', rdquo: '"', nbsp: ' ' };
   s = s.replace(/&(amp|bull|rarr|ldquo|rdquo|nbsp);/g, function (m, name) { return ENT[name]; });
   return s.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
@@ -233,6 +229,36 @@ function webappBodyInnerHtml_(s) {
   if (contentStart === -1) return s;
   var close = lower.indexOf('</body>', contentStart);
   return s.slice(contentStart + 1, close === -1 ? s.length : close);
+}
+
+/**
+ * Removes HTML markup with a plain character scan — NOT a regex — so there is no
+ * tag-matching pattern for a scanner to call an incomplete sanitizer, and an
+ * unclosed '<' simply drops the rest. A handful of block-level tags become a
+ * newline so paragraphs survive into the plaintext.
+ */
+function webappHtmlBodyToText_(s) {
+  var BREAKS = { 'br': 1, '/p': 1, '/li': 1, '/h1': 1, '/div': 1 };
+  var out = '';
+  var i = 0;
+  while (i < s.length) {
+    var ch = s.charAt(i);
+    if (ch === '<') {
+      var end = s.indexOf('>', i);
+      if (end === -1) break;                 // unclosed tag: drop the remainder
+      var tag = s.slice(i + 1, end).trim().toLowerCase();
+      var sp = tag.indexOf(' ');
+      if (sp !== -1) tag = tag.slice(0, sp); // tag name only, ignore attributes
+      if (BREAKS[tag]) out += '\n';
+      i = end + 1;
+    } else if (ch === '>') {
+      i++;                                    // stray '>' dropped
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
 }
 
 /**
