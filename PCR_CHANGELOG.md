@@ -10,6 +10,39 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-19] — The admin help-desk app now runs on the cadets tenant too (`admin-webapp/`)
+
+Adds the cadets clasp target and npm scripts (`push:admin:cadets` etc.) alongside the existing
+seniors ones, and fixes three things in the shared source that were silently seniors-only.
+
+### Added
+
+- **`admin-webapp/Setup.gs`** — per-tenant setup values (seniors + cadets), each behind its own
+  run-by-hand function (`setupSeniorsAdminWebApp()` / `setupCadetsAdminWebApp()`), sourced from
+  `config-tenants/<tenant>.json`. `admSetupApply_()` **refuses** to write a `TENANT_PROFILE`
+  that contradicts the one already on the project — pushed as-is to the cadet project, the old
+  hardcoded seniors values would have written `@cawgcap.org` and the seniors CAPWATCH folder
+  onto the cadet tenant without throwing, so every lookup would answer from the wrong extract
+  while every action targeted a domain that tenant does not own.
+
+### Changed
+
+- **`Config.gs`** — `WEBAPP_CADET_TOOLS_URL` renamed to `WEBAPP_PEER_ADMIN_URL` (the old name
+  is still read as a fallback), and `TENANT_CADETS_TENANT_DOMAIN` generalized to `XT_PEER_DOMAIN`
+  (old name still read as a fallback too) — both were cadet-specific naming for a general
+  "the other tenant" idea that now means `cawgcadets.org` on seniors and `cawgcap.org` on
+  cadets. `WEBAPP_2SV_SETUP_GROUP` now also accepts `TENANT_2SV_SETUP_GROUP` as a fallback,
+  matching the name `src/accounts-and-groups/TwoSvSetupGroup.gs` already uses for the same
+  group. The cadet tenant's own 2SV group is deliberately left **blank** by default —
+  `2sv-setup@cawgcap.org` lives on the other Workspace and cannot hold cadet accounts.
+
+### Fixed
+
+- **"This member is elsewhere" notice** pointed at the cadet Workspace unconditionally. On the
+  cadets tenant, the members this app cannot help are **seniors** — unfixed, it would have
+  pointed an admin at the page they were already standing on. The label and destination now
+  come from the member's type and `XT_PEER_DOMAIN`.
+
 ## [2026-08-19] — The ".gov Account Processing" web app now runs the whole process on Add (`secondary-alias-webapp/` 1.1.0)
 
 The live secondary-alias add/remove page (deployment `AKfycbz5mBOJ…`, its own script

@@ -83,13 +83,17 @@ member's inbox.
 
 ## 4. Setting it up on a tenant
 
-One script project per tenant (a project lives in one Workspace). These steps are
-for the seniors tenant; repeat with a new clasp target for any other.
+One script project per tenant (a project lives in one Workspace). It now runs on
+**both** CAWG tenants — `clasp-targets/admin-webapp-seniors.clasp.json` and
+`clasp-targets/admin-webapp-cadets.clasp.json` — each pointed at its own project
+and, on the page, linked to the other. Repeat with a new clasp target for any
+other tenant.
 
 ### 4.1 Create the project and push
 
-The seniors project already exists and its ID is in
-`clasp-targets/admin-webapp-seniors.clasp.json`. For a new tenant:
+The seniors and cadets projects already exist; their IDs are in
+`clasp-targets/admin-webapp-seniors.clasp.json` and
+`clasp-targets/admin-webapp-cadets.clasp.json`. For a new tenant:
 
 ```bash
 clasp create-script --title "CAWG Account Admin" --type standalone
@@ -98,8 +102,15 @@ clasp create-script --title "CAWG Account Admin" --type standalone
 Paste the returned script ID into a new clasp target, then:
 
 ```bash
-npm run push:admin:seniors
+npm run push:admin:seniors     # or push:admin:cadets
 ```
+
+`admin-webapp/Setup.gs` holds a one-time, run-by-hand setup function per tenant
+(`setupSeniorsAdminWebApp()` / `setupCadetsAdminWebApp()`), sourced from
+`config-tenants/<tenant>.json`. Both go through `admSetupApply_()`, which
+**refuses** to overwrite a project already configured for a different
+`TENANT_PROFILE` — the guard against pointing the cadet project at the seniors
+domain and CAPWATCH extract, or vice versa.
 
 `--force` is baked into the push script: Apps Script normalizes `appsscript.json`
 server-side, so clasp always sees a manifest diff and, non-interactively, answers
@@ -131,9 +142,9 @@ the same names the main project uses.
 | `TENANT_AUTOMATION_SPREADSHEET_ID` | no | where the audit tab is written |
 | `TENANT_WING_ABBREVIATION` | no | derived from `TENANT_WING` when blank |
 | `TENANT_PROFILE` | no | `seniors` (default) / `cadets` / `region` — decides which members this tenant provisions, see §5.1 |
-| `WEBAPP_CADET_TOOLS_URL` | no | linked when an admin opens a member from the other tenant |
-| `TENANT_CADETS_TENANT_DOMAIN` | no | named as a fallback when the URL above is unset |
-| `WEBAPP_2SV_SETUP_GROUP` | no | the 2SV group's address. **Blank disables the group panel entirely** |
+| `WEBAPP_PEER_ADMIN_URL` | no | linked when an admin opens a member from the other tenant. `WEBAPP_CADET_TOOLS_URL` is still read as a fallback for the older name |
+| `XT_PEER_DOMAIN` | no | the peer tenant's domain, named when no peer admin URL is set. `TENANT_CADETS_TENANT_DOMAIN` is still read as a fallback for the older name |
+| `WEBAPP_2SV_SETUP_GROUP` | no | the 2SV group's address. **Blank disables the group panel entirely**. `TENANT_2SV_SETUP_GROUP` is accepted as a fallback, since `src/` already uses that name for the same group |
 | `WEBAPP_MANAGED_GROUPS` | no | comma-separated extra groups the app may change |
 | `WEBAPP_ADMIN_ROLES` | no | defaults to `_HELP_DESK_ADMIN_ROLE` |
 | `WEBAPP_ADMIN_GROUP` | no | additive escape hatch for someone with no admin role |

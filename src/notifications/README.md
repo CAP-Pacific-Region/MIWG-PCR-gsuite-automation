@@ -2,7 +2,7 @@
 
 Push signals to unit command staff, derived from the CAPWATCH extract.
 
-Both modules follow the same shape, deliberately: **own Drive state file, own trigger, no
+All three modules follow the same shape, deliberately: **own Drive state file, own trigger, no
 contact with provisioning.** A failure here cannot affect account creation, and a
 `forceUpdateAllMembers()` cannot swallow a pending notification. Neither reuses
 `CurrentMembers.txt` — that snapshot belongs to `updateAllMembers()`, and sharing it would
@@ -12,6 +12,7 @@ mean a throw mid-run either re-mails every commander or silently drops transitio
 |--------|---------|---------|--------------|
 | `LSCodeNotify.gs` | Weekly (Mon) | seniors | `RUN_LSCODE_NOTIFICATIONS` |
 | `RecoveryEmailNotify.gs` | Monthly (1st) | seniors + cadets | `RUN_RECOVERY_EMAIL_NOTIFICATIONS` |
+| `ParentEmailNotify.gs` | Monthly | cadets | `RUN_PARENT_EMAIL_NOTIFICATIONS` |
 
 Each module's header is the authoritative documentation — read it before changing behaviour.
 Operational steps live in [Admin Guide §8–9](../../docs/ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule).
@@ -58,7 +59,21 @@ intended: cadet-lite members are excluded (no account, no password), and a cadet
 ⚠️ On the **cadets** tenant, set `TENANT_COMMAND_EMAIL_DOMAIN` to the senior domain. Command
 staff are seniors and hold no cadet-domain account.
 
-## Sending identity — read before scheduling either
+## ParentEmailNotify.gs — bad parent/guardian contact emails
+
+Mails a unit's Commander and Deputy Commander for Cadets a monthly digest of parent/guardian
+addresses on their cadets' records that Google **rejected** — read from
+`RejectedMemberAddresses.json`, the ledger `updateAllSquadronGroups()` writes when
+`members.insert` refuses an address with 404. This module never checks an address itself; it
+only reports what the squadron sync already observed, so it reports nothing until that sync has
+run at least once, and nothing for a unit with no managed `.parents` list.
+
+**Cadets tenant only** (`RUN_PARENT_EMAIL_NOTIFICATIONS`). Suppression is per member **and**
+per address, tracked for three months, same shape as `RecoveryEmailNotify.gs`'s per-category
+window — so a second bad address on the same cadet is still reported even while the first is
+suppressed, and a corrected address simply drops out of the ledger and stops being reported.
+
+## Sending identity — read before scheduling any of these
 
 Digests send as `AUTOMATION_SENDER_EMAIL`, which Gmail permits only when the **executing**
 account owns that verified Send-As alias. A time-driven trigger runs as whoever created it, so
@@ -71,7 +86,7 @@ is the signature of exactly this misconfiguration.
 
 ## Tests
 
-`npm test` runs both modules under Node with faked Google globals
+`npm test` runs all three modules under Node with faked Google globals
 ([`test/helpers/apps-script.js`](../../test/helpers/apps-script.js)). What is verified is the
 modules' own decisions — who gets mailed and when — not that Google's APIs behave.
 `makeClock()` moves "today" so the three-month window can be tested without waiting.

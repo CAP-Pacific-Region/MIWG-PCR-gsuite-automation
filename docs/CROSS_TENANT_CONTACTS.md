@@ -1,6 +1,6 @@
 # Cross-Tenant Shared Contacts
 
-**Module:** `src/cross-tenant-contacts/CrossTenantContacts.gs` (v0.2.0, draft)
+**Module:** `src/cross-tenant-contacts/CrossTenantContacts.gs` (v0.2.2, draft)
 **Status:** Deployed on seniors + cadets. Replaces the two legacy wing projects
 (cadets `1fJRqo…`, seniors `1b2JSIB…`) that did the same job via export spreadsheets.
 
