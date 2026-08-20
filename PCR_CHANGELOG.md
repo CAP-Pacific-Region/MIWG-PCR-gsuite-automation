@@ -43,7 +43,9 @@ byte-for-byte template check and a render-parity check across all send-as outcom
 - New scopes (`gmail.settings.sharing`/`.basic`, `gmail.send`, `script.send_mail`,
   `script.external_request`) — the deploying account must **re-authorize**.
 - New Script Properties on that project: `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` (Send-As),
-  `TENANT_AUTOMATION_SENDER_EMAIL` / `TENANT_ITSUPPORT_EMAIL` / `TENANT_WING_NAME` (email).
+  `TENANT_AUTOMATION_SENDER_EMAIL` / `TENANT_ITSUPPORT_EMAIL` (email). The email's wing name
+  and ORG label DERIVE from `TENANT_WING` (`CA` → `California Wing` / `CAWG`), mirroring
+  `src/config.gs`, so no separate `TENANT_WING_NAME` is needed.
 - The live deployment is pinned to `@1`, so `clasp push` updates HEAD only; it goes live only
   on a **new version deploy**. Until then the alias still creates and Send-As/email degrade
   gracefully.

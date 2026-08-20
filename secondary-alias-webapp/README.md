@@ -45,11 +45,11 @@ The live deployment `AKfycbz5mBOJ…` ( *.gov Account Processing* ) serves **ver
 
    | Property | For | Notes |
    |---|---|---|
-   | `TENANT_EMAIL_DOMAIN`, `TENANT_SECONDARY_EMAIL_DOMAIN`, `TENANT_AUTOMATION_SPREADSHEET_ID`, `WEBAPP_ALIAS_ADMIN_GROUP`, `TENANT_WING_ABBREVIATION` | (already set — the original app) | |
+   | `TENANT_EMAIL_DOMAIN`, `TENANT_SECONDARY_EMAIL_DOMAIN`, `TENANT_AUTOMATION_SPREADSHEET_ID`, `WEBAPP_ALIAS_ADMIN_GROUP` | (already set — the original app) | |
+   | `TENANT_WING` | ORG label + wing name in the email | `CA` → derives `CAWG` / `California Wing`, exactly like `src/`. Set this one; do **not** set `TENANT_WING_NAME`/`TENANT_WING_ABBREVIATION` unless the derivation is wrong for your wing. |
    | `SA_IMPERSONATION_EMAIL`, `SA_PRIVATE_KEY` | **auto Send-As** | the tenant's delegated service account (the secret key; same values `src/` uses) |
    | `TENANT_AUTOMATION_SENDER_EMAIL` | the welcome email's From | without it, no email is sent |
    | `TENANT_ITSUPPORT_EMAIL` | the email's Reply-To | |
-   | `TENANT_WING_NAME` | email copy (e.g. `California Wing`) | |
    | `TENANT_SENDER_NAME` | optional From name | defaults to `CAP Information Technology` |
    | `TENANT_ITSUPPORT_URL` | optional email footer link | defaults to `https://support.pcrcap.org` |
 

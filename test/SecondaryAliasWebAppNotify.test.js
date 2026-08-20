@@ -18,10 +18,14 @@ const { section, check, done } = require('./helpers/apps-script').makeChecker();
 
 const WEBAPP = path.join(__dirname, '..', 'secondary-alias-webapp', 'Notify.js');
 const SRC = path.join(__dirname, '..', 'src', 'accounts-and-groups', 'SecondaryDomainAliases.gs');
-const WEB_TEMPLATE = fs.readFileSync(
-  path.join(__dirname, '..', 'secondary-alias-webapp', 'SecondaryAliasWelcomeEmail.html'), 'utf8');
-const SRC_TEMPLATE = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'accounts-and-groups', 'SecondaryAliasWelcomeEmail.html'), 'utf8');
+// Normalize line endings: we assert CONTENT parity between the two hand-copies,
+// not their working-tree EOL — which drifts to CRLF on Windows under autocrlf and
+// is irrelevant to what Apps Script renders.
+const readLF = p => fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
+const WEB_TEMPLATE = readLF(
+  path.join(__dirname, '..', 'secondary-alias-webapp', 'SecondaryAliasWelcomeEmail.html'));
+const SRC_TEMPLATE = readLF(
+  path.join(__dirname, '..', 'src', 'accounts-and-groups', 'SecondaryAliasWelcomeEmail.html'));
 
 /** Loads the web app's Notify.gs with fakes; returns fns + captured effects. */
 function build(opts) {
@@ -154,6 +158,29 @@ section('4. PARITY — web app and src render the same email for the same inputs
     const b = web.webappRenderWelcome_('j@cawgcap.org', 'j@cawg.cap.gov', 'Maj J', outcome);
     check('identical rendered email for outcome "' + outcome + '"', a === b, true);
   });
+}
+
+// ---------------------------------------------------------------------------
+section('5. Config wing derivation — TENANT_WING alone yields CAWG / California Wing');
+{
+  // Config.gs declares its own Logger, so do NOT inject one (a param + `const
+  // Logger` would be a redeclaration). It only needs PropertiesService at load.
+  function cfg(props) {
+    return loadModule(
+      path.join(__dirname, '..', 'secondary-alias-webapp', 'Config.js'),
+      { PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null) }) } },
+      ['webappWingName_', 'webappWingAbbreviation_']);
+  }
+  const c = cfg({});
+
+  check('CA -> California Wing', c.webappWingName_('CA', ''), 'California Wing');
+  check('CA -> CAWG', c.webappWingAbbreviation_('CA', ''), 'CAWG');
+  check('lower-case ca still resolves', c.webappWingName_('ca', ''), 'California Wing');
+  check('HI -> Hawaii Wing', c.webappWingName_('HI', ''), 'Hawaii Wing');
+  check('an explicit name override wins', c.webappWingName_('CA', 'Some Other Wing'), 'Some Other Wing');
+  check('an explicit abbreviation override wins', c.webappWingAbbreviation_('CA', 'cawg'), 'CAWG');
+  check('an unknown code falls back to its abbreviation', c.webappWingName_('ZZ', ''), 'ZZWG');
+  check('no wing set at all -> CAP, not an empty masthead', c.webappWingAbbreviation_('', ''), 'CAP');
 }
 
 done();

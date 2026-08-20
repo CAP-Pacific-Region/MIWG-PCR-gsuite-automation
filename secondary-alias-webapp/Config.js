@@ -47,7 +47,13 @@ function getWebAppConfig_() {
      * an unconfigured tenant.
      */
     ADMIN_GROUP: get('WEBAPP_ALIAS_ADMIN_GROUP'),
-    ORG_LABEL: get('TENANT_WING_ABBREVIATION', 'CAP'),
+
+    // ORG_LABEL ('CAWG') and WING_NAME ('California Wing') are DERIVED from
+    // TENANT_WING ('CA'), mirroring src/config.gs, so a deployer only sets the one
+    // canonical property. TENANT_WING_ABBREVIATION / TENANT_WING_NAME remain
+    // optional overrides for a wing whose derivation is wrong. See webappWing*_.
+    ORG_LABEL: webappWingAbbreviation_(get('TENANT_WING'), get('TENANT_WING_ABBREVIATION')),
+    WING_NAME: webappWingName_(get('TENANT_WING'), get('TENANT_WING_NAME')),
 
     // Consumed by Notify.gs when it configures Send-As and emails the member on a
     // new alias. Same TENANT_* names as src/, so copy the values across from
@@ -55,9 +61,39 @@ function getWebAppConfig_() {
     // read directly from Script Properties by webappGetImpersonatedToken_).
     AUTOMATION_SENDER_EMAIL: get('TENANT_AUTOMATION_SENDER_EMAIL'),
     ITSUPPORT_EMAIL: get('TENANT_ITSUPPORT_EMAIL'),
-    WING_NAME: get('TENANT_WING_NAME', 'Civil Air Patrol Wing'),
     SENDER_NAME: get('TENANT_SENDER_NAME', 'CAP Information Technology')
   };
+}
+
+/**
+ * Wing/region code -> proper name, mirrored from WING_NAMES_ in src/config.gs.
+ * Any code not listed falls back to the abbreviation.
+ */
+const WEBAPP_WING_NAMES_ = {
+  CA: 'California Wing',
+  HI: 'Hawaii Wing',
+  NV: 'Nevada Wing',
+  OR: 'Oregon Wing',
+  WA: 'Washington Wing',
+  AK: 'Alaska Wing',
+  PCR: 'Pacific Region'
+};
+
+/** 'CA' -> 'CAWG'; an explicit override wins. Mirrors WING_ABBREVIATION_ in src. */
+function webappWingAbbreviation_(wing, override) {
+  const explicit = String(override || '').trim();
+  if (explicit) return explicit.toUpperCase();
+  const w = String(wing || '').trim().toUpperCase();
+  if (!w) return 'CAP';
+  return (/WG$/.test(w) || w.length !== 2) ? w : w + 'WG';
+}
+
+/** 'CA' -> 'California Wing'; an explicit override wins. Mirrors WING_NAME_ in src. */
+function webappWingName_(wing, override) {
+  const explicit = String(override || '').trim();
+  if (explicit) return explicit;
+  const w = String(wing || '').trim().toUpperCase();
+  return WEBAPP_WING_NAMES_[w] || webappWingAbbreviation_(wing, '');
 }
 
 const WEBAPP_CONFIG = getWebAppConfig_();
