@@ -10,6 +10,50 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-08-19] — New secondary aliases are made send-ready and the member is told (`SecondaryDomainAliases.gs` 1.4.0)
+
+When `addSecondaryDomainAliases()` newly **ADDs** a secondary-domain alias, it now makes the
+address immediately usable and tells the member — so nobody follows setup steps only to find
+the address does not work.
+
+### Added
+
+- **Auto-configures Gmail *Send mail as*** for the member on a new alias, so the address can
+  **send**, not just receive — via the same service-account impersonation
+  (`getImpersonatedToken_` + the `sendAs` REST endpoint) the send-as **name** sync already
+  uses. Admin accounts (which cannot be impersonated for settings) and any setup error fall
+  back to manual steps in the email. Uses `gmail.settings.sharing`, already in the manifest.
+- **Emails the member** (`SecondaryAliasWelcomeEmail.html`): that the address exists; whether
+  sending was set up for them or the manual *Send mail as* steps; **how to switch between
+  their primary and the new address in the Compose window** (the From menu, per message, on
+  desktop and mobile); and the **CAPR 120-1 §6.9** reminder that a `.gov` address is for
+  official CAP business only — no commercial or fundraising use. Sent from
+  `TENANT_AUTOMATION_SENDER_EMAIL`, reply-to `TENANT_ITSUPPORT_EMAIL`.
+- The email sets the expectation that a brand-new address can take **up to a day** before
+  Gmail will send from it (matching the existing "sendable within ~24 hours" note), so a
+  not-yet-propagated address is not mistaken for a broken one.
+
+### Behavior / safety
+
+- Both actions fire **only on a genuine insert**, so a settled list (`OK — already present`)
+  does nothing and re-runs never re-notify — no backfill blast.
+- **Best-effort by contract:** the alias is already created before either runs, so a failure
+  in Send-As setup or the email is swallowed to a `WARN` and never fails the run or the
+  alias. A flaky Gmail call must never make a successful provisioning look broken and get
+  "fixed."
+- Opt out of the email per tenant with Script Property `SECONDARY_ALIAS_NOTIFY=false`.
+  Optional `TENANT_ITSUPPORT_URL` sets the footer link (defaults to `https://support.pcrcap.org`).
+- `test/SecondaryAliasWelcome.test.js` — 65 assertions: the opt-out toggle; Send-As setup
+  degrading safely on admin / missing-credentials / API-error / token-throw; the email
+  adapting between the "already set up" and manual variants; both variants carrying the CAPR
+  citation and the compose-window switching note with no stray `{{placeholder}}`; and neither
+  a throwing send nor a throwing Send-As call propagating.
+
+> **Scope note.** This covers the nightly/hand-added path, the only secondary-alias creator
+> present in this branch. The separate CAPID-driven alias web app (commit `330c99c`, never
+> merged) would need the same wiring if revived — separate script projects cannot share the
+> code.
+
 ## [2026-08-18] — two stuck migrations: bandwidth quota and an uninitialised mailbox
 
 ### Fixed

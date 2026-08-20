@@ -230,6 +230,33 @@ finds, and verification day is one run rather than a data-entry session.
 The real run is idempotent, so it is safe to re-run after fixing conflicts. Aliases become
 sendable in Gmail within roughly 24 hours of being created.
 
+**On a genuine `ADDED`, the address is also made ready to *send* from, and the member is
+emailed** (v1.4.0):
+
+- **Send-As is configured automatically.** The run turns on Gmail *Send mail as* for the
+  member (via the same service-account impersonation the send-as **name** sync uses), so the
+  address can send mail, not just receive it — the member has no setup steps that could fail.
+  Admin accounts cannot be impersonated for settings, so they fall back to manual steps, as
+  does any setup error. Needs `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` (already set on
+  tenants that run the send-as name sync) and the `gmail.settings.sharing` scope.
+- **The member is emailed.** The message states the address exists, says whether sending was
+  set up for them or shows the manual *Send mail as* steps, explains **how to switch between
+  their primary and the new address in the compose window**, and carries the **CAPR 120-1
+  §6.9** reminder that a `.gov` address is for official CAP business only — no commercial or
+  fundraising use.
+
+Both fire **only on a genuine `ADDED`**, so a settled list (all `OK — already present`) does
+nothing and re-runs never re-notify. Both are **best-effort**: a failure is logged as a
+warning and never fails the run or the alias. Turn the email off per tenant with Script
+Property `SECONDARY_ALIAS_NOTIFY=false`. Template:
+`accounts-and-groups/SecondaryAliasWelcomeEmail.html`; sent from
+`TENANT_AUTOMATION_SENDER_EMAIL`, reply-to `TENANT_ITSUPPORT_EMAIL`.
+
+> **Note on Google's propagation delay.** Even with Send-As pre-configured, a brand-new
+> address can take up to a day before Gmail will let the member send from it (the same delay
+> the existing "sendable within ~24 hours" note describes). The email says so, so nobody
+> reads a not-yet-propagated address as a broken one.
+
 **On a daily trigger** (`addSecondaryDomainAliases()`, see [ADMIN_GUIDE §8](ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule)):
 
 - A run over a settled list makes **no changes** — rows already carrying their alias are
