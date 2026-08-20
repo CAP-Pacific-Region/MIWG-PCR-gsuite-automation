@@ -161,19 +161,25 @@ section('4. PARITY — web app and src render the same email for the same inputs
 }
 
 // ---------------------------------------------------------------------------
-section('5. webappHtmlToPlainText_ — no residual markup, no double-unescape (CodeQL)');
+section('5. webappHtmlToPlainText_ — body-only, no residual markup, no double-unescape (CodeQL)');
 {
   const t = build().fns.webappHtmlToPlainText_;
-  check('strips whole tags', /<[a-z/]/i.test(t('<p>Hi <strong>there</strong></p>')), false);
-  check('removes script blocks entirely, content included', t('<script>alert(1)</script>Hello'), 'Hello');
-  check('removes style blocks entirely', t('<style>.a{}</style>Hello'), 'Hello');
+  // The CSS lives in <head><style>; taking only <body> excludes it outright rather
+  // than stripping it with a (scanner-flagged) HTML-filtering regex.
+  const doc = '<html><head><style>.email-container{font-family:Ubuntu}</style></head>' +
+    '<body><p>Hello <strong>there</strong></p></body></html>';
+  check('CSS from <head> never reaches the text', /font-family|email-container/.test(t(doc)), false);
+  check('visible body text survives, tag-free', t(doc), 'Hello there');
+  check('strips whole tags', /<[a-z/]/i.test(t('<body><p>Hi <strong>x</strong></p></body>')), false);
   // The incomplete-sanitization worry: an unclosed "<script" must not survive.
-  check('an unclosed <script leaves no angle bracket', /[<>]/.test(t('safe <script foo')), false);
+  check('an unclosed <script leaves no angle bracket', /[<>]/.test(t('<body>safe <script foo</body>')), false);
   // The double-unescape worry: &amp; decodes to a literal & in ONE pass and does
   // not re-form an entity for a second pass.
-  check('&amp; decodes once', t('a &amp; b'), 'a & b');
-  check('&amp;bull; does not become a bullet', t('x &amp;bull; y'), 'x &bull; y');
-  check('real entities still decode', t('<p>see &rarr; here &bull; done</p>'), 'see -> here • done');
+  check('&amp; decodes once', t('<body>a &amp; b</body>'), 'a & b');
+  check('&amp;bull; does not become a bullet', t('<body>x &amp;bull; y</body>'), 'x &bull; y');
+  check('real entities still decode', t('<body>see &rarr; here &bull; done</body>'), 'see -> here • done');
+  // No body element at all -> falls back to the whole string, still tag-free.
+  check('no <body>: falls back and still strips tags', t('<p>plain</p>'), 'plain');
 }
 
 // ---------------------------------------------------------------------------
