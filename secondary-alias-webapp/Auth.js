@@ -23,9 +23,11 @@
  * preference. resolveActor_() fails closed if it ever comes back blank.
  *
  * Note this is the one place Session.getActiveUser() is legitimate in this
- * codebase. In the main project it throws for want of a userinfo.email scope; in
- * a DOMAIN-restricted web app the platform supplies the same-domain caller's
- * address without one.
+ * codebase. It needs the userinfo.email scope (in the manifest) to return the
+ * caller's address — older Apps Script runtimes handed a same-domain web app the
+ * address without it, but the current runtime requires the scope, and running the
+ * function from the editor as the deploying account throws without it. With the
+ * scope present it resolves the accessing (same-domain) user in every context.
  */
 
 /**

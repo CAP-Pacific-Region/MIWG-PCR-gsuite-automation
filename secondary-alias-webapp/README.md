@@ -54,9 +54,14 @@ The live deployment `AKfycbz5mBOJ…` ( *.gov Account Processing* ) serves **ver
    | `TENANT_ITSUPPORT_URL` | optional email footer link | defaults to `https://support.pcrcap.org` |
 
 2. **Re-authorize the added scopes.** v1.1 adds `gmail.settings.sharing`,
-   `gmail.settings.basic`, `gmail.send`, `script.send_mail`, and `script.external_request`.
-   Open the editor and run any function once to trigger the consent screen, and grant them as
-   the deploying account (a super admin, so impersonation works).
+   `gmail.settings.basic`, `gmail.send`, `script.send_mail`, `script.external_request`, and
+   `userinfo.email`. Open the editor and run any function once to trigger the consent screen,
+   and grant them as the deploying account (a super admin, so impersonation works).
+
+   > `userinfo.email` is what lets `Session.getActiveUser().getEmail()` (in `Auth.gs`) return
+   > the caller's address. Without it the app **denies everyone** — it fails closed, so this
+   > is an availability bug, not a security hole. Running a function in the editor as the
+   > deploying account is the context most likely to surface a missing-scope error.
 
 3. **Redeploy the version.** Deploy › Manage deployments › edit *.gov Account Processing* ›
    Version **New version** › Deploy. This points the live URL at the new code.

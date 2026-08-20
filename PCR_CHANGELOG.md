@@ -41,7 +41,11 @@ byte-for-byte template check and a render-parity check across all send-as outcom
 ### Deploy requirements (see `secondary-alias-webapp/README.md`)
 
 - New scopes (`gmail.settings.sharing`/`.basic`, `gmail.send`, `script.send_mail`,
-  `script.external_request`) — the deploying account must **re-authorize**.
+  `script.external_request`, `userinfo.email`) — the deploying account must **re-authorize**.
+  `userinfo.email` is required by `Session.getActiveUser().getEmail()` in `Auth.gs`; without
+  it the app denies everyone (fails closed — an availability bug, not a security hole). The
+  original code relied on the old runtime behavior of handing a same-domain web app the
+  caller's address without the scope; the current runtime requires it.
 - New Script Properties on that project: `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` (Send-As),
   `TENANT_AUTOMATION_SENDER_EMAIL` / `TENANT_ITSUPPORT_EMAIL` (email). The email's wing name
   and ORG label DERIVE from `TENANT_WING` (`CA` → `California Wing` / `CAWG`), mirroring
