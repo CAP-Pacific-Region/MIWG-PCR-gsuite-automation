@@ -1,10 +1,18 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.24.0
- * Date: 2026-08-21
+ * Version: 1.25.0
+ * Date: 2026-08-22
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.24.0)
- * Changes: 1.24.0 — loadLevel1CompletedCapids() now also checks SeniorLevel.txt, not
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.25.0)
+ * Changes: 1.25.0 — addOrUpdateUser()'s soft-deleted-user restore path (1.23.0) came
+ *   back suspended more often than not: the Users.update right after Users.undelete
+ *   (which un-suspends and syncs fields) 404'd while Google was still propagating the
+ *   undelete, and executeWithRetry does not retry 404 (it reads as "does not exist"
+ *   everywhere else in this file, on purpose). The member stayed suspended until the
+ *   NEXT scheduled run's ordinary update caught it — restore and un-suspend landed in
+ *   different runs. New updateAfterUndelete_() retries specifically on "Resource Not
+ *   Found" with backoff (up to ~1 minute) so both happen in the same run.
+ *   1.24.0 — loadLevel1CompletedCapids() now also checks SeniorLevel.txt, not
  *   just MbrAchievements. A member completed Level I in 2009 (eServices' profile LEVEL
  *   tab shows it), but no ACTIVE AchvID 96 row exists in MbrAchievements — legacy PD
  *   completions from before the modern achievement-tracking cutover live only in
@@ -1283,6 +1291,44 @@ function logWorkspaceUserUpdateDiff_(primaryEmail, member, updates) {
 }
 
 /**
+ * Applies `updates` (the un-suspend + field sync) right after Users.undelete. Google
+ * does not make a just-undeleted account immediately available to further Directory
+ * API calls — Users.update against it can 404 for a short window while the undelete
+ * propagates. executeWithRetry does not cover this: it only retries [403,429,500,503],
+ * and a 404 here reads as "does not exist" everywhere else in this file, so it isn't
+ * transient there on purpose. This is the one call site where a 404 right after our
+ * own successful undelete IS transient, so it gets its own short retry loop instead
+ * of teaching executeWithRetry to treat 404 as retryable everywhere.
+ *
+ * Without this, the account came back restored but still suspended — the update that
+ * would un-suspend it failed once (404), got logged, and the member was left
+ * suspended until the NEXT scheduled run's ordinary Users.update succeeded (by then
+ * propagation had caught up). This makes the restore and the un-suspend land in the
+ * SAME run.
+ *
+ * @param {string} email
+ * @param {Object} updates
+ * @returns {Object} the updated Directory User
+ */
+function updateAfterUndelete_(email, updates) {
+  const delaysMs = [2000, 4000, 8000, 16000, 30000];
+  for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+    try {
+      return AdminDirectory.Users.update(updates, email);
+    } catch (e) {
+      const notFoundYet = String(e.message).includes('Resource Not Found');
+      if (!notFoundYet || attempt === delaysMs.length - 1) throw e;
+      Logger.warn('Undeleted user not yet queryable, retrying', {
+        email: email,
+        attempt: attempt + 1,
+        waitTime: `${delaysMs[attempt]}ms`
+      });
+      Utilities.sleep(delaysMs[attempt]);
+    }
+  }
+}
+
+/**
  * Updates or creates a Google Workspace user for a CAP member
  *
  * Process:
@@ -1425,9 +1471,7 @@ function addOrUpdateUser(member) {
       if (deletedUser) {
         try {
           AdminDirectory.Users.undelete({}, deletedUser.id);
-          user = executeWithRetry(() =>
-            AdminDirectory.Users.update(updates, primaryEmail)
-          );
+          user = updateAfterUndelete_(primaryEmail, updates);
           Logger.info('Deleted user restored (undeleted) and updated', {
             email: primaryEmail,
             capsn: member.capsn
