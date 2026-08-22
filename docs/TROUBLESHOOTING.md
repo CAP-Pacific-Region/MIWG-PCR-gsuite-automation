@@ -284,6 +284,37 @@ the audit reports nothing — by design, so a missing ledger cannot accuse the w
    }
    ```
 
+### Member Renewed After Account Was Deleted
+
+**Symptom:** Account was deleted (e.g. by the license auto-deleter), the member
+renews within Google's ~20-day recovery window, but no account appears after the
+next run — and re-running doesn't help.
+
+`addOrUpdateUser()` now checks for a soft-deleted user at the member's derived
+email and calls `Users.undelete` on it automatically before falling through to
+insert (see `findDeletedUserByEmail_` in `DuplicateAccountGuard.gs`, added
+2026-08-21). If it still doesn't restore:
+
+1. **Confirm the account is soft-deleted, not purged** — Admin Console > Users >
+   filter "Deleted users". If the recovery window (~20 days from deletion) has
+   already lapsed, the account is gone for good and this member needs a fresh
+   account instead (falls through to the normal insert path).
+2. **Check logs for an undelete failure** — search for `Failed to undelete/update
+   deleted user` with the member's CAPID. A common cause is the derived email no
+   longer matching (e.g. the member's name changed in CAPWATCH since deletion),
+   in which case the lookup by email won't find it.
+3. **Manually undelete as a fallback:**
+   ```javascript
+   function manualUndelete() {
+     var deletedUser = findDeletedUserByEmail_('CAPID@miwg.cap.gov');
+     if (!deletedUser) { Logger.info('No deleted user at that email'); return; }
+     AdminDirectory.Users.undelete({}, deletedUser.id);
+     Logger.info('Undeleted', deletedUser.id);
+   }
+   ```
+   Then re-run `addOrUpdateUser()` for that member (or wait for the next scheduled
+   run) to sync fields and unsuspend.
+
 ### Aliases Not Being Created
 
 **Symptom:** Users created but firstname.lastname alias missing

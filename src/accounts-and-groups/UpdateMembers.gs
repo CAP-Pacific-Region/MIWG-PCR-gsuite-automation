@@ -1,10 +1,18 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.22.0
- * Date: 2026-08-03
+ * Version: 1.23.0
+ * Date: 2026-08-21
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.22.0)
- * Changes: 1.22.0 — addOutOfWingDutyPositions_(): CAPWATCH scopes an extract to
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.23.0)
+ * Changes: 1.23.0 — addOrUpdateUser(): a member whose Workspace account was
+ *   soft-deleted and who then renews within Google's ~20-day recovery window was
+ *   falling through the 404/archived-check path straight to Users.insert, which
+ *   Google rejects because the address is still reserved by the deleted account —
+ *   leaving the member with no account, silently, on every run. Now checks for a
+ *   soft-deleted user at the derived email (findDeletedUserByEmail_, new in
+ *   DuplicateAccountGuard.gs) right after the archived-user check, and calls
+ *   Users.undelete before falling through to the duplicate-create guard / insert.
+ *   1.22.0 — addOutOfWingDutyPositions_(): CAPWATCH scopes an extract to
  *   the echelon downloaded, so a wing pull has NO ROW for a member's region or
  *   national billet — it is absent, not filtered. getMembers() now also reads an
  *   optional region-wide extract (CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID, shared
@@ -1394,6 +1402,34 @@ function addOrUpdateUser(member) {
             email: primaryEmail,
             capsn: member.capsn,
             errorMessage: err2.message
+          });
+        }
+      }
+
+      // Possible SOFT-DELETED user — a renewal within Google's ~20-day recovery
+      // window. Neither Users.update (already 404'd) nor Users.get (archivedCheck,
+      // above) can see a deleted user, so without this check the code falls through
+      // to Users.insert at this same address below, which Google rejects because
+      // the address is still reserved by the deleted account — silently leaving the
+      // member with no account until the window lapses or an admin manually
+      // undeletes. See findDeletedUserByEmail_ in DuplicateAccountGuard.gs.
+      const deletedUser = findDeletedUserByEmail_(primaryEmail);
+      if (deletedUser) {
+        try {
+          AdminDirectory.Users.undelete({}, deletedUser.id);
+          user = executeWithRetry(() =>
+            AdminDirectory.Users.update(updates, primaryEmail)
+          );
+          Logger.info('Deleted user restored (undeleted) and updated', {
+            email: primaryEmail,
+            capsn: member.capsn
+          });
+          return;
+        } catch (err3) {
+          Logger.error('Failed to undelete/update deleted user', {
+            email: primaryEmail,
+            capsn: member.capsn,
+            errorMessage: err3.message
           });
         }
       }

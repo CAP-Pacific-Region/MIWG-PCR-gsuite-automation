@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Renewal of a soft-deleted member no longer stalls provisioning** (`src/accounts-and-groups/UpdateMembers.gs`, `src/accounts-and-groups/DuplicateAccountGuard.gs`) - a member whose account was deleted and then renewed within Google's ~20-day recovery window was silently left without an account: provisioning couldn't see the deleted user (Users.get/Users.list both omit deleted users) and fell through to `Users.insert`, which Google rejects because the address is still reserved. `addOrUpdateUser()` now looks up a soft-deleted user by email (`findDeletedUserByEmail_`) and calls `Users.undelete` before falling through to insert.
+
 ### Planned
 
 - Recruiting & Retention automation workflows

@@ -17,6 +17,22 @@ const m = loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: {} }
   'provisioningCapidsFromUser_', 'isRetiredCapidExternalId_', 'chooseAuthoritativeAccount_'
 ]);
 
+/** A fake AdminDirectory.Users.list over a fixed set of "deleted" users, paginated. */
+function makeDeletedUsersDirectory(users, pageSize) {
+  const size = pageSize || 500;
+  return {
+    Users: {
+      list: opts => {
+        if (!opts.showDeleted) throw new Error('test stub only serves showDeleted:true');
+        const start = opts.pageToken ? Number(opts.pageToken) : 0;
+        const page = users.slice(start, start + size);
+        const next = start + size;
+        return { users: page, nextPageToken: next < users.length ? String(next) : undefined };
+      }
+    }
+  };
+}
+
 // ---------------------------------------------------------------------------
 section('1. provisioningCapidsFromUser_ — live carriers only, retired marker ignored');
 {
@@ -178,6 +194,49 @@ section('3b. domain awareness — configured domain beats a legacy one, by polic
       { email: 'sam.roe@rent.gov', suspended: false, created: '2026-02-15T00:00:00Z', neverSignedIn: true }
     ], '', '@rent.gov').email,
     'sam.roe@rent.gov');
+}
+
+// ---------------------------------------------------------------------------
+section('4. findDeletedUserByEmail_ — restore-not-recreate on renewal after deletion');
+{
+  const users = [
+    { id: 'gid-1', primaryEmail: 'pat.jones@example.org' },
+    { id: 'gid-2', primaryEmail: 'sam.roe@example.org' }
+  ];
+
+  check('finds a match by primary email',
+    loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: makeDeletedUsersDirectory(users) },
+      ['findDeletedUserByEmail_']).findDeletedUserByEmail_('sam.roe@example.org'),
+    { id: 'gid-2', primaryEmail: 'sam.roe@example.org' });
+
+  check('match is case-insensitive (Google preserves case on the account, CAPWATCH derivation is lowercase)',
+    loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: makeDeletedUsersDirectory(users) },
+      ['findDeletedUserByEmail_']).findDeletedUserByEmail_('Sam.Roe@Example.org'),
+    { id: 'gid-2', primaryEmail: 'sam.roe@example.org' });
+
+  check('no match returns null, not an empty user',
+    loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: makeDeletedUsersDirectory(users) },
+      ['findDeletedUserByEmail_']).findDeletedUserByEmail_('nobody@example.org'),
+    null);
+
+  check('paginates across multiple pages to find a match on a later page',
+    loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: makeDeletedUsersDirectory(users, 1) },
+      ['findDeletedUserByEmail_']).findDeletedUserByEmail_('sam.roe@example.org'),
+    { id: 'gid-2', primaryEmail: 'sam.roe@example.org' });
+
+  check('empty email returns null without calling the directory',
+    loadModule(MODULE, { Logger: makeLogger().logger, AdminDirectory: { Users: { list: () => { throw new Error('should not be called'); } } } },
+      ['findDeletedUserByEmail_']).findDeletedUserByEmail_(''),
+    null);
+
+  const failLogger = makeLogger();
+  check('a directory error is swallowed (caller falls through to insert, same as before this existed)',
+    loadModule(MODULE, { Logger: failLogger.logger, AdminDirectory: { Users: { list: () => { throw new Error('quota exceeded'); } } } },
+      ['findDeletedUserByEmail_']).findDeletedUserByEmail_('sam.roe@example.org'),
+    null);
+  check('...and the failure is logged, not silent',
+    failLogger.calls.warn.length > 0,
+    true);
 }
 
 done();
