@@ -193,6 +193,76 @@ check('WelcomeEmail.html matches src/recruiting-and-retention/WelcomeEmail.html'
   fs.readFileSync(path.join(APP, 'WelcomeEmail.html'), 'utf8'),
   fs.readFileSync(path.join(ROOT, 'src', 'recruiting-and-retention', 'WelcomeEmail.html'), 'utf8'));
 
+section('2SV instructions ride along with credentials, but only when needed');
+
+/**
+ * Credentials mail reaches a member at the one moment they can act on this —
+ * they are about to sign in. But telling someone who already has 2SV on to go
+ * and turn it on reads as a system that does not know what it is talking about,
+ * and the next real instruction from IT gets skimmed. So it is conditional, and
+ * the condition is the directory's own flag rather than an assumption about
+ * whether the account is new.
+ */
+const mailSent = [];
+const appCreds = loadModule(path.join(APP, 'Credentials.gs'), {
+  Logger: makeLogger().logger,
+  ADMIN_CONFIG: TENANT,
+  AdminDirectory: {},
+  DriveApp: {},
+  HtmlService: {
+    createTemplateFromFile: () => ({
+      getRawContent: () => fs.readFileSync(path.join(APP, 'WelcomeEmail.html'), 'utf8')
+    })
+  },
+  MailApp: { sendEmail: (options) => mailSent.push(options) },
+  admEscape_: (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+  Utilities: Utilities, Session: Session, console: console
+}, ['admSendWelcomeEmail_', 'adm2SvInstructionsHtml_', 'adm2SvInsert_']);
+
+const MEMBER = { firstName: 'Dana', lastName: 'Okonkwo', rank: 'Maj', email: 'dana@example.com',
+  secondaryEmail: null, capsn: '100001' };
+
+mailSent.length = 0;
+appCreds.admSendWelcomeEmail_(MEMBER, 'dana.okonkwo@cawgcap.org', 'Pw!23', ['dana@example.com'], true);
+const withBlock = mailSent[0].htmlBody;
+
+mailSent.length = 0;
+appCreds.admSendWelcomeEmail_(MEMBER, 'dana.okonkwo@cawgcap.org', 'Pw!23', ['dana@example.com'], false);
+const withoutBlock = mailSent[0].htmlBody;
+
+check('an unenrolled account gets the setup steps',
+  withBlock.indexOf('turn on 2-Step Verification') !== -1, true);
+check('an enrolled account does not',
+  withoutBlock.indexOf('turn on 2-Step Verification') !== -1, false);
+
+// The template's own one-line mention is untouched in both — this adds the how,
+// it does not replace the whether.
+check('the template\'s existing 2SV link survives either way',
+  [withBlock, withoutBlock].map(h => h.indexOf('signinoptions/two-step-verification') !== -1),
+  [true, true]);
+
+// Placed above the footer bar so it reads as part of the message rather than
+// something bolted on after the sign-off.
+check('the block lands above the footer, not after the sign-off',
+  withBlock.indexOf('turn on 2-Step Verification') < withBlock.indexOf('<div class="footer">'),
+  true);
+check('the credentials still appear before it',
+  withBlock.indexOf('Temporary Password') < withBlock.indexOf('turn on 2-Step Verification'),
+  true);
+
+// A missing anchor must degrade to "further down the email", never to a failed
+// send: the password is already live by the time this runs.
+check('a template with no footer marker still gets the block',
+  appCreds.adm2SvInsert_('<html><body><p>hi</p></body></html>')
+    .indexOf('turn on 2-Step Verification') !== -1, true);
+check('and one with neither marker still gets it',
+  appCreds.adm2SvInsert_('bare string')
+    .indexOf('turn on 2-Step Verification') !== -1, true);
+
+check('the support address is named when configured',
+  appCreds.adm2SvInstructionsHtml_().indexOf('it@cawgcap.org') !== -1, true);
+
 section('The audit ledger format matches, or src/ refuses to run against it');
 
 const srcAudit = loadModule(SRC_AUDIT, {
@@ -594,7 +664,12 @@ section('Every client-reachable function is behind requireAdmin_()');
  * user with a console open, button or no button — so a new api* function that
  * forgets its gate is the single most likely way this app grows a hole.
  */
-const apiSource = fs.readFileSync(path.join(APP, 'AdminApi.gs'), 'utf8');
+// Line endings normalized: this repo is checked out with core.autocrlf on
+// Windows, so the file on disk may use \r\n. Matching a literal '\n}\n' made
+// this check silently pass an empty string and report every entry point as
+// ungated -- a test that fails for a reason that has nothing to do with the
+// property it is guarding.
+const apiSource = fs.readFileSync(path.join(APP, 'AdminApi.gs'), 'utf8').replace(/\r\n/g, '\n');
 const apiFunctions = (apiSource.match(/^function (api\w+)/gm) || [])
   .map(line => line.replace('function ', ''));
 

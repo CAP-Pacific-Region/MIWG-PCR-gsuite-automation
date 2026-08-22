@@ -213,7 +213,12 @@ function admResendWelcome_(actor, capid, force) {
   // the admin standing at the phone, with the address to hand-deliver to, rather
   // than logged and forgotten.
   try {
-    admSendWelcomeEmail_(member, email, password, verdict.recipients);
+    // resolved.chosen carries the 2SV flag straight off the directory read that
+    // found this account, so no second lookup is needed. A never-signed-into
+    // account is always unenrolled, but a FORCED resend can land on an account
+    // with history — and 2SV — so the flag is read rather than assumed.
+    admSendWelcomeEmail_(member, email, password, verdict.recipients,
+      resolved.chosen.enrolledIn2Sv !== true);
   } catch (err) {
     admAudit_(actor, 'resend-welcome', {
       capid: capid, target: email, outcome: 'failed',
@@ -358,7 +363,8 @@ function admResetPassword_(actor, targetEmail, alsoEmail) {
   let mailNote = '';
   if (recipients.length) {
     try {
-      admSendPasswordNotice_(member, user.primaryEmail, password, recipients);
+      admSendPasswordNotice_(member, user.primaryEmail, password, recipients,
+        user.isEnrolledIn2Sv !== true);
     } catch (err) {
       // The reset already happened, so this cannot fail the whole action — but the
       // admin is holding the password and needs to know it did not go anywhere.
@@ -401,9 +407,10 @@ function admResetPassword_(actor, targetEmail, alsoEmail) {
  * @param {string} email - the account the password is for
  * @param {string} password
  * @param {Array<string>} recipients
+ * @param {boolean} [needs2Sv] - true when the account is not enrolled in 2SV
  * @returns {void}
  */
-function admSendPasswordNotice_(member, email, password, recipients) {
+function admSendPasswordNotice_(member, email, password, recipients, needs2Sv) {
   const name = member ? (member.rank ? member.rank + ' ' + member.lastName : member.firstName) : '';
   const org = ADMIN_CONFIG.ORG_LABEL;
   const support = ADMIN_CONFIG.SUPPORT_EMAIL;
@@ -422,6 +429,10 @@ function admSendPasswordNotice_(member, email, password, recipients) {
     '<a href="https://accounts.google.com/AccountChooser?hd=' + admEscape_(ADMIN_CONFIG.DOMAIN) + '">' +
     'accounts.google.com</a>. If you did not ask for this, tell us straight away' +
     (support ? ' at ' + admEscape_(support) : '') + '.</p>' +
+    // Added only when the account actually lacks 2SV: this mail reaches someone
+    // at the one moment they can act on it, and telling a member who already has
+    // it on to go and turn it on is how the next real instruction gets skimmed.
+    (needs2Sv ? adm2SvInstructionsHtml_() : '') +
     '<p style="font:14px/1.6 system-ui,sans-serif">' + admEscape_(org) + ' Information Technology</p>';
 
   const options = {
