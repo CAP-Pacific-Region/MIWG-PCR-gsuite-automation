@@ -175,6 +175,21 @@ Independent of everything above and safe to add later — but note it needs **it
 `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY`, so add it to the key-rotation checklist when you
 deploy it. Setup: [SIGNATURE_WEB_APP.md](SIGNATURE_WEB_APP.md).
 
+## Phase 10c — Domain admin help desk app (optional)
+
+A separate Apps Script project (`admin-webapp/`) for wing IT staff holding Google's Help Desk
+Administrator role: password resets, welcome-email resends, 2SV setup group. One project per
+tenant — add a clasp target per tenant (e.g. `admin-webapp-<tenant>.clasp.json`), run its
+`admin-webapp/Setup.gs` values (sourced from `config-tenants/<tenant>.json`), and deploy by
+hand from the editor, never from clasp. Setup: [ADMIN_WEB_APP.md](ADMIN_WEB_APP.md).
+
+## Phase 10d — Secondary alias web app (optional; seniors only)
+
+A separate Apps Script project (`secondary-alias-webapp/`) letting a CAPID-scoped caller add or
+remove a member's secondary-domain alias without spreadsheet or admin access; on Add it
+configures Gmail Send-As and emails the member immediately. Only meaningful on a tenant with
+`TENANT_SECONDARY_EMAIL_DOMAIN` set. Setup: [secondary-alias-webapp/README.md](../secondary-alias-webapp/README.md).
+
 ## Phase 11 — Arm triggers
 
 Install the time-driven triggers in dependency order (CAPWATCH download first, everything
@@ -182,9 +197,11 @@ else after). The full schedule is in [README "What runs, when"](../README.md#wha
 and [Admin Guide §8](ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule). Push one
 tenant, confirm it's healthy, then the next.
 
-The **cadets** tenant also arms the cadet→senior transition triggers (`armTransitionTriggers()`,
-five daily jobs). These must run **as the automation account**, and the final
-`closeCompletedTransitions()` stays **manual** — never triggered.
+The **cadets** tenant also arms the cadet→senior transition pipeline
+(`armTransitionPipelineTrigger()`, one daily trigger running all phases in order). This must
+run **as the automation account**, and the final `closeCompletedTransitions()` stays
+**manual** — never triggered (it only parks the account; `expireParkedAccounts()` is what
+later deletes it, automatically, a year after parking).
 
 ---
 

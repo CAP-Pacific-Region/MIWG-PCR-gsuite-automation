@@ -44,9 +44,10 @@ never repoint one tenant at another's domain. Canonical non-secret values are ve
 - **Calendars & Chat** — shares unit calendars with new/transferred members; syncs squadron and committee Chat spaces.
 - **Calendar resources** — aircraft and vehicles as bookable Calendar resources, with squadrons as buildings (seniors only).
 - **License lifecycle** — suspends expired members, and deletes long-ineligible accounts to stay under the Workspace-for-Nonprofits seat cap.
-- **Cadet → senior transition** — when a cadet ages out or converts, the cadets tenant carries their mail, Drive, and contacts to their new seniors-tenant account before the old account is deleted, then forwards the freed address (cadets tenant only; the final delete stays a manual step).
+- **Cadet → senior transition** — when a cadet ages out or converts, the cadets tenant carries their mail, Drive, and contacts to their new seniors-tenant account, then parks (rather than deletes) the old one so its address keeps forwarding and never bounces; it's deleted automatically a year later (cadets tenant only; the parking step stays a manual review-then-act call).
 - **Self-service email signature** — a member-facing web app that shows the CAP signature their CAPWATCH record calls for and writes it to their own CAP addresses on approval; all they may change is whether the phone row appears and which of their own duty assignments do (see [signature web app](docs/SIGNATURE_WEB_APP.md)).
 - **Domain admin help desk** — a web app for wing IT staff holding Google's Help Desk Administrator role: look a member up by CAPID, name or address; reset a password; resend the welcome email an out-of-band account never received; add or remove them from the 2SV setup group. Every action is scoped to one member and logged against the admin who ran it (see [admin web app](docs/ADMIN_WEB_APP.md)).
+- **Secondary domain aliases** — a CAPID-scoped web app for adding/removing a member's optional secondary-domain address; on Add it configures Gmail Send-As and emails the member immediately, matching the treatment the nightly run gives a hand-added row (see [`secondary-alias-webapp/README.md`](secondary-alias-webapp/README.md)).
 - **Region features** (Pacific only) — region duty groups + Chat spaces, a region-wide unit-visit report, and an on-demand **mission provisioning webhook** (Group + Chat space + Drive folder per mission).
 
 ### Key characteristics
@@ -129,7 +130,9 @@ src/                          # The shared codebase — deployed unchanged to al
 signature-webapp/             # SEPARATE Apps Script project: member self-service email signature
                               # (own manifest, scopes and clasp target — never deployed with src/)
 admin-webapp/                 # SEPARATE Apps Script project: domain admin help desk
-                              # (password resets, welcome-email resends, 2SV setup group)
+                              # (password resets, welcome-email resends, 2SV setup group; seniors + cadets)
+secondary-alias-webapp/       # SEPARATE Apps Script project: CAPID-scoped secondary-domain alias add/remove
+                              # (own manifest, scopes and clasp target — seniors tenant)
 
 config-tenants/               # Canonical NON-SECRET per-tenant values (repo-only; never pushed)
 ├── seniors.json  cadets.json  region.json
@@ -162,6 +165,9 @@ npm run push:signature:seniors    # deploy signature-webapp/ — its OWN script 
 npm run push:signature:cadets     # ...same source, the cadets tenant's project
 
 npm run push:admin:seniors        # deploy admin-webapp/ — the domain admin help desk
+npm run push:admin:cadets         # ...same source, the cadets tenant's project
+
+npm run push:alias:seniors        # deploy secondary-alias-webapp/ — CAPID-scoped alias add/remove
 ```
 
 > Both web apps are **pushed** from clasp and **deployed by hand from the Apps Script
@@ -217,12 +223,14 @@ Cross-tenant (`updateCAWGCadetGroups()`, `syncCrossTenantContacts`) and region-o
 run where their profile flag enables them. Confirm the **actual** triggers per project — the table
 is the intended design. See [Admin Guide §8–9](docs/ADMIN_GUIDE.md#8-what-runs-when-the-automation-schedule).
 
-The **cadets** tenant additionally runs the cadet→senior transition lifecycle: `armTransitionTriggers()`
-installs five daily triggers staggered 3–7 AM — `detectCadetTransitions` → `resolveTransitionDestinations`
-→ `migrateCadetTransitions` → `migrateAllTransitionDrives` → `migrateAllTransitionContacts`. The final
-`closeCompletedTransitions()` deletes the old account and is **deliberately not triggered** — it stays a
-manual review-then-act step. These belong only on the source (cadets) tenant and must be armed **as the
-automation account** ([Accounts & Groups module](src/accounts-and-groups/README.md#4-cadettransitiongs---cadet--senior-account-transition)).
+The **cadets** tenant additionally runs the cadet→senior transition pipeline:
+`armTransitionPipelineTrigger()` installs **one** daily trigger running all phases in order —
+detect → resolve → migrate mail/Drive/contacts → daily mail sweep → remind. The final
+`closeCompletedTransitions()` **parks** the old account (forwards, does not delete) and is
+**deliberately not triggered** — it stays a manual review-then-act step; the automated
+`expireParkedAccounts()` deletes it a year later, after a final sweep. These belong only on the
+source (cadets) tenant and must be armed **as the automation account**
+([Accounts & Groups module](src/accounts-and-groups/README.md#4-cadettransitiongs---cadet--senior-account-transition)).
 
 ## Modules
 
@@ -242,7 +250,8 @@ automation account** ([Accounts & Groups module](src/accounts-and-groups/README.
 - **[New Tenant / New Wing Setup](docs/NEW_TENANT_SETUP.md)** — bare-metal, end-to-end runbook for provisioning a brand-new tenant from nothing (Hawaii-Wing worked example).
 - **[Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md)** — seniors ⇄ cadets shared-contact sync.
 - **[Signature Web App](docs/SIGNATURE_WEB_APP.md)** — the member self-service email signature page (`signature-webapp/`, a separate script project).
-- **[Admin Web App](docs/ADMIN_WEB_APP.md)** — the domain admin help-desk page (`admin-webapp/`, a separate script project): password resets, welcome-email resends, 2SV setup group.
+- **[Admin Web App](docs/ADMIN_WEB_APP.md)** — the domain admin help-desk page (`admin-webapp/`, a separate script project per tenant, seniors + cadets): password resets, welcome-email resends, 2SV setup group.
+- **[Secondary Alias Web App](secondary-alias-webapp/README.md)** — the secondary-domain alias add/remove page (`secondary-alias-webapp/`, a separate script project): configures Send-As and emails the member immediately on Add.
 - **[Pacific Diff](docs/REGION_DIFF.md)** / **[GCP Project Migration](docs/GCP_PROJECT_MIGRATION.md)** — Pacific-specific setup and the standard-GCP-project migration.
 - **[Spreadsheet Setup](docs/SPREADSHEET_SETUP.md)** — the automation config spreadsheet tabs.
 - **[API Reference](docs/API_REFERENCE.md)** · **[Utilities](docs/UTILITIES.md)** · **[Development Guide](docs/DEVELOPMENT.md)** · **[Troubleshooting](docs/TROUBLESHOOTING.md)** — internals, inherited from the upstream single-wing project and reconciled for the multi-tenant model (each carries a note on what changed).

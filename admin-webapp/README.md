@@ -2,11 +2,14 @@
 
 A **separate Apps Script project** — the domain admin help-desk page. It is not
 deployed by `npm run push:seniors`; it has its own manifest, its own scopes, and
-its own clasp target.
+its own clasp target — one per tenant. It runs on both CAWG tenants, each
+project linked to the other as its peer.
 
 ```bash
 npm run push:admin:seniors     # code only — NEVER deploy from clasp
 npm run open:admin:seniors
+npm run push:admin:cadets
+npm run open:admin:cadets
 ```
 
 Full setup, access model and troubleshooting: **[docs/ADMIN_WEB_APP.md](../docs/ADMIN_WEB_APP.md)**.
@@ -23,6 +26,7 @@ Full setup, access model and troubleshooting: **[docs/ADMIN_WEB_APP.md](../docs/
 | `Actions.gs` | The four things this app can do, and every guard deciding whether it may |
 | `Credentials.gs` | Temporary passwords, the welcome email, the shared audit ledger |
 | `WelcomeEmail.html` | Byte-for-byte copy of `src/recruiting-and-retention/WelcomeEmail.html` |
+| `Setup.gs` | One-time, run-by-hand Script Property setup per tenant (`setupSeniorsAdminWebApp()` / `setupCadetsAdminWebApp()`), sourced from `config-tenants/<tenant>.json` |
 
 > `Credentials.gs` would rather be called `WelcomeEmail.gs`. It cannot: Apps Script
 > addresses files without their extension, so it would collide with

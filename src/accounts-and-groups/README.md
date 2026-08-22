@@ -150,6 +150,7 @@ You can create groups based on any member attribute:
 - Duty Position Level (Squadron, Group, Wing)
 - Achievements (Master, Senior, etc.)
 - Contact Type (Emergency, Parent/Guardian)
+- Professional-development level, current or in-progress (see below)
 
 **Group Configuration Example**:
 
@@ -161,6 +162,19 @@ You can create groups based on any member attribute:
 | duty-position | dos | dutyPositionIds | DO |
 | achievement | solo-pilots | achievements | SOLO |
 | contact | parents | contact | PRIMARY_CONTACT,EMERGENCY_CONTACT |
+| education-training | all-level-ii | professionalLevel | Level 2 |
+| education-training | all-level-ii-part-1-only | professionalLevelInProgress | Level 2 |
+
+**Professional-development level groups** — `professionalLevel` / `professionalLevelInProgress`
+(`UpdateGroups.gs` 1.7.0) read the live PD program out of the `PL_Paths` / `PL_MemberPathCredit`
+/ `PL_Lookup` CAPWATCH tables, **not** `MbrAchievements.txt` (that path is a retired pre-2018
+program and resolves to nobody). A member lands in the group for their **highest completed
+level only** — the levels are rungs, not badges, so a Level V holder is not also in the Level II
+group. `professionalLevelInProgress` covers a level with some but not all parts completed
+(e.g. Level 2 Part 1 done, Part 2 not) for a nudge list; approval-only credit counts, same as
+the completed-level rule. Values accept a path name or PathID, Roman numerals or digits
+(`Level 2`, `Level II`, `7` all work). `listProfessionalLevelPaths('level')` prints the real
+path names for a wing's CAPWATCH extract.
 
 ### 3. ManageLicenses.gs - License Lifecycle Management
 
@@ -240,7 +254,7 @@ profiles (e.g. Pacific) set `ROLE: ''` and the feature is inert. See
 - **CadetTransitionContacts.gs** — copies personal Contacts.
 - **CadetTransitionCleanup.gs** — deletes the old account, then forwards its address.
 
-**Lifecycle**:
+**Lifecycle** (current, as of the v2.0.0 "park, don't delete" redesign — 2026-08-03):
 ```
 Cadet type flips in CAPWATCH (SENIOR / PATRON / …), status still ACTIVE
     ↓  detectCadetTransitions()          opens a Transitions row, starts the 90-day hold
@@ -248,27 +262,55 @@ Cadet type flips in CAPWATCH (SENIOR / PATRON / …), status still ACTIVE
     ↓  migrateCadetTransitions()         copies mail into the senior mailbox
     ↓  migrateAllTransitionDrives()      copies owned Drive files
     ↓  migrateAllTransitionContacts()    copies personal contacts
-    ↓  closeCompletedTransitions(false)  MANUAL — deletes the cadet account + forwards
+    ↓  catchUpTransitionMail()           daily sweep — carries mail a parked account keeps receiving
+    ↓  closeCompletedTransitions(false)  MANUAL — PARKS the account (forwards, does not delete)
+    ↓  expireParkedAccounts()            after the 12-month forwarding window — re-sweeps mail/Drive/
+                                          contacts, then deletes. Automated, but every guard can block it.
 ```
 
+Two Google API limits killed the original "delete then let a Group take the address" design —
+a deleted primary address is reserved for the recovery-tombstone window (~20 days) and a
+renamed one is reserved similarly (docs say up to 24h); both returned `409 Entity already
+exists` on live attempts. So the close **parks** the account instead: it stays live and
+forwarding, the address never stops existing, and the license seat is held until
+`expireParkedAccounts()` reclaims it — the same trade-off as the license-lifecycle module,
+just on a 12-month clock instead of years. `whyNotExpirable_` refuses expiry on a `DO NOT
+DELETE` note, unhandled Drive/Contacts, or a missing destination, and re-sweeps mail, Drive
+**and** contacts before deleting — expiry checked mail only until 2026-08-18, so a parked
+account's Drive/Contacts activity across the whole window went unchecked until then.
+
 **Key Functions** (all cadets-tenant only):
-- `armTransitionTriggers()` - installs the six daily triggers (detect → migrate → remind),
-  staggered 3–8 AM. Run **as `automation@cawgcadets.org`** — triggers are owned by
-  and visible only to their creator, and the completion email's Send-As is that
-  account. `disarmTransitionTriggers()` / `listTransitionTriggers()` manage them.
+- `runCadetTransitionPipeline(budgetMinutes)` - runs all seven phases (detect → resolve →
+  migrate mail/Drive/contacts → sweep → remind) from **one** trigger, in order, budget-limited
+  so an early phase's overrun cannot starve the later ones.
+- `armTransitionPipelineTrigger(hour)` - installs the single daily pipeline trigger, replacing
+  the older six-trigger `armTransitionTriggers()` / `disarmTransitionTriggers()` /
+  `listTransitionTriggers()` scheme. Run **as `automation@cawgcadets.org`** — triggers are
+  owned by and visible only to their creator, and the completion email's Send-As is that
+  account. `TRANSITION_RETIRED_HANDLERS_` lists handler names that no longer exist (e.g. a
+  short-lived duplicate orchestrator), so `disarmTransitionTriggers()` reaps stray triggers
+  left behind when a handler is renamed or removed — run it as **each** account that may have
+  armed triggers; `listAllProjectTriggers()` also flags any trigger whose handler is missing.
 - `detectCadetTransitions()` - opens a `Transitions` row per converting member.
 - `migrateCadetTransitions(notify)` / `migrateAllTransitionDrives()` / `migrateAllTransitionContacts()` - the three migration phases.
+- `catchUpTransitionMail()` - daily sweep that carries newly arrived mail from a parked
+  mailbox to the senior tenant; idempotent, so it moves only what is new each run.
 - `remindPendingTransitionCloses()` - emails IT when accounts pass grace and are due for the
   manual close (or are stuck past grace). Read-only; silent when nothing is due.
-- `closeCompletedTransitions(dryRun)` - closes accounts whose migration is COMPLETE
-  and whose hold has expired. **Not triggered** — see below.
+- `closeCompletedTransitions(dryRun)` - **parks** (forwards, does not delete) accounts whose
+  migration is COMPLETE and whose hold has expired. Manual — see below.
+- `expireParkedAccounts(dryRun)` - deletes a parked account once its 12-month forwarding
+  window ends, after a final mail/Drive/contacts sweep. Automated, but every guard in
+  `whyNotExpirable_` can still block a given row.
 - `previewCadetTransitions()` - read-only summary of the queue.
 
-**The close step is deliberately manual**. `closeCompletedTransitions()` permanently
-deletes accounts with no archive and no undo, so `armTransitionTriggers()` installs
-**no** close/delete trigger — matching the license-lifecycle discipline (automate the
-reversible copying, keep a human on the irreversible delete). Review with
-`closeCompletedTransitions(true)`, then act with `closeCompletedTransitions(false)`.
+**The close step is deliberately manual, but no longer the irreversible one.** Since v2.0.0,
+`closeCompletedTransitions()` only parks — the account stays recoverable until
+`expireParkedAccounts()` actually deletes it a year later. The pipeline trigger still does not
+run the close automatically, matching the license-lifecycle discipline (automate the
+reversible copying, keep a human on the step that starts the countdown to an irreversible
+delete). Review with `closeCompletedTransitions(true)`, then act with
+`closeCompletedTransitions(false)`.
 
 **The two hold clocks**: `TRANSITION_CONFIG.HOLD_DAYS` (90) waits out National's
 fingerprint/Level I processing so a PATRON who later converts to SENIOR still has a

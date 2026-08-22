@@ -94,6 +94,23 @@ These IDs are the load-bearing facts. Keep this table current — it is the map 
 
 Open any project in the browser from the repo with e.g. `npm run open:seniors`.
 
+### Web-app projects
+
+Each web app is a **separate** Apps Script project (own manifest, scopes, clasp target — never
+deployed with `src/`), one clasp target per tenant it runs on:
+
+| Web app | Tenant | clasp target | Apps Script `scriptId` |
+|---------|--------|--------------|------------------------|
+| Signature ([docs](SIGNATURE_WEB_APP.md)) | Seniors | `clasp-targets/signature-webapp-seniors.clasp.json` | `1iNlP98b0caPWtlHwyR7SEgr6v2I9v5VI7KlQgkfy9K9kFSnRW5xFczim` |
+| Signature ([docs](SIGNATURE_WEB_APP.md)) | Cadets | `clasp-targets/signature-webapp-cadets.clasp.json` | `1rNSgWefpl5At18lxJxikekYubF5jqztcw-N64jfQxwM0a-f-TC4bGDDc` |
+| Admin help desk ([docs](ADMIN_WEB_APP.md)) | Seniors | `clasp-targets/admin-webapp-seniors.clasp.json` | `1miHntSIH4GkVqTGMedaj1Bj3n9mkRSITUlOS3PfdEMrbGsEVMQDSq6ub` |
+| Admin help desk ([docs](ADMIN_WEB_APP.md)) | Cadets | `clasp-targets/admin-webapp-cadets.clasp.json` | `1di9sBo2eQ3xXrMI7ZCfibHvpXrq2Cf0pmi4o3elpz8fFOmfctYH9D8dX` |
+| Secondary alias ([docs](../secondary-alias-webapp/README.md)) | Seniors | `clasp-targets/secondary-alias-webapp.clasp.json` | `18D4sP07OktnjgES9CB5a7A4MIIJOinR3GgtikWXj1QxVaP7wDBn95GAa` |
+
+Like the tenant projects, `clasp push` deploys code only — every web app is **deployed by hand
+from the Apps Script editor**; `clasp update-deployment`/`create-deployment` replaces the
+deployment config wholesale and the entry point does not survive it.
+
 > **Pacific is deployed and verified (2026-07-09).** It runs the shared `src/` with
 > `TENANT_PROFILE=region`. Two things to know for future pushes:
 > - The project lives in a **`pcr.cap.gov` Shared Drive**. Push works from either of two
@@ -476,13 +493,14 @@ their own cadence where enabled. **Confirm the actual triggers in each project**
 the intended design, not a guarantee of what is currently scheduled.
 
 > The **cadets** tenant runs largely the same schedule **except** resource management
-> (`MANAGE_RESOURCES=false`), **plus** the cadet→senior transition lifecycle: six daily
-> triggers staggered 3–8 AM (`detectCadetTransitions` → `resolveTransitionDestinations`
-> → `migrateCadetTransitions` → `migrateAllTransitionDrives` → `migrateAllTransitionContacts`
-> → `remindPendingTransitionCloses`), installed by `armTransitionTriggers()`. The
-> account-deleting `closeCompletedTransitions()` is **deliberately not scheduled** — it stays
-> a manual review-then-act step, and `remindPendingTransitionCloses` just emails IT when
-> accounts are past grace and due for that manual close (see [Section 9](#9-entry-point-function-reference)).
+> (`MANAGE_RESOURCES=false`), **plus** the cadet→senior transition pipeline: one daily trigger
+> running all phases in order (detect → resolve → migrate mail/Drive/contacts → mail sweep →
+> remind), installed by `armTransitionPipelineTrigger()` — replacing the original six separate
+> triggers. The account-**parking** `closeCompletedTransitions()` is **deliberately not
+> scheduled** — it stays a manual review-then-act step, and `remindPendingTransitionCloses`
+> just emails IT when accounts are past grace and due for that manual close. Parked accounts
+> are later deleted **automatically** by `expireParkedAccounts()` once their 12-month
+> forwarding window ends (see [Section 9](#9-entry-point-function-reference)).
 > The **Pacific** tenant runs a **leaner core** (single unit
 > PCR-PCR-001 → no squadron groups, no org-path sync, no resources) **plus its own region
 > features**, enabled by profile flags that are `false` on the wing tenants:
@@ -746,11 +764,16 @@ no-ops elsewhere). State lives in the `Transitions` sheet. See the
 - `remindPendingTransitionCloses()` — emails IT (`TENANT_ITSUPPORT_EMAIL`) when accounts have
   passed grace and are ready for the manual close (or are stuck past grace on a `DO NOT DELETE`
   hold). Read-only; silent when nothing is due. Runs daily at 08:00.
-- `closeCompletedTransitions(dryRun=true)` — **the only destructive step; not triggered.**
-  Deletes the cadet account and forwards its old address (12-month Group) once migration is
-  COMPLETE and the hold has expired — **14 days after a verified migration**, or the full
-  90-day `HOLD_DAYS` for rows never migrated (e.g. a member who stayed PATRON). Review with
-  `(true)`, act with `(false)`.
+- `closeCompletedTransitions(dryRun=true)` — **not triggered; manual.** Since v2.0.0 this
+  **parks** the cadet account rather than deleting it: kept live and forwarding to the senior
+  address, so the address never bounces. Runs once migration is COMPLETE and the hold has
+  expired — **14 days after a verified migration**, or the full 90-day `HOLD_DAYS` for rows
+  never migrated (e.g. a member who stayed PATRON). Review with `(true)`, act with `(false)`.
+- `expireParkedAccounts(dryRun=true)` — the actual, **automated** destructive step. Deletes a
+  parked account once its 12-month forwarding window ends, after a final mail/Drive/contacts
+  sweep; refuses via `whyNotExpirable_` on a `DO NOT DELETE` note or unhandled Drive/Contacts.
+- `catchUpTransitionMail()` — daily sweep carrying mail a parked (still-live) mailbox keeps
+  receiving across to the senior tenant; part of the pipeline, idempotent.
 
 ### Group administration utilities (`groupAdministration.gs`)
 - Reporting: `groupAdministration_writeAllGroupsReport()`, `..._writeNoMemberGroupsReport()`,
@@ -877,10 +900,28 @@ src/
 │   ├── TwoSvSetupGroup.gs         # Nightly prune of the 2SV setup group: out on enrollment,
 │   │                              # or after 7 days. Own first-seen ledger (the directory
 │   │                              # records no join date). TENANT_2SV_SETUP_GROUP blank = off.
-│   └── CadetTransition*.gs         # Cadet→senior cross-tenant transition (cadets tenant only):
-│                                  #   CadetTransition.gs (detect/state/triggers),
+│   ├── DuplicateAccountGuard.gs   # Shared helper: find every account for a CAPID and rank
+│   │                              # them to a single authoritative one (most recent sign-in).
+│   │                              # Used by the welcome resend, the transition pipeline, and
+│   │                              # the admin web app so all three agree on "the real account".
+│   ├── DuplicateAccountScan.gs    # scanDuplicateAccountsByCapid(): wing-wide report of CAPIDs
+│   │                              # holding more than one Workspace account.
+│   ├── SharedContacts.gs          # syncExternalContactsToDomainSharedContacts_(): the
+│   │                              # `External Contacts` sheet tab → this tenant's Domain
+│   │                              # Shared Contacts. RUN_SHARED_CONTACTS: on for region,
+│   │                              # off for CAWG (which uses cross-tenant-contacts/ instead).
+│   ├── SecondaryDomainAliases.gs  # addSecondaryDomainAliases(): grants accounts on the
+│   │                              # `Secondary Aliases` tab a matching address on the tenant's
+│   │                              # secondary domain; on a new alias also configures Gmail
+│   │                              # Send-As and emails the member. Seniors only.
+│   └── CadetTransition*.gs         # Cadet→senior cross-tenant transition (cadets tenant only).
+│                                  # Since v2.0.0 the close PARKS the account (forwards, does
+│                                  # not delete); expireParkedAccounts() deletes it a year later.
+│                                  # runCadetTransitionPipeline() runs all phases from one
+│                                  # trigger — see accounts-and-groups/README.md §4.
+│                                  #   CadetTransition.gs (detect/state/pipeline/triggers),
 │                                  #   ...Migrate.gs (Gmail), ...Drive.gs, ...Contacts.gs,
-│                                  #   ...Cleanup.gs (manual delete + forward).
+│                                  #   ...Cleanup.gs (park/close + expire/delete).
 │
 ├── squadron-groups/
 │   └── SquadronGroups.gs          # Per-squadron all-hands/cadets/seniors/parents + public-contact
@@ -896,14 +937,25 @@ src/
 │   │                              # file and trigger, and never touches provisioning.
 │   ├── LSCodeNotify.gs            # Weekly: FBI background-check (Member.txt LSCode) changes.
 │   │                              # Seniors only — cadet records carry no LSCode.
-│   └── RecoveryEmailNotify.gs     # Monthly: account issues — email record blocks a
-│                                  # password reset, no 2SV, never signed in. Seniors + cadets.
-│                                  # 3-month per-issue quiet period; needs
-│                                  # TENANT_COMMAND_EMAIL_DOMAIN on cadets.
+│   ├── RecoveryEmailNotify.gs     # Monthly: account issues — email record blocks a
+│   │                              # password reset, no 2SV, never signed in. Seniors + cadets.
+│   │                              # 3-month per-issue quiet period; needs
+│   │                              # TENANT_COMMAND_EMAIL_DOMAIN on cadets.
+│   └── ParentEmailNotify.gs       # Monthly: parent/guardian addresses Google rejected on a
+│                                  # cadet's record, read from the ledger SquadronGroups.gs
+│                                  # writes. Cadets only. Per-member-and-address 3-month
+│                                  # suppression window.
 │
 └── recruiting-and-retention/
     ├── SendRetentionEmail.gs      # Age-out / expiration / welcome emails.
     └── *.html                     # Email templates (exact slash-prefixed names matter!).
+
+signature-webapp/                  # SEPARATE Apps Script project (own manifest/scopes/clasp
+                                    # target, per tenant): member self-service email signature.
+admin-webapp/                      # SEPARATE Apps Script project (own manifest/scopes/clasp
+                                    # target, per tenant): domain admin help desk.
+secondary-alias-webapp/            # SEPARATE Apps Script project (seniors only): CAPID-scoped
+                                    # secondary-domain alias add/remove.
 ```
 
 **Data flow:** `getCapwatch()` writes CAPWATCH `.txt` files to Drive → `utils.parseFile()` reads
