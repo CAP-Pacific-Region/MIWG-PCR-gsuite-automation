@@ -1,11 +1,22 @@
 /**
  * Duplicate Account Guard & Cleanup
  *
- * Version: 1.3.0
- * Date: 2026-07-19
+ * Version: 1.4.0
+ * Date: 2026-08-21
  * Author: Maj Isaac Wilson IV, California Wing
  *
- * Changes: 1.3.0 — chooseAuthoritativeAccount_ takes a preferredDomain and ranks
+ * Changes: 1.4.0 — Added findDeletedUserByEmail_(), called from UpdateMembers.gs
+ *   addOrUpdateUser() right after the archived-user check. A member whose account
+ *   was soft-deleted and then renews within Google's ~20-day recovery window was
+ *   hitting neither the update path (404) nor the archived-restore path (Users.get
+ *   can't see deleted users either), so it fell through to the duplicate-create
+ *   guard — which is ALSO blind to deleted users (Users.list excludes them by
+ *   default) — and then to Users.insert, which Google rejects because the address
+ *   is still reserved by the deleted account. The member was left with no account,
+ *   silently, on every run, until the window lapsed or an admin manually undeleted.
+ *   addOrUpdateUser() now calls Users.undelete on a match before falling through to
+ *   insert. See the new branch there for the restore-then-update sequence.
+ *   1.3.0 — chooseAuthoritativeAccount_ takes a preferredDomain and ranks
  *   an account on the tenant's configured email domain above one on a legacy domain
  *   (below login recency and active, above everything else). Motivated by the region
  *   tenant's domain-migration twin: identical localpart on a legacy domain vs the
@@ -34,7 +45,7 @@
  *   run. The map has to resolve the CAPID to the in-use account for a retirement to
  *   stick.
  *
- * TWO JOBS
+ * THREE JOBS
  *   1. PREVENTION (called from UpdateMembers.gs addOrUpdateUser, v1.17.0):
  *      findExistingAccountsByCapid_() + chooseAuthoritativeAccount_() let the
  *      create path do a live directory lookup by CAPID before inserting, so a
@@ -42,7 +53,13 @@
  *      type / created out-of-band (last.first) is UPDATED in place instead of
  *      getting a second account. See the 1.17.0 note in UpdateMembers.gs.
  *
- *   2. CLEANUP (suspendOrphanDuplicates, run by hand): retires the extra accounts
+ *   2. RESTORE (called from UpdateMembers.gs addOrUpdateUser, v1.23.0):
+ *      findDeletedUserByEmail_() catches the case where the account at the derived
+ *      email is soft-deleted (within Google's ~20-day recovery window), not merely
+ *      absent — undeleting it instead of inserting a fresh one, which Google would
+ *      reject anyway since the address is still reserved.
+ *
+ *   3. CLEANUP (suspendOrphanDuplicates, run by hand): retires the extra accounts
  *      that already exist. Retirement = retype the organization externalId to a
  *      RETIRED marker and suspend. NOTHING is deleted — deletion is permanent on
  *      this edition (no Archived-User licenses; see LICENSE_CONFIG) and a
@@ -149,6 +166,51 @@ function findExistingAccountsByCapid_(capid) {
     });
   }
   return out;
+}
+
+/**
+ * Looks up a soft-deleted Directory User by primary email, within Google's ~20-day
+ * recovery window. Exists because Users.get and the default Users.list 404/omit
+ * deleted users entirely — the update path in addOrUpdateUser was falling straight
+ * through to Users.insert at the derived email, which Google rejects (the address
+ * is still reserved by the deleted account) rather than restoring it. showDeleted
+ * cannot be combined with a query filter (Directory API restriction), so this scans
+ * the deleted-users list — normally small, since it only holds accounts deleted in
+ * the last ~20 days — and matches client-side by primaryEmail.
+ *
+ * @param {string} email
+ * @returns {{id: string, primaryEmail: string}|null} the deleted user's directory
+ *   entry (id is the immutable ID Users.undelete requires — email does not work), or
+ *   null if no deleted user has this primary email.
+ */
+function findDeletedUserByEmail_(email) {
+  const wanted = String(email || '').toLowerCase();
+  if (!wanted) return null;
+
+  let pageToken = null;
+  try {
+    do {
+      const page = AdminDirectory.Users.list({
+        customer: 'my_customer',
+        showDeleted: true,
+        maxResults: 500,
+        pageToken: pageToken
+      });
+      const hit = (page.users || []).find(function (u) {
+        return String(u.primaryEmail || '').toLowerCase() === wanted;
+      });
+      if (hit) return hit;
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+  } catch (e) {
+    // A lookup failure must not crash provisioning; worst case the caller inserts
+    // and hits Google's "address still reserved" error, same as before this existed.
+    Logger.warn('Deleted-user lookup failed', {
+      email: email,
+      errorMessage: e.message
+    });
+  }
+  return null;
 }
 
 /**
