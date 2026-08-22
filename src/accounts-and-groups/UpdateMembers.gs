@@ -1,10 +1,18 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.23.0
+ * Version: 1.24.0
  * Date: 2026-08-21
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.23.0)
- * Changes: 1.23.0 — addOrUpdateUser(): a member whose Workspace account was
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.24.0)
+ * Changes: 1.24.0 — loadLevel1CompletedCapids() now also checks SeniorLevel.txt, not
+ *   just MbrAchievements. A member completed Level I in 2009 (eServices' profile LEVEL
+ *   tab shows it), but no ACTIVE AchvID 96 row exists in MbrAchievements — legacy PD
+ *   completions from before the modern achievement-tracking cutover live only in
+ *   SeniorLevel.txt (CAPID, Lvl, Completed), which is what eServices actually reads
+ *   for that tab. So CONFIG.REQUIRE_LEVEL_I_FOR_SENIORS was withholding a
+ *   legitimately-complete member. Level I does not expire once completed, so any LV1
+ *   row there is sufficient on its own.
+ *   1.23.0 — addOrUpdateUser(): a member whose Workspace account was
  *   soft-deleted and who then renews within Google's ~20-day recovery window was
  *   falling through the 404/archived-check path straight to Users.insert, which
  *   Google rejects because the address is still reserved by the deleted account —
@@ -1717,20 +1725,44 @@ function getActiveUsers() {
 }
 
 /**
- * Returns a Set of CAPIDs whose Level I achievement is marked ACTIVE in
- * MbrAchievements. Used to gate senior account provisioning.
+ * Returns a Set of CAPIDs who have completed Level I, checking BOTH places CAPWATCH
+ * can carry it: an ACTIVE achievement (AchvID 96) in MbrAchievements, OR an "LV1" row
+ * in SeniorLevel.txt. Either counts. Used to gate senior account provisioning.
+ *
+ * SeniorLevel.txt is the table that actually backs eServices' member-profile LEVEL
+ * tab (columns: CAPID, Lvl, Completed, ...) — confirmed against a real member whose
+ * LV1/LV2/LV3 rows there matched their eServices display exactly, while carrying NO
+ * corresponding MbrAchievements row at all (their Level I was earned in 2009, before
+ * AchvID 96 tracking covered members converted from the older PD system — those
+ * legacy completions live only in SeniorLevel.txt, with UsrID/FirstUsr "converted").
+ * MbrAchievements alone under-counts for exactly this population. Level does not
+ * expire once completed, so any LV1 row is sufficient on its own — no date check.
  *
  * @returns {Set<string>}
  */
 function loadLevel1CompletedCapids() {
   const completed = new Set();
-  const rows = parseFile('MbrAchievements');
-  for (let i = 0; i < rows.length; i++) {
-    if (String(rows[i][1]) === '96' && rows[i][2] === 'ACTIVE') {
-      completed.add(String(rows[i][0]));
+
+  const achvRows = parseFile('MbrAchievements');
+  for (let i = 0; i < achvRows.length; i++) {
+    if (String(achvRows[i][1]) === '96' && achvRows[i][2] === 'ACTIVE') {
+      completed.add(String(achvRows[i][0]));
     }
   }
-  Logger.info('Level I completions loaded', { count: completed.size });
+  const fromAchievements = completed.size;
+
+  const seniorLevelRows = parseFile('SeniorLevel');
+  for (let i = 0; i < seniorLevelRows.length; i++) {
+    if (String(seniorLevelRows[i][1]) === 'LV1') {
+      completed.add(String(seniorLevelRows[i][0]));
+    }
+  }
+
+  Logger.info('Level I completions loaded', {
+    fromAchievements: fromAchievements,
+    fromSeniorLevelOnly: completed.size - fromAchievements,
+    total: completed.size
+  });
   return completed;
 }
 
