@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Level I gate now checks SeniorLevel.txt as well as MbrAchievements** (`src/accounts-and-groups/UpdateMembers.gs`) - a member's legacy Level I completion (pre-dating the modern achievement-tracking cutover) shows on eServices' profile LEVEL tab but never got a corresponding ACTIVE achievement in MbrAchievements, withholding a legitimately-complete member's new senior account under `CONFIG.REQUIRE_LEVEL_I_FOR_SENIORS`. `loadLevel1CompletedCapids()` now unions both: an ACTIVE AchvID 96 row, OR an LV1 row in SeniorLevel.txt (the table eServices actually reads for that tab).
 - **Renewal of a soft-deleted member no longer stalls provisioning** (`src/accounts-and-groups/UpdateMembers.gs`, `src/accounts-and-groups/DuplicateAccountGuard.gs`) - a member whose account was deleted and then renewed within Google's ~20-day recovery window was silently left without an account: provisioning couldn't see the deleted user (Users.get/Users.list both omit deleted users) and fell through to `Users.insert`, which Google rejects because the address is still reserved. `addOrUpdateUser()` now looks up a soft-deleted user by email (`findDeletedUserByEmail_`) and calls `Users.undelete` before falling through to insert.
 
 ### Planned
