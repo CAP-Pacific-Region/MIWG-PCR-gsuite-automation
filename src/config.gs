@@ -4,9 +4,17 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.14.0
- * Date: 2026-08-16
- * Changes: Added the optional Script Property TENANT_2SV_SETUP_GROUP
+ * Version: 1.15.0
+ * Date: 2026-09-08
+ * Changes: REQUIRE_LEVEL_I_FOR_SENIORS is now per-tenant via PROFILE_ (true on
+ *   seniors/cadets, false on region) instead of a hardcoded true. CAPWATCH's own
+ *   Level I record is unreliable for the region tenant's population: some
+ *   members' completions predate BOTH MbrAchievements tracking AND their
+ *   SeniorLevel.txt row (see loadLevel1CompletedCapids() in UpdateMembers.gs),
+ *   so the gate was blocking real, long-qualified region staff from getting
+ *   accounts rather than protecting against anything. Region assigns members
+ *   directly to region staff duties, who are well past Level I by definition.
+ *   1.14.0: Added the optional Script Property TENANT_2SV_SETUP_GROUP
  *   (TENANT.TWO_SV_SETUP_GROUP), the 2SV setup group pruned nightly by
  *   accounts-and-groups/TwoSvSetupGroup.gs. Blank — the default — disables that
  *   prune; nothing else reads it, so an unset tenant is unaffected.
@@ -222,6 +230,7 @@ const TENANT_PROFILES_ = {
     TRANSITION_ROLE: 'destination',     // receives ex-cadets; only exempts them from Level I
     EXCLUDED_ORG_IDS: ['1297', '368'], // CA-000 (1297) + CA-999 (368) holding units
     AEM_UNIT: '',                      // no Aerospace Education Member unit
+    REQUIRE_LEVEL_I_FOR_SENIORS: true, // gate new senior accounts on Level I completion
     SYNC_ORG_PATHS: true,              // multi-unit wing: auto-map new squadrons
     RUN_REGION_GROUP_CHATS: false,     // region-only feature (updateRegionGroupChats)
     RUN_UNIT_VISIT_REPORT: false,      // region-only feature (buildRegionUnitVisitReport)
@@ -296,6 +305,7 @@ const TENANT_PROFILES_ = {
     TRANSITION_ROLE: 'source',          // owns the transition lifecycle end to end
     EXCLUDED_ORG_IDS: ['1297', '368'], // same CA holding units as seniors
     AEM_UNIT: '',
+    REQUIRE_LEVEL_I_FOR_SENIORS: true, // gate new senior accounts on Level I completion
     SYNC_ORG_PATHS: true,
     RUN_REGION_GROUP_CHATS: false,
     RUN_UNIT_VISIT_REPORT: false,
@@ -380,6 +390,15 @@ const TENANT_PROFILES_ = {
     TRANSITION_ROLE: '',          // single tenant holds both cadets and seniors: nothing to cross
     EXCLUDED_ORG_IDS: ['1345'],   // PCR holding unit
     AEM_UNIT: '',                 // region does not run AEM automation
+    // Off: everyone assigned directly to a region staff is already well past
+    // Level I by the time they land here, and CAPWATCH's own record of it is
+    // unreliable for this population — some members' completions predate
+    // BOTH MbrAchievements tracking and their SeniorLevel.txt row (verified
+    // 2026-09-08 against CAPIDs 413027, 543632, 631369: absent from every LVx
+    // row, not just LV1, in this tenant's own SeniorLevel.txt extract). Gating
+    // provisioning on CAPWATCH data that doesn't exist for this population
+    // blocks real members instead of protecting against real gaps.
+    REQUIRE_LEVEL_I_FOR_SENIORS: false,
     SYNC_ORG_PATHS: false,        // single unit: no subordinate orgs to auto-map
     RUN_REGION_GROUP_CHATS: true,      // region duty groups + duty chat spaces
     RUN_UNIT_VISIT_REPORT: true,       // region-wide unit visit report
@@ -692,14 +711,16 @@ CADET_LITE_EXCLUDED_GRADES: [
   },
 
   /**
-   * When true, senior members without a completed Level I achievement in
-   * MbrAchievements will not receive a new Workspace account. Existing
-   * accounts are unaffected — only new provisioning is gated.
+   * When true, senior members without a completed Level I achievement (see
+   * loadLevel1CompletedCapids() — checks MbrAchievements AND SeniorLevel.txt)
+   * will not receive a new Workspace account. Existing accounts are
+   * unaffected — only new provisioning is gated. Per-tenant via
+   * TENANT_PROFILE: off on region (see the 'region' profile for why).
    *
    * Exception: a member transitioning up from the cadet tenant already has an
    * account and is exempt. See TRANSITION_CONFIG and updateAllMembers().
    */
-  REQUIRE_LEVEL_I_FOR_SENIORS: true,
+  REQUIRE_LEVEL_I_FOR_SENIORS: PROFILE_.REQUIRE_LEVEL_I_FOR_SENIORS,
 
   /**
    * Number of members to process in each batch

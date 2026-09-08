@@ -182,7 +182,8 @@ detects or repairs this on its own.
 
 **Tell-tale:** an account whose creation date **precedes** the member's Level I completion.
 `REQUIRE_LEVEL_I_FOR_SENIORS` withholds new senior accounts until Level I is recorded, so
-provisioning could not have created it — someone did it by hand.
+provisioning could not have created it — someone did it by hand. (Region tenant only: this
+gate is off there — see the `region` profile in `config.gs` — so this tell-tale doesn't apply.)
 
 **Confirm:**
 
