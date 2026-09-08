@@ -8,6 +8,13 @@
 what diverged, the decisions taken, and the migration that was executed (§6). Retained for history
 and as the pattern for future tenants.
 
+**Post-reconciliation sync history:** region isn't pushed on every merge — it drifts behind
+master between deploy passes and gets caught up periodically via the standard pre-flight-diff
+procedure ([docs/DEVELOPMENT.md](DEVELOPMENT.md)), same as seniors/cadets. Verified in sync as
+of **2026-07-18** (PR #34) and again **2026-09-08** (158 commits behind, no live-only drift
+found — see [PCR_CHANGELOG.md](../PCR_CHANGELOG.md)). This does not reopen the reconciliation;
+it's routine catch-up, not re-divergence.
+
 **Goal (from the wing/region director):**
 > Make the source of all three tenants line up in GitHub, differentiated only by
 > configuration.
