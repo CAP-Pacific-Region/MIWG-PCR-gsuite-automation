@@ -10,6 +10,37 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-09-08] — Region tenant resynced to master
+
+The region tenant ("PCR Automation", `automation@pcr.cap.gov`) hadn't been pushed since
+2026-07-18 (PR #34) and had drifted **158 commits / 29 files** behind master — no code
+changed, purely a deploy catch-up.
+
+Pre-flight (`clasp pull` + diff against `master` `30a0818`, per the standard procedure in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)) confirmed region was uniformly *behind*, not
+carrying any live-only WIP: every differing file (`config.gs` 1.13.0→1.14.0,
+`CadetTransition.gs`, `CadetTransitionCleanup.gs`, `CadetTransitionMigrate.gs`,
+`DuplicateAccountGuard.gs`, `SecondaryDomainAliases.gs`, `UpdateMembers.gs`) was at an
+older version live than in the repo, and the two files missing live
+(`TwoSvSetupGroup.gs`, `SecondaryAliasWelcomeEmail.html`) are both new since the last
+sync. Pushed master `src/` (39 files) and re-pulled to byte-verify — 39/39 identical.
+
+Nothing new was activated: every feature added since July defaults **off** for the
+`region` profile in `config.gs` (`RUN_LSCODE_NOTIFICATIONS`,
+`RUN_RECOVERY_EMAIL_NOTIFICATIONS`, `RUN_PARENT_EMAIL_NOTIFICATIONS`,
+`RUN_RETENTION_EMAILS`, etc.), and the standalone `TwoSvSetupGroup.gs` prune fails safe
+when its Script Property is unset (which it is on region). `TENANT_PROFILE=pacific`
+still resolves correctly via the `pacific`→`region` `PROFILE_ALIASES_` alias added
+earlier, so no Script Property changes were needed.
+
+**New deploy hazard found:** the globally installed `@google/clasp` 3.2.0 rejects
+`clasp-targets/*.clasp.json`'s `"rootDir": "../src"` with a path-traversal "Security
+Error," which blocks `npm run push:seniors` / `push:cadets` / `push:region` alike (not
+just region). Worked around for this push with a throwaway same-directory
+`{"scriptId": ..., "rootDir": "."}` placed inside `src/`, pushed from there, then
+deleted — not a durable fix. Tracked separately for a real fix (pin clasp, or restructure
+the `.clasp.json` layout).
+
 ## [2026-08-19] — The admin help-desk app now runs on the cadets tenant too (`admin-webapp/`)
 
 Adds the cadets clasp target and npm scripts (`push:admin:cadets` etc.) alongside the existing
