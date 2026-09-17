@@ -1,10 +1,19 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.25.0
- * Date: 2026-08-22
+ * Version: 1.26.0
+ * Date: 2026-09-17
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
- * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.25.0)
- * Changes: 1.25.0 — addOrUpdateUser()'s soft-deleted-user restore path (1.23.0) came
+ * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.26.0)
+ * Changes: 1.26.0 — Chaplains never got "Ch" in their Send-As display name
+ *   ("Last, First M Ch Grade" per CAP naming convention) — the name builder in
+ *   both addOrUpdateUser() and updateAllSendAsNames()'s
+ *   processSendAsNamesBatchLocked() (duplicated verbatim) only ever assembled
+ *   "Last, First M Grade", with no chaplain-corps check at all. Consolidated
+ *   both copies into one buildSendAsDisplayName_(), which now inserts "Ch"
+ *   before the grade whenever member.dutyPositions contains a duty title
+ *   matching /chaplain/i (from CAPWATCH DutyPosition.txt — e.g. "Chaplain",
+ *   "Deputy Wing Chaplain").
+ *   1.25.0 — addOrUpdateUser()'s soft-deleted-user restore path (1.23.0) came
  *   back suspended more often than not: the Users.update right after Users.undelete
  *   (which un-suspends and syncs fields) 404'd while Google was still propagating the
  *   undelete, and executeWithRetry does not retry 404 (it reads as "does not exist"
@@ -1343,6 +1352,35 @@ function updateAfterUndelete_(email, updates) {
  */
 
 
+/**
+ * Whether a member holds a chaplain-corps duty position, per CAPWATCH
+ * DutyPosition.txt title text (e.g. "Chaplain", "Deputy Wing Chaplain").
+ *
+ * @param {Object} member - Member object with a dutyPositions array
+ * @returns {boolean}
+ */
+function memberIsChaplain_(member) {
+  return (member.dutyPositions || []).some(d => /chaplain/i.test(d.id || ''));
+}
+
+/**
+ * Builds the Gmail/Directory Send-As display name: "Last, First M Ch Grade",
+ * with "Ch" inserted for chaplain-corps duty holders per CAP naming convention.
+ *
+ * @param {Object} member - Member object containing CAP data
+ * @returns {string}
+ */
+function buildSendAsDisplayName_(member) {
+  return [
+    member.lastName + (member.suffix ? ' ' + member.suffix : ''),
+    ', ',
+    member.firstName,
+    member.middleName ? ' ' + member.middleName.charAt(0) : '',
+    memberIsChaplain_(member) ? ' Ch' : '',
+    member.rank ? ' ' + member.rank : ''
+  ].join('').trim();
+}
+
 function addOrUpdateUser(member) {
   const baseEmail = `${member.firstName}.${member.lastName}`.toLowerCase().replace(/\s+/g, '');
   let primaryEmail =
@@ -1359,13 +1397,7 @@ function addOrUpdateUser(member) {
   let user;
 
   // Build Gmail/Directory Send-As display name once
-  const sendAsDisplayName = [
-    member.lastName + (member.suffix ? ' ' + member.suffix : ''),
-    ', ',
-    member.firstName,
-    member.middleName ? ' ' + member.middleName.charAt(0) : '',
-    member.rank ? ' ' + member.rank : ''
-  ].join('').trim();
+  const sendAsDisplayName = buildSendAsDisplayName_(member);
 
   let updates = {
     employeeId: String(member.capsn),
@@ -4340,13 +4372,7 @@ function processSendAsNamesBatchLocked() {
     }
 
     // Build display name exactly like addOrUpdateUser()
-    const displayName = [
-      member.lastName + (member.suffix ? ' ' + member.suffix : ''),
-      ', ',
-      member.firstName,
-      member.middleName ? ' ' + member.middleName.charAt(0) : '',
-      member.rank ? ' ' + member.rank : ''
-    ].join('').trim();
+    const displayName = buildSendAsDisplayName_(member);
 
     // Sync Directory displayName everywhere
     try {

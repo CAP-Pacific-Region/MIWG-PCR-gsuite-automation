@@ -10,6 +10,21 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-09-17] — Chaplains now get "Ch" in their Send-As display name
+
+`updateAllSendAsNames()` and `addOrUpdateUser()` (`src/accounts-and-groups/UpdateMembers.gs`
+1.26.0) built the Gmail/Directory Send-As display name from two verbatim-duplicated blocks,
+neither of which had any chaplain-corps handling — every member, chaplain or not, got
+`"Last, First M Grade"`. Per CAP convention, chaplains should read `"Last, First M Ch Grade"`.
+
+Consolidated both copies into a single `buildSendAsDisplayName_()`, which inserts `"Ch"`
+before the grade whenever `member.dutyPositions` contains a duty title matching `/chaplain/i`
+(sourced from CAPWATCH `DutyPosition.txt`, e.g. `"Chaplain"`, `"Deputy Wing Chaplain"`).
+Since downstream code (Directory update, `updateGmailSendAsDisplayName()`, the org-alias
+mirror) only ever consumes the finished name string, no other call site needed changes.
+
+New coverage in `test/UpdateMembers.sendAsName.test.js`.
+
 ## [2026-09-08] — Region tenant resynced to master
 
 The region tenant ("PCR Automation", `automation@pcr.cap.gov`) hadn't been pushed since
