@@ -5,9 +5,13 @@
  *   Auto-adds new entries where the parent path is already mapped, and emails
  *   this tenant's IT mailbox with a full summary of changes and items needing
  *   attention. Called automatically at the end of getCapwatch().
- * Version: 1.1.0
- * Date: 2026-07-17
- * Changes: Sync email subject/footer and body now use the programmable
+ * Version: 1.2.0
+ * Date: 2026-09-28
+ * Changes: OU path segments are now '<WING>-<unit>' from CONFIG.WING instead of a
+ *   literal 'CA-'. Auto-derived paths and the deactivation scan's '/CA-001' filter
+ *   were California-only: on any other wing (Oregon) new orgs would have been
+ *   provisioned as '<parent>/CA-<unit>' OUs and deactivations never reported.
+ *   1.1.0: Sync email subject/footer and body now use the programmable
  *   CONFIG.ORG_LABEL / CONFIG.WING instead of literal 'CAWG'/'CA', so the report
  *   reads correctly for any wing (e.g. HIWG). See PCR_CHANGELOG.md.
  *   1.0.0: Sync recipient is now tenant-aware via getOrgPathSyncEmail_()
@@ -26,10 +30,22 @@ function getOrgPathSyncEmail_() {
 }
 
 /**
+ * Wing-scoped OU path segment prefix, e.g. 'CA-' or 'OR-'. Throws when
+ * TENANT_WING is unset rather than guessing: a wrong prefix would provision
+ * OUs under the wrong names.
+ * @returns {string}
+ */
+function orgPathPrefix_() {
+  const wing = String(CONFIG.WING || '').trim().toUpperCase();
+  if (!wing) throw new Error('syncOrgPaths: TENANT_WING is not set');
+  return wing + '-';
+}
+
+/**
  * Syncs OrgPaths.txt with active orgs in Organization.txt.
  *
  * - Auto-adds any new UNIT or GROUP whose parent ORGID is already mapped,
- *   deriving the path as parentPath + "/CA-" + unitNumber.
+ *   deriving the path as parentPath + "/<WING>-" + unitNumber.
  * - Flags new orgs whose parent isn't mapped yet (needs manual entry).
  * - Flags OrgPath entries with no matching active org in CAPWATCH (possible
  *   deactivation or recharter) for manual cleanup.
@@ -39,6 +55,7 @@ function getOrgPathSyncEmail_() {
  */
 function syncOrgPaths() {
   Logger.info('Starting OrgPath sync');
+  const prefix = orgPathPrefix_();
 
   const orgRows = parseFile('Organization');
   const orgPathRows = parseFile('OrgPaths');
@@ -81,7 +98,7 @@ function syncOrgPaths() {
 
     const parentPath = currentPaths[org.parent];
     if (parentPath) {
-      const newPath = parentPath + '/CA-' + org.unit;
+      const newPath = parentPath + '/' + prefix + org.unit;
       currentPaths[org.orgid] = newPath;
       added.push({ orgid: org.orgid, path: newPath, name: org.name, scope: org.scope });
       Logger.info('OrgPath auto-added', { orgid: org.orgid, path: newPath, name: org.name });
@@ -97,9 +114,9 @@ function syncOrgPaths() {
   });
 
   // --- Detect deactivations: in OrgPaths but absent from active CA orgs ---
-  // Skip non-CA entries (NHQ, PCR, etc.) — they won't appear in Organization.txt
+  // Skip entries outside this wing (NHQ, PCR, etc.) — they won't appear in Organization.txt
   Object.entries(currentPaths).forEach(([orgid, path]) => {
-    if (!path.startsWith('/CA-001')) return;
+    if (!path.startsWith('/' + prefix)) return;
     if (!activeCAOrgs[orgid]) {
       deactivated.push({ orgid, path });
       Logger.warn('OrgPath entry has no matching active CA org', { orgid, path });
@@ -150,7 +167,7 @@ function writeOrgPathEntries_(entries) {
  * Derives the parent OU path and OU name from the full path.
  * Returns true if created, false if it already existed or an error occurred.
  *
- * @param {string} fullPath  - e.g. "/CA-001/CA-445/CA-404"
+ * @param {string} fullPath  - e.g. "/CA-001/CA-445/CA-404" (segments follow CONFIG.WING)
  * @param {string} ouName    - Human-readable name for the OU (e.g. squadron name)
  * @returns {boolean}
  */
