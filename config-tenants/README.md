@@ -24,7 +24,7 @@ so clasp never uploads them. They exist for version control and disaster recover
 - `orwg.json` + `setup-orwg.gs` — Oregon Wing: ONE composite tenant (orwgcap.org, cadets and seniors
   together), `TENANT_PROFILE=composite`. Values taken from the project's pre-migration `config.js`.
   Run `setupOrwgScriptProperties()` **before** the first push. Clasp target `clasp-targets/orwg.clasp.json`
-  (`npm run push:orwg`).
+  (`npm run push:orwg`). First-run order: [`docs/ORWG_FIRST_RUN.md`](../docs/ORWG_FIRST_RUN.md).
 - `hiwg-seniors.json` / `hiwg-cadets.json` — **template** identity for a second wing (Hawaii
   Wing), same split senior/cadet structure as California. Tenant-specific values are marked
   `FILL_IN`; wing labels are pre-set to derive.

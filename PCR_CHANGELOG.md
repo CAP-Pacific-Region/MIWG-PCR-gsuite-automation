@@ -16,6 +16,12 @@ The `composite` profile (`config.gs` 1.17.1) sets `REQUIRE_LEVEL_I_FOR_SENIORS` 
 Oregon senior accounts are provisioned without waiting for Level I completion. Seniors and cadets
 profiles are unchanged (still gated).
 
+## [2026-09-28] — Oregon first-run checklist
+
+Added `docs/ORWG_FIRST_RUN.md`, the bring-up order for the Oregon tenant after its move onto the
+shared `src/`. Notably, `updateAllMembers()` has no dry-run mode, so the checklist uses the
+read-only previews that do exist and treats the first member sync as a watched real run.
+
 ## [2026-09-28] — Welcome email help links are per-tenant
 
 `WelcomeEmail.html` hardcoded California's help-desk site (`sites.google.com/cawgcap.org/cawgintranet/...`)

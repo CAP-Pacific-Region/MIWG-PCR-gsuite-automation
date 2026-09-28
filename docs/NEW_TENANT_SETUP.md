@@ -222,6 +222,9 @@ These are exactly the `FILL_IN` fields in the `setup-hiwg.gs` / `hiwg-*.json` te
 Wing labels (`HIWG`, `Hawaii Wing`) and the standard cadet-domain pattern are **derived**,
 so they are intentionally **not** on this list.
 
+> **Oregon Wing (ORWG)** — a composite single tenant — has its own bring-up order in
+> [ORWG_FIRST_RUN.md](ORWG_FIRST_RUN.md).
+
 ## Cross-reference index
 
 | For… | See |
