@@ -10,6 +10,12 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-09-28] — Oregon: no Level I gate
+
+The `composite` profile (`config.gs` 1.17.1) sets `REQUIRE_LEVEL_I_FOR_SENIORS` to `false`, so new
+Oregon senior accounts are provisioned without waiting for Level I completion. Seniors and cadets
+profiles are unchanged (still gated).
+
 ## [2026-09-28] — Oregon first-run checklist
 
 Added `docs/ORWG_FIRST_RUN.md`, the bring-up order for the Oregon tenant after its move onto the
