@@ -10,6 +10,12 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-09-28] — Oregon first-run checklist
+
+Added `docs/ORWG_FIRST_RUN.md`, the bring-up order for the Oregon tenant after its move onto the
+shared `src/`. Notably, `updateAllMembers()` has no dry-run mode, so the checklist uses the
+read-only previews that do exist and treats the first member sync as a watched real run.
+
 ## [2026-09-28] — Welcome email help links are per-tenant
 
 `WelcomeEmail.html` hardcoded California's help-desk site (`sites.google.com/cawgcap.org/cawgintranet/...`)
