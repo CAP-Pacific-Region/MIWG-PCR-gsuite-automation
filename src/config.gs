@@ -4,9 +4,11 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.17.0
+ * Version: 1.17.1
  * Date: 2026-09-28
- * Changes: Added optional TENANT_HELP_GUIDE_URL / TENANT_SUPPORT_URL (TENANT.HELP_GUIDE_URL /
+ * Changes: The 'composite' profile sets REQUIRE_LEVEL_I_FOR_SENIORS false (Oregon does
+ *   not want new senior accounts held for Level I).
+ *   1.17.0: Added optional TENANT_HELP_GUIDE_URL / TENANT_SUPPORT_URL (TENANT.HELP_GUIDE_URL /
  *   SUPPORT_URL) so the welcome email's help links are per-tenant, not California's.
  *   1.16.0: Added the 'composite' TENANT_PROFILE for a wing that runs cadets and
  *   seniors on ONE Workspace tenant (Oregon Wing). Derived from `seniors` with CADET
@@ -471,12 +473,15 @@ const TENANT_PROFILES_ = {
 //    cadet turning 18 stays in the same directory.
 //  - The parent-email digest is ON: the parent contacts live on this tenant.
 //  - Holding units are Oregon's (ORGID 117 = OR-000), not California's.
+//  - No Level I gate on new senior accounts (Oregon does not want the wait).
 // CADET_LITE stays false: every cadet gets an account, as Oregon has always done.
 TENANT_PROFILES_.composite = Object.assign({}, TENANT_PROFILES_.seniors, {
   MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR', 'CADET', ''],
   CADET_LITE: false,
   TRANSITION_ROLE: '',
   EXCLUDED_ORG_IDS: ['117'],
+  // Off at Oregon's request: new senior accounts are not held for Level I.
+  REQUIRE_LEVEL_I_FOR_SENIORS: false,
   RUN_PARENT_EMAIL_NOTIFICATIONS: true,
   CROSS_TENANT: {
     RUN_INBOUND: false,

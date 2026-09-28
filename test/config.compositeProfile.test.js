@@ -41,6 +41,12 @@ section('2. A single tenant has no peer');
   check('no cross-tenant parents', p.CROSS_TENANT.RUN_PARENTS, false);
 }
 
+section('2b. No Level I wait for new seniors');
+{
+  check('composite does not gate on Level I', load('composite').PROFILE_.REQUIRE_LEVEL_I_FOR_SENIORS, false);
+  check('seniors still does', load('seniors').PROFILE_.REQUIRE_LEVEL_I_FOR_SENIORS, true);
+}
+
 section('3. Oregon labels and holding unit derive');
 {
   const c = load('composite');
