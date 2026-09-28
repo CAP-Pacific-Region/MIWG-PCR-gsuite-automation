@@ -22,6 +22,17 @@ ORGID (117). Added `clasp-targets/orwg.clasp.json` (`npm run push:orwg`),
 
 New coverage in `test/config.compositeProfile.test.js`.
 
+## [2026-09-28] — OrgPath sync no longer assumes California
+
+`syncOrgPaths()` (`src/SyncOrgPaths.gs` 1.2.0) built new OU paths as `<parent>/CA-<unit>` and
+only scanned for deactivations under `/CA-001`. Both are California literals. On any other wing
+(first hit while preparing Oregon Wing) a newly chartered unit would have been provisioned as a
+`CA-`-named OU in Workspace, and deactivated units would never have been reported. The prefix now
+comes from `CONFIG.WING` (`OR-`, `HI-`, …) and the function refuses to run if `TENANT_WING` is
+unset. California behaviour is unchanged.
+
+New coverage in `test/SyncOrgPaths.wingprefix.test.js`.
+
 ## [2026-09-17] — Chaplains now get "Ch" in their Send-As display name
 
 `updateAllSendAsNames()` and `addOrUpdateUser()` (`src/accounts-and-groups/UpdateMembers.gs`
