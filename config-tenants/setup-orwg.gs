@@ -34,7 +34,9 @@ function setupOrwgScriptProperties() {
     TENANT_AUTOMATION_SENDER_EMAIL: "automation@orwgcap.org",
     TENANT_SENDER_NAME: "ORWG Information Technology",
     TENANT_TEST_EMAIL: "it@orwgcap.org",
-    TENANT_ITSUPPORT_EMAIL: "it@orwgcap.org"
+    TENANT_ITSUPPORT_EMAIL: "it@orwgcap.org",
+    TENANT_HELP_GUIDE_URL: "",  // optional: welcome-email quick-reference page; blank omits it
+    TENANT_SUPPORT_URL: ""      // optional: support-ticket portal; blank mails TENANT_ITSUPPORT_EMAIL
   };
 
   const props = PropertiesService.getScriptProperties();

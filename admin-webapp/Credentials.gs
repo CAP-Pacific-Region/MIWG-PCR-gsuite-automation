@@ -174,6 +174,46 @@ function adm2SvInsert_(html) {
 }
 
 /**
+ * Fills the welcome email's two per-tenant link sections. Both used to be
+ * hardcoded (California's help-desk site and the Pacific Region ticket portal),
+ * so every other wing's new members were sent to someone else's help desk.
+ *
+ *  - helpGuideUrl blank  -> the whole "Quick Reference" section is removed.
+ *  - supportUrl blank    -> the support line mails supportEmail instead; if that
+ *                           is blank too, the section is omitted.
+ * Same logic as applyWelcomeEmailLinks_ in src/accounts-and-groups/UpdateMembers.gs (a
+ * separate Apps Script project cannot share it) — keep the two in step.
+ * URLs are attribute-escaped; a value that is not http(s) is treated as blank
+ * rather than emitted, so a typo cannot inject markup or a javascript: link.
+ */
+function admApplyWelcomeEmailLinks_(html, helpGuideUrl, supportUrl, supportEmail) {
+  const esc = function (s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  };
+  const httpUrl = function (u) {
+    const v = String(u || '').trim();
+    return /^https?:\/\/\S+$/i.test(v) ? v : '';
+  };
+
+  const help = httpUrl(helpGuideUrl);
+  let out = help
+    ? html.replace(/{{HELP_GUIDE_URL}}/g, esc(help)).replace(/<!--HELP_GUIDE_(START|END)-->\s*/g, '')
+    : html.replace(/<!--HELP_GUIDE_START-->[\s\S]*?<!--HELP_GUIDE_END-->\s*/g, '');
+
+  const support = httpUrl(supportUrl);
+  const mail = String(supportEmail || '').trim();
+  let block = '';
+  if (support) {
+    block = '<p>If further assistance is needed, please submit a support ticket:</p>\n' +
+      '        <p><strong>IT Support:</strong> <a href="' + esc(support) + '">' + esc(support) + '</a></p>';
+  } else if (mail) {
+    block = '<p>If further assistance is needed, please contact IT Support:</p>\n' +
+      '        <p><strong>IT Support:</strong> <a href="mailto:' + esc(mail) + '">' + esc(mail) + '</a></p>';
+  }
+  return out.replace(/{{SUPPORT_BLOCK}}/g, function () { return block; });
+}
+
+/**
  * Sends the welcome email carrying a temporary password.
  *
  * @param {Object} member - a record from admBuildMemberRecord_()
@@ -189,7 +229,8 @@ function adm2SvInsert_(html) {
 function admSendWelcomeEmail_(member, email, tempPassword, recipients, needs2Sv) {
   const html = HtmlService.createTemplateFromFile('WelcomeEmail').getRawContent();
 
-  const merged = html
+  const merged = admApplyWelcomeEmailLinks_(
+      html, ADMIN_CONFIG.HELP_GUIDE_URL, ADMIN_CONFIG.SUPPORT_URL, ADMIN_CONFIG.SUPPORT_EMAIL)
     .replace(/{{WING}}/g, ADMIN_CONFIG.WING)
     .replace(/{{firstName}}/g, member.firstName)
     .replace(/{{lastName}}/g, member.lastName)

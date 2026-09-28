@@ -23,5 +23,7 @@
   "TENANT_AUTOMATION_SENDER_EMAIL": "automation@pcr.cap.gov",
   "TENANT_SENDER_NAME": "",
   "TENANT_TEST_EMAIL": "",
-  "TENANT_ITSUPPORT_EMAIL": "it@pcr.cap.gov"
+  "TENANT_ITSUPPORT_EMAIL": "it@pcr.cap.gov",
+  "TENANT_HELP_GUIDE_URL": "https://sites.google.com/cawgcap.org/cawgintranet/cawg-help-desk/google-workspace",
+  "TENANT_SUPPORT_URL": "https://support.pcrcap.org"
 }

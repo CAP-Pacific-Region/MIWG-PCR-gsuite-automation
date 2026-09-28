@@ -56,6 +56,8 @@ const ADMIN_WEBAPP_SETUP_VALUES = {
     TENANT_WING: 'CA',
     TENANT_CAPWATCH_DATA_FOLDER_ID: '10T0wBubqzUzHa_7nx__eNfuzhTpFRDs3',
     TENANT_ITSUPPORT_EMAIL: 'it@cawgcap.org',
+    TENANT_HELP_GUIDE_URL: 'https://sites.google.com/cawgcap.org/cawgintranet/cawg-help-desk/google-workspace',
+    TENANT_SUPPORT_URL: 'https://support.pcrcap.org',
 
     /** The OTHER tenant, named when no peer admin URL is set. */
     XT_PEER_DOMAIN: 'cawgcadets.org',
@@ -101,6 +103,8 @@ const ADMIN_WEBAPP_SETUP_VALUES = {
     TENANT_WING: 'CA',
     TENANT_CAPWATCH_DATA_FOLDER_ID: '1Y2MmtJoyk4qCMncGmvoIe-rTotje_1dj',
     TENANT_ITSUPPORT_EMAIL: 'it@cawgcap.org',
+    TENANT_HELP_GUIDE_URL: 'https://sites.google.com/cawgcap.org/cawgintranet/cawg-help-desk/google-workspace',
+    TENANT_SUPPORT_URL: 'https://support.pcrcap.org',
 
     /** The OTHER tenant — the seniors domain, from this side. */
     XT_PEER_DOMAIN: 'cawgcap.org',

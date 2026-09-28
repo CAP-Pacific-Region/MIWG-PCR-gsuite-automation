@@ -1,10 +1,16 @@
 /**
  * -------------------------------------------------------------------------
- * Version: 1.26.0
- * Date: 2026-09-17
+ * Version: 1.27.0
+ * Date: 2026-09-28
  * Authors: Michigan Wing (MIWG) — Extended and Maintained by Lt Col Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.5.0–1.26.0)
- * Changes: 1.26.0 — Chaplains never got "Ch" in their Send-As display name
+ * Changes: 1.27.0 — The welcome email's Quick Reference link and support-portal line were
+ *   hardcoded (California's help-desk site, the Pacific Region ticket portal), so
+ *   every other wing's new members were pointed at someone else's help desk.
+ *   Now per-tenant via TENANT_HELP_GUIDE_URL / TENANT_SUPPORT_URL through
+ *   applyWelcomeEmailLinks_(); blank omits the link (support falls back to
+ *   mailing ITSUPPORT_EMAIL).
+ *   1.26.0 — Chaplains never got "Ch" in their Send-As display name
  *   ("Last, First M Ch Grade" per CAP naming convention) — the name builder in
  *   both addOrUpdateUser() and updateAllSendAsNames()'s
  *   processSendAsNamesBatchLocked() (duplicated verbatim) only ever assembled
@@ -3593,6 +3599,44 @@ function generateTempPassword_() {
 // NEW — Welcome Email Sender
 // -----------------------------------------
 /**
+ * Fills the welcome email's two per-tenant link sections. Both used to be
+ * hardcoded (California's help-desk site and the Pacific Region ticket portal),
+ * so every other wing's new members were sent to someone else's help desk.
+ *
+ *  - helpGuideUrl blank  -> the whole "Quick Reference" section is removed.
+ *  - supportUrl blank    -> the support line mails supportEmail instead; if that
+ *                           is blank too, the section is omitted.
+ * URLs are attribute-escaped; a value that is not http(s) is treated as blank
+ * rather than emitted, so a typo cannot inject markup or a javascript: link.
+ */
+function applyWelcomeEmailLinks_(html, helpGuideUrl, supportUrl, supportEmail) {
+  const esc = function (s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  };
+  const httpUrl = function (u) {
+    const v = String(u || '').trim();
+    return /^https?:\/\/\S+$/i.test(v) ? v : '';
+  };
+
+  const help = httpUrl(helpGuideUrl);
+  let out = help
+    ? html.replace(/{{HELP_GUIDE_URL}}/g, esc(help)).replace(/<!--HELP_GUIDE_(START|END)-->\s*/g, '')
+    : html.replace(/<!--HELP_GUIDE_START-->[\s\S]*?<!--HELP_GUIDE_END-->\s*/g, '');
+
+  const support = httpUrl(supportUrl);
+  const mail = String(supportEmail || '').trim();
+  let block = '';
+  if (support) {
+    block = '<p>If further assistance is needed, please submit a support ticket:</p>\n' +
+      '        <p><strong>IT Support:</strong> <a href="' + esc(support) + '">' + esc(support) + '</a></p>';
+  } else if (mail) {
+    block = '<p>If further assistance is needed, please contact IT Support:</p>\n' +
+      '        <p><strong>IT Support:</strong> <a href="mailto:' + esc(mail) + '">' + esc(mail) + '</a></p>';
+  }
+  return out.replace(/{{SUPPORT_BLOCK}}/g, function () { return block; });
+}
+
+/**
  * ONLY CALLED FROM THE INSERT BRANCH of addOrUpdateUser(). An account created
  * out-of-band (Admin console / GAM) never passes through that branch, so its
  * member never receives credentials and no later sync notices — see
@@ -3604,7 +3648,7 @@ function sendWelcomeEmail(member, email, tempPassword) {
     .createTemplateFromFile('recruiting-and-retention/WelcomeEmail')
     .getRawContent();
 
-  const mergedHtml = html
+  const mergedHtml = applyWelcomeEmailLinks_(html, TENANT.HELP_GUIDE_URL, TENANT.SUPPORT_URL, ITSUPPORT_EMAIL)
     .replace(/{{WING}}/g, CONFIG.WING)
     .replace(/{{firstName}}/g, member.firstName)
     .replace(/{{lastName}}/g, member.lastName)

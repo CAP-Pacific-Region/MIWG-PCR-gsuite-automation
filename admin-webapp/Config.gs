@@ -167,6 +167,13 @@ function getAdminWebAppConfig_() {
     /** Shown to an admin the app cannot help, and CC'd on credentials it mails. */
     SUPPORT_EMAIL: get('TENANT_ITSUPPORT_EMAIL'),
 
+    /**
+     * Welcome-email help links — same properties and same blank-omits rule as
+     * src/config.gs. See admApplyWelcomeEmailLinks_() in Credentials.gs.
+     */
+    HELP_GUIDE_URL: get('TENANT_HELP_GUIDE_URL'),
+    SUPPORT_URL: get('TENANT_SUPPORT_URL'),
+
     ORG_LABEL: get('TENANT_WING_ABBREVIATION',
       (wing && wing.length === 2) ? wing + 'WG' : (wing || 'CAP'))
   };
