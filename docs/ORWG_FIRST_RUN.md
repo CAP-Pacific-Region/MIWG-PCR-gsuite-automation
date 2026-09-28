@@ -74,8 +74,8 @@ and watch the log:
   **deletions/restores** is a stop-and-investigate signal.
 - Accounts for **CADET SPONSOR** members are new behavior for Oregon and will be created.
 - New accounts trigger a welcome email; check its help links and IT-support line look right.
-- Level I gating (`REQUIRE_LEVEL_I_FOR_SENIORS`) is **on**: new senior accounts wait for Level I
-  in CAPWATCH.
+- There is **no Level I wait** on Oregon: new senior accounts are provisioned right away
+  (`REQUIRE_LEVEL_I_FOR_SENIORS` is off in the `composite` profile, `config.gs` 1.17.1).
 
 ## 6. Groups
 
