@@ -10,6 +10,22 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-09-28] — Welcome email help links are per-tenant
+
+`WelcomeEmail.html` hardcoded California's help-desk site (`sites.google.com/cawgcap.org/cawgintranet/...`)
+and the Pacific Region ticket portal (`support.pcrcap.org`), so every other wing's new members —
+Oregon first — would have been pointed at someone else's help desk. Both are now optional Script
+Properties, `TENANT_HELP_GUIDE_URL` and `TENANT_SUPPORT_URL` (`config.gs` 1.17.0), rendered by
+`applyWelcomeEmailLinks_()` (`UpdateMembers.gs` 1.27.0). **Blank omits the link**; a blank support URL
+falls back to mailing `TENANT_ITSUPPORT_EMAIL`. Non-http(s) values are dropped.
+
+**Action needed on the three existing tenants:** set both properties (values are in
+`config-tenants/{seniors,cadets,region}.json`) or their welcome emails lose the links. The admin web
+app's template copy and renderer changed to match (`admin-webapp/`, pushed separately) and reads the
+same property names from its own project.
+
+New coverage in `test/UpdateMembers.welcomeLinks.test.js`.
+
 ## [2026-09-28] — Oregon Wing tenant: `composite` profile + clasp target
 
 Oregon Wing runs cadets and seniors on ONE Workspace tenant (`orwgcap.org`), a shape none of the

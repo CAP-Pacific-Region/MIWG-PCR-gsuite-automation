@@ -24,5 +24,7 @@
   "TENANT_AUTOMATION_SENDER_EMAIL": "automation@cawgcap.org",
   "TENANT_SENDER_NAME": "CAWG Information Technology",
   "TENANT_TEST_EMAIL": "it@cawgcap.org",
-  "TENANT_ITSUPPORT_EMAIL": "it@cawgcap.org"
+  "TENANT_ITSUPPORT_EMAIL": "it@cawgcap.org",
+  "TENANT_HELP_GUIDE_URL": "https://sites.google.com/cawgcap.org/cawgintranet/cawg-help-desk/google-workspace",
+  "TENANT_SUPPORT_URL": "https://support.pcrcap.org"
 }

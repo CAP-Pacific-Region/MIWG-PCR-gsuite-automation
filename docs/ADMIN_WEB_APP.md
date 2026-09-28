@@ -139,6 +139,7 @@ the same names the main project uses.
 | `TENANT_CAPWATCH_DATA_FOLDER_ID` | yes | the extract folder; also holds the welcome-email ledger |
 | `TENANT_SECONDARY_EMAIL_DOMAIN` | no | `@cawg.cap.gov` on seniors |
 | `TENANT_ITSUPPORT_EMAIL` | no | CC'd on credentials, and named in refusals |
+| `TENANT_HELP_GUIDE_URL`, `TENANT_SUPPORT_URL` | no | Welcome-email links; same properties and blank-omits rule as `src/`. Blank omits the quick-reference link; support falls back to mailing `TENANT_ITSUPPORT_EMAIL` |
 | `TENANT_AUTOMATION_SPREADSHEET_ID` | no | where the audit tab is written |
 | `TENANT_WING_ABBREVIATION` | no | derived from `TENANT_WING` when blank |
 | `TENANT_PROFILE` | no | `seniors` (default) / `cadets` / `region` / `composite` — decides which members this tenant provisions, see §5.1 |

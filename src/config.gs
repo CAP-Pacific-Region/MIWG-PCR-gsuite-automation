@@ -4,9 +4,11 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.16.0
+ * Version: 1.17.0
  * Date: 2026-09-28
- * Changes: Added the 'composite' TENANT_PROFILE for a wing that runs cadets and
+ * Changes: Added optional TENANT_HELP_GUIDE_URL / TENANT_SUPPORT_URL (TENANT.HELP_GUIDE_URL /
+ *   SUPPORT_URL) so the welcome email's help links are per-tenant, not California's.
+ *   1.16.0: Added the 'composite' TENANT_PROFILE for a wing that runs cadets and
  *   seniors on ONE Workspace tenant (Oregon Wing). Derived from `seniors` with CADET
  *   in the active types, no transition/cross-tenant, parent digest on, and Oregon's
  *   holding-unit ORGID. Existing profiles are untouched.
@@ -191,7 +193,15 @@ function getTenantConfig_() {
     AUTOMATION_SENDER_EMAIL: get('TENANT_AUTOMATION_SENDER_EMAIL'),
     SENDER_NAME: get('TENANT_SENDER_NAME', 'CAP Information Technology'),
     TEST_EMAIL: get('TENANT_TEST_EMAIL'),
-    ITSUPPORT_EMAIL: get('TENANT_ITSUPPORT_EMAIL')
+    ITSUPPORT_EMAIL: get('TENANT_ITSUPPORT_EMAIL'),
+    // Optional links in the new-account welcome email (UpdateMembers.gs
+    // sendWelcomeEmail). BLANK OMITS THE LINK — there is deliberately no default,
+    // because the old hardcoded values pointed every wing's new members at
+    // California's help-desk site. HELP_GUIDE_URL is the "Google Workspace quick
+    // reference" page; SUPPORT_URL is the ticket portal (blank falls back to
+    // mailing ITSUPPORT_EMAIL).
+    HELP_GUIDE_URL: get('TENANT_HELP_GUIDE_URL'),
+    SUPPORT_URL: get('TENANT_SUPPORT_URL')
   };
 }
 
@@ -561,7 +571,9 @@ function setupTenantConfig() {
     TENANT_AUTOMATION_SENDER_EMAIL: '',
     TENANT_SENDER_NAME: '',
     TENANT_TEST_EMAIL: '',
-    TENANT_ITSUPPORT_EMAIL: ''
+    TENANT_ITSUPPORT_EMAIL: '',
+    TENANT_HELP_GUIDE_URL: '',             // welcome-email quick-reference link; '' omits it
+    TENANT_SUPPORT_URL: ''                 // welcome-email support-ticket portal; '' falls back to mailing ITSUPPORT_EMAIL
   };
 
   const props = PropertiesService.getScriptProperties();

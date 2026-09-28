@@ -25,5 +25,7 @@
   "TENANT_AUTOMATION_SENDER_EMAIL": "FILL_IN_automation_sender",
   "TENANT_SENDER_NAME": "HIWG Information Technology",
   "TENANT_TEST_EMAIL": "FILL_IN_it_mailbox",
-  "TENANT_ITSUPPORT_EMAIL": "FILL_IN_it_mailbox"
+  "TENANT_ITSUPPORT_EMAIL": "FILL_IN_it_mailbox",
+  "TENANT_HELP_GUIDE_URL": "",
+  "TENANT_SUPPORT_URL": ""
 }
