@@ -4,9 +4,13 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.15.0
- * Date: 2026-09-08
- * Changes: REQUIRE_LEVEL_I_FOR_SENIORS is now per-tenant via PROFILE_ (true on
+ * Version: 1.16.0
+ * Date: 2026-09-28
+ * Changes: Added the 'composite' TENANT_PROFILE for a wing that runs cadets and
+ *   seniors on ONE Workspace tenant (Oregon Wing). Derived from `seniors` with CADET
+ *   in the active types, no transition/cross-tenant, parent digest on, and Oregon's
+ *   holding-unit ORGID. Existing profiles are untouched.
+ *   1.15.0: REQUIRE_LEVEL_I_FOR_SENIORS is now per-tenant via PROFILE_ (true on
  *   seniors/cadets, false on region) instead of a hardcoded true. CAPWATCH's own
  *   Level I record is unreliable for the region tenant's population: some
  *   members' completions predate BOTH MbrAchievements tracking AND their
@@ -201,7 +205,7 @@ const TENANT = getTenantConfig_();
  * *behavior*: the cadets tenant processes only CADET members, runs cadet-lite,
  * and creates a smaller set of squadron groups. Those values live here as coded
  * profiles (so the structure stays version-controlled) and are selected by the
- * `TENANT_PROFILE` Script Property ('seniors' | 'cadets' | 'region'; defaults to
+ * `TENANT_PROFILE` Script Property ('seniors' | 'cadets' | 'region' | 'composite'; defaults to
  * 'seniors').
  *
  * Like TENANT_*, the selector is a Script Property, so a shared-config `clasp
@@ -446,6 +450,33 @@ const TENANT_PROFILES_ = {
     }
   }
 };
+
+// Composite wing — ONE Workspace tenant holding a wing's cadets AND seniors together
+// (Oregon Wing, orwgcap.org). Derived from `seniors` so every senior-side feature
+// (Level I gate, squadron lists, retention mail, LSCode/recovery digests) behaves
+// identically, then overridden ONLY where a single combined tenant differs:
+//  - CADET joins the active member types. Under plain `seniors` a cadet is
+//    "ineligible" and would never be provisioned, or would be suspended.
+//  - No transition role and no cross-tenant sync: there is no peer tenant, and a
+//    cadet turning 18 stays in the same directory.
+//  - The parent-email digest is ON: the parent contacts live on this tenant.
+//  - Holding units are Oregon's (ORGID 117 = OR-000), not California's.
+// CADET_LITE stays false: every cadet gets an account, as Oregon has always done.
+TENANT_PROFILES_.composite = Object.assign({}, TENANT_PROFILES_.seniors, {
+  MEMBER_TYPES_ACTIVE: ['', 'SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR', 'CADET', ''],
+  CADET_LITE: false,
+  TRANSITION_ROLE: '',
+  EXCLUDED_ORG_IDS: ['117'],
+  RUN_PARENT_EMAIL_NOTIFICATIONS: true,
+  CROSS_TENANT: {
+    RUN_INBOUND: false,
+    RUN_PARENTS: false,
+    PEER_TYPES: [],
+    PEER_LABEL: '',
+    EMIT_PLACEHOLDERS: false,
+    SELF_NO_ACCOUNT_TYPES: []
+  }
+});
 
 const PROFILE_ = TENANT_PROFILES_[TENANT_PROFILE] || TENANT_PROFILES_.seniors;
 

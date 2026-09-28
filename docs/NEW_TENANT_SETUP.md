@@ -45,7 +45,7 @@ mode, the squadron-group set, region flags, and cross-tenant behavior:
 | Deployment | Tenants | Profiles |
 |---|---|---|
 | Split wing (CAWG, **HIWG**) | seniors + cadets | `seniors`, `cadets` |
-| Single composite wing | one | `seniors` |
+| Single composite wing (cadets + seniors on one tenant; **Oregon**) | one | `composite` — *not* `seniors`, which omits CADET from the active types |
 | Region HQ | one | `region` (see [REGION_DIFF.md](REGION_DIFF.md)) |
 
 > **HIWG:** two tenants → `seniors` and `cadets`, mirroring CAWG.

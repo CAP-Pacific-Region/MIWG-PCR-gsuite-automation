@@ -134,7 +134,7 @@ function getAdminWebAppConfig_() {
     AUDIT_SHEET_NAME: get('WEBAPP_AUDIT_SHEET_NAME', 'Admin Web App Log'),
 
     /**
-     * Which population this tenant provisions — 'seniors' | 'cadets' | 'region',
+     * Which population this tenant provisions — 'seniors' | 'cadets' | 'region' | 'composite',
      * the same property and the same default as src/config.gs.
      *
      * It matters here because CAPWATCH is scoped to the WING, not to the tenant.
@@ -202,13 +202,14 @@ function admMissingConfig_() {
  * Mirrors MEMBER_TYPES_ACTIVE in src/config.gs — keep the two in step; the test
  * compares them.
  *
- * Note the region profile provisions CADET as well as the senior types, which is
+ * Note the region and composite profiles provision CADET as well as the senior types, which is
  * why this is a table rather than "cadets are somebody else's problem".
  */
 const ADM_PROFILE_MEMBER_TYPES = {
   seniors: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR'],
   cadets: ['CADET'],
-  region: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET']
+  region: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET'],
+  composite: ['SENIOR', 'FIFTY YEAR', 'INDEFINITE', 'CADET SPONSOR', 'CADET']
 };
 
 /**

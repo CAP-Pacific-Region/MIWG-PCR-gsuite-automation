@@ -493,7 +493,8 @@ const srcTypes = (srcConfig.match(/MEMBER_TYPES_ACTIVE:\s*\[[^\]]*\]/g) || [])
 check('the profile→member-type table matches src/config.gs',
   [seniorsCfg.ADM_PROFILE_MEMBER_TYPES.seniors,
    seniorsCfg.ADM_PROFILE_MEMBER_TYPES.cadets,
-   seniorsCfg.ADM_PROFILE_MEMBER_TYPES.region],
+   seniorsCfg.ADM_PROFILE_MEMBER_TYPES.region,
+   seniorsCfg.ADM_PROFILE_MEMBER_TYPES.composite],
   srcTypes);
 
 check('the sentence names the configured peer admin site',

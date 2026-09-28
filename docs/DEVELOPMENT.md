@@ -68,7 +68,7 @@ Per-tenant identity and behavior live in that project's **Script Properties**, w
 touch:
 
 - **Identity** (`TENANT_DOMAIN`, `TENANT_EMAIL_DOMAIN`, `TENANT_CAPWATCH_ORGID`, `TENANT_WING`, `TENANT_REGION`, the folder/spreadsheet IDs, contact emails) — read at runtime by `getTenantConfig_()` in `config.gs`. Canonical non-secret values per tenant are version-controlled in [`config-tenants/<tenant>.json`](../config-tenants/README.md).
-- **Behavior** (`TENANT_PROFILE` = `seniors` | `cadets` | `region`) — selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
+- **Behavior** (`TENANT_PROFILE` = `seniors` | `cadets` | `region` | `composite`) — selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
 - **Secrets** (`SA_*`, `XT_PEER_*`, `MISSION_WEBHOOK_SECRET`, the per-user `CAPWATCH_AUTHORIZATION`) — never committed.
 
 Apply values once per project with `setupTenantConfig()` (or by hand in **Project Settings →
