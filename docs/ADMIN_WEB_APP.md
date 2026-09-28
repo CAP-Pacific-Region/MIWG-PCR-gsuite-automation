@@ -141,7 +141,7 @@ the same names the main project uses.
 | `TENANT_ITSUPPORT_EMAIL` | no | CC'd on credentials, and named in refusals |
 | `TENANT_AUTOMATION_SPREADSHEET_ID` | no | where the audit tab is written |
 | `TENANT_WING_ABBREVIATION` | no | derived from `TENANT_WING` when blank |
-| `TENANT_PROFILE` | no | `seniors` (default) / `cadets` / `region` — decides which members this tenant provisions, see §5.1 |
+| `TENANT_PROFILE` | no | `seniors` (default) / `cadets` / `region` / `composite` — decides which members this tenant provisions, see §5.1 |
 | `WEBAPP_PEER_ADMIN_URL` | no | linked when an admin opens a member from the other tenant. `WEBAPP_CADET_TOOLS_URL` is still read as a fallback for the older name |
 | `XT_PEER_DOMAIN` | no | the peer tenant's domain, named when no peer admin URL is set. `TENANT_CADETS_TENANT_DOMAIN` is still read as a fallback for the older name |
 | `WEBAPP_2SV_SETUP_GROUP` | no | the 2SV group's address. **Blank disables the group panel entirely**. `TENANT_2SV_SETUP_GROUP` is accepted as a fallback, since `src/` already uses that name for the same group |

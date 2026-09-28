@@ -10,6 +10,18 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-09-28] — Oregon Wing tenant: `composite` profile + clasp target
+
+Oregon Wing runs cadets and seniors on ONE Workspace tenant (`orwgcap.org`), a shape none of the
+three existing profiles fit: `seniors` omits `CADET` from the active member types (cadets would
+never be provisioned), `cadets` is cadet-only, and `region` carries region-only features.
+`config.gs` 1.16.0 adds a `composite` profile derived from `seniors` with `CADET` active, no
+transition role or cross-tenant sync, the parent-email digest on, and Oregon's holding-unit
+ORGID (117). Added `clasp-targets/orwg.clasp.json` (`npm run push:orwg`),
+`config-tenants/orwg.json` and `setup-orwg.gs`. Existing profiles are unchanged.
+
+New coverage in `test/config.compositeProfile.test.js`.
+
 ## [2026-09-17] — Chaplains now get "Ch" in their Send-As display name
 
 `updateAllSendAsNames()` and `addOrUpdateUser()` (`src/accounts-and-groups/UpdateMembers.gs`
