@@ -81,6 +81,19 @@ mirror) only ever consumes the finished name string, no other call site needed c
 
 New coverage in `test/UpdateMembers.sendAsName.test.js`.
 
+## [2026-09-08] — `REQUIRE_LEVEL_I_FOR_SENIORS` made per-tenant, off for region
+
+CAPWATCH's Level I record is unreliable for the region tenant's population: three
+region-staff CAPIDs were verified live as absent from every row of their own
+`SeniorLevel.txt` extract, not just `LV1` — their completions predate both
+`MbrAchievements` tracking and the `SeniorLevel.txt` fallback this codebase already
+reads (see the 2026-08-21 entry below). The gate was blocking real, long-qualified
+members from getting accounts rather than protecting against anything, since everyone
+assigned directly to region staff duties is already well past Level I by definition.
+
+`REQUIRE_LEVEL_I_FOR_SENIORS` (`config.gs` 1.15.0) is now read per-tenant via
+`PROFILE_` — `true` on `seniors`/`cadets`, **`false` on `region`**.
+
 ## [2026-09-08] — Region tenant resynced to master
 
 The region tenant ("PCR Automation", `automation@pcr.cap.gov`) hadn't been pushed since
@@ -111,6 +124,37 @@ just region). Worked around for this push with a throwaway same-directory
 `{"scriptId": ..., "rootDir": "."}` placed inside `src/`, pushed from there, then
 deleted — not a durable fix. Tracked separately for a real fix (pin clasp, or restructure
 the `.clasp.json` layout).
+
+## [2026-08-21] — Three account-lifecycle edge cases, all found live
+
+### Fixed — a renewed member's account restores instead of failing to insert
+
+`addOrUpdateUser()` only checked for an **archived** user on a 404 insert failure, then fell
+through to `Users.insert` — which Google rejects, because a soft-deleted account's address
+stays reserved for its ~20-day recovery window. A member who renewed inside that window was
+left with no account at all. Now checks for a soft-deleted user at the derived address
+(`findDeletedUserByEmail_`, new in `DuplicateAccountGuard.gs`) and calls `Users.undelete`
+before falling through to insert.
+
+### Fixed — the just-undeleted account no longer gets stuck suspended
+
+The restore path chains a `Users.update` right after `Users.undelete` to un-suspend and sync
+fields, but Google doesn't make a just-undeleted account immediately available to further
+Directory API calls — that update could 404 while the undelete was still propagating, and
+`executeWithRetry` deliberately does not retry 404s (elsewhere a 404 correctly means "does not
+exist"). The account came back restored but suspended, and stayed that way until the next
+night's ordinary update happened to catch it. New `updateAfterUndelete_()` retries
+specifically on "Resource Not Found" with backoff (up to ~1 minute) so restore and un-suspend
+land in the same run.
+
+### Fixed — legacy Level I completions recognized via `SeniorLevel.txt`
+
+A member's Level I completion from 2009, pre-dating the modern achievement-tracking cutover,
+shows on eServices' profile LEVEL tab but has no `ACTIVE` achievement (AchvID 96) in
+`MbrAchievements.txt` — legacy completions from that era live only in `SeniorLevel.txt`
+(`CAPID, Lvl, Completed`), the table eServices itself reads for that tab. `MbrAchievements.txt`
+alone was withholding a legitimately Level-I-complete member's new senior account.
+`loadLevel1CompletedCapids()` now unions both sources.
 
 ## [2026-08-19] — The admin help-desk app now runs on the cadets tenant too (`admin-webapp/`)
 

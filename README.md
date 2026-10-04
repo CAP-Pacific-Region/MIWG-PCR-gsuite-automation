@@ -8,33 +8,34 @@
 
 > **📖 New administrator taking this over?** Start with the
 > **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the PCR "hit by a bus" runbook
-> covering the three-tenant deployment, access checklist, secrets, schedule, and disaster recovery.
+> covering the multi-tenant deployment, access checklist, secrets, schedule, and disaster recovery.
 > This README is the map; the Admin Guide is the ground truth for operating the live system.
 
 ## Overview
 
 This project synchronizes Civil Air Patrol (CAP) Google Workspace environments with **CAPWATCH**
 membership data. It began as a fork of the Michigan Wing single-wing automation, but has grown into
-a **multi-tenant platform**: a single `src/` codebase is deployed to **three independent Workspace
+a **multi-tenant platform**: a single `src/` codebase is deployed to **four independent Workspace
 tenants** and adapts its behavior per tenant through Google Apps Script **Script Properties** — no
 per-tenant code branches, no forks.
 
-### The three tenants
+### The four tenants
 
 | Tenant | Domain | Profile | Role |
 |--------|--------|---------|------|
 | **Seniors** | `cawgcap.org` | `seniors` (default) | CAWG senior members; also the **cross-tenant driver** |
 | **Cadets** | `cawgcadets.org` | `cadets` | CAWG cadets (cadet-lite accounts, smaller group set) |
 | **Pacific Region** | `pcr.cap.gov` | `region` | Region-level features (mission webhook, unit-visit report, region chats) |
+| **Oregon Wing** | `orwgcap.org` | `composite` | One tenant holding cadets **and** seniors together — no cross-tenant sync, no Level I gate |
 
-The **same code** runs on all three. Each project carries its own `TENANT_*` identity and a
+The **same code** runs on all four. Each project carries its own `TENANT_*` identity and a
 `TENANT_PROFILE` selector in Script Properties (which `clasp push` never touches), so a deploy can
 never repoint one tenant at another's domain. Canonical non-secret values are version-controlled in
 [`config-tenants/`](config-tenants/README.md); secrets live only in each project's Script Properties.
 
 > ⚠️ **`src/config.gs` is tenant-neutral by design and is overwritten on every push.** Never
 > hand-edit a domain, ORGID, or folder ID into it — set a Script Property instead. See
-> [config-tenants/](config-tenants/README.md) and [Admin Guide §5](docs/ADMIN_GUIDE.md#5-the-three-tenants-and-how-code-gets-deployed).
+> [config-tenants/](config-tenants/README.md) and [Admin Guide §5](docs/ADMIN_GUIDE.md#5-the-tenants-and-how-code-gets-deployed).
 
 ### What it does
 
@@ -102,18 +103,22 @@ never repoint one tenant at another's domain. Canonical non-secret values are ve
   Per-tenant identity + behavior comes from Script Properties
   (TENANT_* + TENANT_PROFILE), never from committed code.
   "xt" = cross-tenant sync (group nesting + shared contacts).
+
+  A fourth project, OREGON (orwgcap.org, profile: composite), clasp-pushes the
+  identical src/ the same way. It holds cadets AND seniors in one tenant, so it
+  has no "xt" peer and sits outside the diagram above only to keep the ASCII simple.
 ```
 
 Each tenant's project has its own time-driven triggers and its own dedicated Google Cloud **service
 account** (used only for the Gmail-settings and Calendar calls that require domain-wide
-impersonation). Because the three projects are pushed independently, **they can silently run
+impersonation). Because the four projects are pushed independently, **they can silently run
 different code** — `master` is not proof of what is live on any tenant. See
-[Admin Guide §5](docs/ADMIN_GUIDE.md#5-the-three-tenants-and-how-code-gets-deployed).
+[Admin Guide §5](docs/ADMIN_GUIDE.md#5-the-tenants-and-how-code-gets-deployed).
 
 ## Repository layout
 
 ```
-src/                          # The shared codebase — deployed unchanged to all three tenants
+src/                          # The shared codebase — deployed unchanged to all four tenants
 ├── config.gs                 # Tenant-NEUTRAL config; reads identity/profile from Script Properties
 ├── utils.gs                  # parseFile (CSV cache), executeWithRetry, email/validation helpers
 ├── GetCapwatch.gs            # Download CAPWATCH ZIP → Drive; credential storage
@@ -135,8 +140,8 @@ secondary-alias-webapp/       # SEPARATE Apps Script project: CAPID-scoped secon
                               # (own manifest, scopes and clasp target — seniors tenant)
 
 config-tenants/               # Canonical NON-SECRET per-tenant values (repo-only; never pushed)
-├── seniors.json  cadets.json  region.json
-clasp-targets/                # {scriptId, rootDir} pointers, one per tenant + one per web app
+├── seniors.json  cadets.json  region.json  orwg.json
+clasp-targets/                # {scriptId, rootDir} pointers, one per tenant (incl. orwg.clasp.json) + one per web app
 docs/                         # Admin Guide, cross-tenant, migration, troubleshooting, etc.
 ```
 
@@ -149,7 +154,7 @@ docs/                         # Admin Guide, cross-tenant, migration, troublesho
 
 ## Getting started (developers)
 
-There is **one** `src/` and three clasp targets. All operations go through npm scripts:
+There is **one** `src/` and four clasp targets. All operations go through npm scripts:
 
 ```bash
 npm install -g @google/clasp
@@ -159,7 +164,7 @@ npm run status:seniors            # preview what would change on a tenant
 npm run push:seniors              # deploy src/ → seniors project
 npm run pull:seniors              # pull project → src/ (to inspect drift)
 npm run open:seniors              # open the project in the browser
-# ...and the :cadets / :region equivalents
+# ...and the :cadets / :region / :orwg equivalents
 
 npm run push:signature:seniors    # deploy signature-webapp/ — its OWN script project, one per tenant
 npm run push:signature:cadets     # ...same source, the cadets tenant's project
@@ -176,13 +181,13 @@ npm run push:alias:seniors        # deploy secondary-alias-webapp/ — CAPID-sco
 > redeploys.
 
 **Recommended change flow:** branch → edit `src/` → `push:seniors` → run the relevant `preview…`
-function and check **Executions** → push `cadets`, then `region` → update
+function and check **Executions** → push `cadets`, `region`, then `orwg` → update
 [PCR_CHANGELOG.md](PCR_CHANGELOG.md) → open a PR to **`CAP-Pacific-Region/MIWG-PCR-gsuite-automation`
 master** (not the upstream `cap-miwg` repo). Full details in
 [Admin Guide §6](docs/ADMIN_GUIDE.md#6-local-development-with-clasp) and
 [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-> Push to one tenant, confirm it's healthy, then the next — never push all three blind, and remember
+> Push to one tenant, confirm it's healthy, then the next — never push all four blind, and remember
 > each push resets that project's `config.gs` to the shared copy.
 
 ## Per-tenant configuration
@@ -191,7 +196,7 @@ A project's identity and behavior come entirely from **Script Properties**, set 
 and never overwritten by a push:
 
 - **Identity** — `TENANT_DOMAIN`, `TENANT_EMAIL_DOMAIN`, `TENANT_CAPWATCH_ORGID`, `TENANT_WING`, `TENANT_REGION`, the Drive folder / spreadsheet IDs, and contact addresses. Canonical values live in [`config-tenants/<tenant>.json`](config-tenants/README.md).
-- **Behavior** — `TENANT_PROFILE` (`seniors` | `cadets` | `region`) selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`).
+- **Behavior** — `TENANT_PROFILE` (`seniors` | `cadets` | `region` | `composite`) selects member types, cadet-lite mode, the squadron-group set, region-feature flags, and cross-tenant behavior (`PROFILE_` in `config.gs`). `composite` (Oregon Wing) is a single tenant holding both cadets and seniors — derived from `seniors` with no cross-tenant sync and no Level I gate.
 - **Secrets** — `SA_IMPERSONATION_EMAIL` / `SA_PRIVATE_KEY` (per-tenant service account), `XT_PEER_*` (cross-tenant peer SA), `MISSION_WEBHOOK_SECRET`, and the per-user `CAPWATCH_AUTHORIZATION` token. Never committed.
 
 Apply values with `setupTenantConfig()` (or by hand), then run `validateTenantConfig()`. There is
@@ -247,7 +252,7 @@ source (cadets) tenant and must be armed **as the automation account**
 ## Documentation
 
 - **[Administrator & Successor Guide](docs/ADMIN_GUIDE.md)** — the operational runbook (start here for anything live).
-- **[New Tenant / New Wing Setup](docs/NEW_TENANT_SETUP.md)** — bare-metal, end-to-end runbook for provisioning a brand-new tenant from nothing (Hawaii-Wing worked example).
+- **[New Tenant / New Wing Setup](docs/NEW_TENANT_SETUP.md)** — bare-metal, end-to-end runbook for provisioning a brand-new tenant from nothing (Hawaii-Wing worked example; Oregon Wing is the real `composite`-profile precedent — see [docs/ORWG_FIRST_RUN.md](docs/ORWG_FIRST_RUN.md)).
 - **[Cross-Tenant Contacts](docs/CROSS_TENANT_CONTACTS.md)** — seniors ⇄ cadets shared-contact sync.
 - **[Signature Web App](docs/SIGNATURE_WEB_APP.md)** — the member self-service email signature page (`signature-webapp/`, a separate script project).
 - **[Admin Web App](docs/ADMIN_WEB_APP.md)** — the domain admin help-desk page (`admin-webapp/`, a separate script project per tenant, seniors + cadets): password resets, welcome-email resends, 2SV setup group.
