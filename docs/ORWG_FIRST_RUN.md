@@ -25,8 +25,7 @@ step 7.
    silently means `seniors`, under which **cadets are not provisioned and existing cadet
    accounts read as ineligible**.
 3. Confirm the secrets exist: `SA_IMPERSONATION_EMAIL`, `SA_PRIVATE_KEY`
-   (and `SA_PRIVATE_KEY_ID` if used). The key must be one issued for Oregon — not the
-   `pcr-capwatch` key that was exposed in public git history (see `SECURITY.md`).
+   (and `SA_PRIVATE_KEY_ID` if used).
 4. Optional and blank by default: `TENANT_HELP_GUIDE_URL`, `TENANT_SUPPORT_URL` (welcome-email
    links; blank omits the help link and mails `TENANT_ITSUPPORT_EMAIL` for support),
    `TENANT_DIRECTOR_RECRUITING_NAME` (retention mail signature), `TENANT_2SV_SETUP_GROUP`
@@ -53,10 +52,6 @@ Run each and read the log — none changes anything:
 | `previewIneligibleMembers()` | Who the new rules consider ineligible. **Cadets appearing here means the profile is wrong.** |
 | `previewLicenseLifecycle()` | Should report 0 / 0 / 0 destructive candidates. Do not run `manageLicenseLifecycle()` yet. |
 | `previewEmailGroupRows()` | The wing / duty group rows the sync will manage. |
-
-Also confirm the **member types in the CAPWATCH extract**: the old fork listed `LIFE`; the
-current code uses `INDEFINITE`. If `Member.txt` still carries `LIFE` for Oregon, those members
-would be treated as ineligible — check before step 5.
 
 ## 4. Sanity-check one account
 
