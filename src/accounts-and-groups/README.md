@@ -67,6 +67,18 @@ Together, these scripts ensure that your Google Workspace environment stays sync
    - The directory-visible "other" email and phone still honor DoNotContact, and
      cadet phone numbers are never added to the directory (removed if previously
      present).
+9. Sets the Gmail/Directory **Send-As display name** via `buildSendAsDisplayName_()`:
+   `"Last, First M Grade"`, or `"Last, First M Ch Grade"` when the member holds a duty title
+   matching `/chaplain/i` in CAPWATCH `DutyPosition.txt`. The same function backs
+   `updateAllSendAsNames()`'s batch worker, so both call sites agree.
+10. Restores a renewed member whose account was **soft-deleted** inside Google's ~20-day
+    recovery window, instead of failing to insert. `addOrUpdateUser()` checks for a deleted user
+    at the derived address (`findDeletedUserByEmail_` in `DuplicateAccountGuard.gs`), calls
+    `Users.undelete`, then `updateAfterUndelete_()` retries the following un-suspend/field-sync
+    `Users.update` specifically on 404 (up to ~1 minute) — a just-undeleted account isn't
+    immediately visible to further Directory API calls, and `executeWithRetry` deliberately
+    doesn't retry 404s elsewhere. Without the retry, a restored account came back suspended and
+    stayed that way until the next scheduled run.
 
 **Account Creation**:
 ```
@@ -340,7 +352,12 @@ any other existing member. Nothing detects the gap and nothing repairs it.
 
 The tell-tale is an account created **before** the member's Level I completion:
 `REQUIRE_LEVEL_I_FOR_SENIORS` withholds new senior accounts until Level I is recorded,
-so provisioning cannot have made it.
+so provisioning cannot have made it. This gate is **per-tenant** (`config.gs` 1.15.0) — on for
+seniors/cadets, **off for `region` and for Oregon's `composite` profile**, both of which
+provision new senior accounts without waiting on Level I. Completion is read from the union of
+`MbrAchievements.txt` (AchvID 96, `ACTIVE`) and `SeniorLevel.txt`
+(`loadLevel1CompletedCapids()`) — the latter catches pre-2018 completions that predate
+`MbrAchievements.txt` tracking and that eServices' own LEVEL tab still shows.
 
 **Key Functions**:
 - `previewWelcomeEmailResend(capid)` — **read-only.** Whether the member would be sent a
