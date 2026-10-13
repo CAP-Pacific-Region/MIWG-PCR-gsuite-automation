@@ -1,6 +1,6 @@
 # Oregon Wing — first-run checklist
 
-The Oregon project (`clasp-targets/orwg.clasp.json`) was moved from a hand-configured older
+The Oregon project (`orwg.clasp.json`) was moved from a hand-configured older
 fork onto the shared `src/` on **2026-09-28**. It is a **composite** tenant (`orwgcap.org`,
 cadets and seniors together, `TENANT_PROFILE=composite`), which is why some steps differ from
 the California tenants. This is the order to bring it up in. Nothing here arms a trigger until

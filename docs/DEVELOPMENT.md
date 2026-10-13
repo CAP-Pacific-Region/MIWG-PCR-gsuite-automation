@@ -47,7 +47,7 @@ This guide provides detailed information for developers working on the CAPWATCH 
    clasp login          # opens a browser; log in as an owner of the target project(s)
    ```
    Development happens in git against the shared `src/`; you push/pull to each tenant's Apps Script
-   project through the `clasp-targets/*.clasp.json` pointers (wired up as npm scripts — see
+   project through the `*.clasp.json` pointers (wired up as npm scripts — see
    [Deployment](#deployment)). We no longer use the Chrome "GitHub Assistant" extension.
 
 3. **Advanced services / APIs:**
@@ -63,7 +63,7 @@ This guide provides detailed information for developers working on the CAPWATCH 
 ### Configuration
 
 **`config.gs` is tenant-neutral and is overwritten on every `clasp push`** (all three targets use
-`rootDir: ../src`). Do **not** put a domain, ORGID, or folder ID in it — a push would clobber it.
+`rootDir: src`). Do **not** put a domain, ORGID, or folder ID in it — a push would clobber it.
 Per-tenant identity and behavior live in that project's **Script Properties**, which pushes never
 touch:
 
@@ -87,7 +87,7 @@ immediately clear them from the code (the token lands in your **User** Propertie
 ### File Organization
 
 The **one** `src/` tree below is deployed unchanged to all three tenants; `config-tenants/` and
-`clasp-targets/` live outside `src/` (repo-only, never pushed):
+the repo-root `*.clasp.json` files live outside `src/` (repo-only, never pushed):
 
 ```
 src/                          # Shared codebase — deployed to all three Apps Script projects
@@ -121,9 +121,44 @@ src/                          # Shared codebase — deployed to all three Apps S
     └── *.html                   # Email templates (exact slash-prefixed names matter!)
 
 config-tenants/               # Canonical non-secret TENANT_* values per tenant (repo-only)
-clasp-targets/                # {scriptId, rootDir:../src} pointers, one per tenant
+*.clasp.json                  # Push targets at the repo ROOT: {scriptId, rootDir} per tenant
 extra/                        # Standalone helper scripts (GAM display-name, MX-record checks)
 ```
+
+### Push targets live at the repo root, and why
+
+Each tenant gets a `<name>.clasp.json` at the **repo root**, holding a `scriptId` and a
+`rootDir` naming the directory it pushes:
+
+| Target | rootDir |
+| --- | --- |
+| `seniors` `cadets` `region` `orwg` | `src` |
+| `signature-webapp-seniors` `signature-webapp-cadets` | `signature-webapp` |
+| `admin-webapp-seniors` `admin-webapp-cadets` | `admin-webapp` |
+| `secondary-alias-webapp` | `secondary-alias-webapp` |
+
+They used to live in `clasp-targets/` with `rootDir: ../src`. **clasp 3 refuses that**, treating
+any `rootDir` that leaves the config’s own directory as attempted path traversal:
+
+```
+Security Error: srcDir "../src" escapes project root.
+```
+
+So the config must sit **above** the code it pushes, which at the root it does. Two traps worth
+knowing before you move these again:
+
+- **`rootDir` must be a STRICT subdirectory.** Putting the config inside the directory it pushes
+  and writing `rootDir: "."` (or `"./"`, `""`, or omitting it) is rejected by clasp 3.4 even
+  though it resolves *to* the project root. clasp 3.2 accepts those; 3.4 does not.
+- **`npm run` and a bare `clasp` may not be the same program.** A global install and whatever
+  `npx` resolves can differ by a minor version that disagrees about the above, so a target that
+  works in your shell can fail under `npm run` and vice versa. Check with
+  `clasp --version` against `npm exec -- clasp --version` before believing either one.
+
+`.claspignore` is **gone**. Its whole job was keeping a push of one directory from collecting the
+others, and `rootDir` now does that structurally — a push only ever sees files beneath it. Note
+it was also resolved from the config’s directory while being *matched* relative to `rootDir`,
+so moving the configs would have silently made `!src/**` match nothing and ignored everything.
 
 ### Module Dependencies
 
@@ -904,7 +939,7 @@ To integrate additional CAPWATCH files:
 - [ ] Documentation updated
 
 Deployment is `clasp push` per tenant. The npm scripts wrap
-`clasp <cmd> -P clasp-targets/<tenant>.clasp.json`:
+`clasp <cmd> -P <tenant>.clasp.json`:
 
 | Action | Seniors | Cadets | Pacific |
 |--------|---------|--------|---------|

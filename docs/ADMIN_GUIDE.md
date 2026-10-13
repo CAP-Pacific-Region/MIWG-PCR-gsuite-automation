@@ -88,10 +88,10 @@ These IDs are the load-bearing facts. Keep this table current — it is the map 
 
 | Tenant | Domain | Project owner | clasp target | Apps Script `scriptId` |
 |--------|--------|---------------|--------------|------------------------|
-| Seniors (the driver) | `cawgcap.org` | `automation@cawgcap.org` | `clasp-targets/seniors.clasp.json` | `1ZjkCGQ2Dt-goAYO6n9y6cDwUnvm3Jor6DV0sLIsdCu4iB5zSzS9gmjAi` |
-| Cadets | `cawgcadets.org` | `automation@cawgcadets.org` | `clasp-targets/cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
-| Pacific Region | `pcr.cap.gov` | `automation@pcr.cap.gov` (project in a `pcr.cap.gov` Shared Drive) | `clasp-targets/region.clasp.json` | `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0` |
-| Oregon Wing | `orwgcap.org` | `automation@orwgcap.org` | `clasp-targets/orwg.clasp.json` | `1YIJgMAp3SaiGLIIenHI2JEXjQBcEszCzSQDK-ojvWLQ5pnW4AF-uMiVZ` |
+| Seniors (the driver) | `cawgcap.org` | `automation@cawgcap.org` | `seniors.clasp.json` | `1ZjkCGQ2Dt-goAYO6n9y6cDwUnvm3Jor6DV0sLIsdCu4iB5zSzS9gmjAi` |
+| Cadets | `cawgcadets.org` | `automation@cawgcadets.org` | `cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
+| Pacific Region | `pcr.cap.gov` | `automation@pcr.cap.gov` (project in a `pcr.cap.gov` Shared Drive) | `region.clasp.json` | `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0` |
+| Oregon Wing | `orwgcap.org` | `automation@orwgcap.org` | `orwg.clasp.json` | `1YIJgMAp3SaiGLIIenHI2JEXjQBcEszCzSQDK-ojvWLQ5pnW4AF-uMiVZ` |
 
 Oregon runs `TENANT_PROFILE=composite` — one tenant holding cadets **and** seniors together, no
 cross-tenant peer. See [docs/ORWG_FIRST_RUN.md](ORWG_FIRST_RUN.md) for its bring-up.
@@ -105,11 +105,11 @@ deployed with `src/`), one clasp target per tenant it runs on:
 
 | Web app | Tenant | clasp target | Apps Script `scriptId` |
 |---------|--------|--------------|------------------------|
-| Signature ([docs](SIGNATURE_WEB_APP.md)) | Seniors | `clasp-targets/signature-webapp-seniors.clasp.json` | `1iNlP98b0caPWtlHwyR7SEgr6v2I9v5VI7KlQgkfy9K9kFSnRW5xFczim` |
-| Signature ([docs](SIGNATURE_WEB_APP.md)) | Cadets | `clasp-targets/signature-webapp-cadets.clasp.json` | `1rNSgWefpl5At18lxJxikekYubF5jqztcw-N64jfQxwM0a-f-TC4bGDDc` |
-| Admin help desk ([docs](ADMIN_WEB_APP.md)) | Seniors | `clasp-targets/admin-webapp-seniors.clasp.json` | `1miHntSIH4GkVqTGMedaj1Bj3n9mkRSITUlOS3PfdEMrbGsEVMQDSq6ub` |
-| Admin help desk ([docs](ADMIN_WEB_APP.md)) | Cadets | `clasp-targets/admin-webapp-cadets.clasp.json` | `1di9sBo2eQ3xXrMI7ZCfibHvpXrq2Cf0pmi4o3elpz8fFOmfctYH9D8dX` |
-| Secondary alias ([docs](../secondary-alias-webapp/README.md)) | Seniors | `clasp-targets/secondary-alias-webapp.clasp.json` | `18D4sP07OktnjgES9CB5a7A4MIIJOinR3GgtikWXj1QxVaP7wDBn95GAa` |
+| Signature ([docs](SIGNATURE_WEB_APP.md)) | Seniors | `signature-webapp-seniors.clasp.json` | `1iNlP98b0caPWtlHwyR7SEgr6v2I9v5VI7KlQgkfy9K9kFSnRW5xFczim` |
+| Signature ([docs](SIGNATURE_WEB_APP.md)) | Cadets | `signature-webapp-cadets.clasp.json` | `1rNSgWefpl5At18lxJxikekYubF5jqztcw-N64jfQxwM0a-f-TC4bGDDc` |
+| Admin help desk ([docs](ADMIN_WEB_APP.md)) | Seniors | `admin-webapp-seniors.clasp.json` | `1miHntSIH4GkVqTGMedaj1Bj3n9mkRSITUlOS3PfdEMrbGsEVMQDSq6ub` |
+| Admin help desk ([docs](ADMIN_WEB_APP.md)) | Cadets | `admin-webapp-cadets.clasp.json` | `1di9sBo2eQ3xXrMI7ZCfibHvpXrq2Cf0pmi4o3elpz8fFOmfctYH9D8dX` |
+| Secondary alias ([docs](../secondary-alias-webapp/README.md)) | Seniors | `secondary-alias-webapp.clasp.json` | `18D4sP07OktnjgES9CB5a7A4MIIJOinR3GgtikWXj1QxVaP7wDBn95GAa` |
 
 Like the tenant projects, `clasp push` deploys code only — every web app is **deployed by hand
 from the Apps Script editor**; `clasp update-deployment`/`create-deployment` replaces the
@@ -266,7 +266,7 @@ There is **one** `src/` directory in this repo. It is deployed, unchanged, to **
 Apps Script projects via three clasp targets. Each target is just a `{ scriptId, rootDir }` pointer:
 
 ```
-clasp-targets/
+
 ├── seniors.clasp.json   → cawgcap.org project      (seniors tenant + cross-tenant driver)
 ├── cadets.clasp.json    → cawgcadets.org project   (cadets tenant)
 └── region.clasp.json   → Pacific Region project   (pcr.cap.gov Shared Drive; deployed)
@@ -315,8 +315,8 @@ on triggers **except** the final delete, which stays manual. Full detail:
 
 ### ⚠️ `config.gs` is shared and overwritten on every push — keep per-tenant config in Script Properties
 
-`.claspignore` ships **everything under `src/`**, and `config.gs` lives there; all four targets use
-`rootDir: ../src`. So **every `clasp push` overwrites that project's `config.gs` with the shared
+A push ships **everything under `rootDir`**, and `config.gs` lives there; all four `src` targets set
+`rootDir: src`. So **every `clasp push` overwrites that project's `config.gs` with the shared
 copy.** The design accounts for this: `config.gs` is **tenant-neutral** — it hard-codes no domain,
 ORGID, folder, or sheet values. `getTenantConfig_()` reads the per-tenant identity (`DOMAIN`,
 `EMAIL_DOMAIN`, `CAPWATCH_ORGID`, `WING`, `REGION`, the two folder IDs, the automation + retention
@@ -379,7 +379,7 @@ Without this, `clasp push`/`pull` fail with an API-disabled error.
 | Pull (project → `src/`) | `npm run pull:seniors` | `npm run pull:cadets` | `npm run pull:region` |
 | Open in browser | `npm run open:seniors` | `npm run open:cadets` | `npm run open:region` |
 
-Under the hood each is `clasp <cmd> -P clasp-targets/<tenant>.clasp.json`.
+Under the hood each is `clasp <cmd> -P <tenant>.clasp.json`.
 
 > **`signature-webapp/` is a separate script project *per tenant*.** Same source, its own
 > manifest, scopes and Script Properties, and **one script project inside each Workspace** —

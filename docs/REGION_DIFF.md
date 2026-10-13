@@ -33,12 +33,12 @@ diverges, what to keep, what to drop, and how to fold Pacific onto the shared co
 
 Earlier notes claimed the Pacific project was owned by `it@pcr.cap.gov` and that `clasp`
 access was blocked. **That was wrong.** The real cause was a **stale `scriptId`** in
-`clasp-targets/region.clasp.json` pointing at a dead project
+`region.clasp.json` pointing at a dead project
 (`1Y_7HIPo83OIOaC5opnPb7hmjvy7SDL2cMkuBhJNOYmM4BgZLXXSPitfi`).
 
 The live project is **"PCR Automation"**, scriptId
 `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0`, fully readable with the
-`automation@pcr.cap.gov` clasp login. `clasp-targets/region.clasp.json` has been
+`automation@pcr.cap.gov` clasp login. `region.clasp.json` has been
 corrected in this change. (Mission provisioning lives in a separate project, "PCR Mission
 Automaton" — out of scope here.)
 
@@ -270,5 +270,5 @@ All disposition questions are **resolved**; what remains is one deploy-time veri
 
 ---
 
-*Related: `config-tenants/region.json` (identity), `clasp-targets/region.clasp.json`
+*Related: `config-tenants/region.json` (identity), `region.clasp.json`
 (corrected scriptId), `docs/ADMIN_GUIDE.md` (secrets & tenant setup), `PCR_CHANGELOG.md`.*

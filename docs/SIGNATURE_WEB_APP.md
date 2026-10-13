@@ -124,7 +124,7 @@ target and its own Script Properties:
 
 | | Seniors | Cadets |
 |---|---|---|
-| Target | `clasp-targets/signature-webapp-seniors.clasp.json` | `clasp-targets/signature-webapp-cadets.clasp.json` |
+| Target | `signature-webapp-seniors.clasp.json` | `signature-webapp-cadets.clasp.json` |
 | Push | `npm run push:signature:seniors` | `npm run push:signature:cadets` |
 | Status / pull / open | `status:` / `pull:` / `open:signature:seniors` | …`:signature:cadets` |
 
