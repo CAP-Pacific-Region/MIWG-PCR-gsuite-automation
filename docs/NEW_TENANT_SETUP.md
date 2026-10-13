@@ -18,7 +18,7 @@ ordering traps. Each step links to the authoritative doc for specifics.
 ## Mental model (read once)
 
 - There is **one** `src/` codebase, deployed **unchanged** to every tenant via a clasp
-  target in [`clasp-targets/`](../clasp-targets). Nothing wing-specific lives in source.
+  target in a repo-root `*.clasp.json` file. Nothing wing-specific lives in source.
 - A tenant's entire identity and behavior come from its **Script Properties**, which a
   push never touches. Wing display labels (`HIWG`, `Hawaii Wing`) are **derived** from
   `TENANT_WING` — no code edits to adopt a new wing. See
@@ -104,7 +104,7 @@ Phase 6. See [Admin Guide §3](ADMIN_GUIDE.md#3-system-inventory-the-facts-you-c
 
 ## Phase 5 — Add a clasp target and first push
 
-1. Copy an existing target, e.g. `clasp-targets/hiwg-seniors.clasp.json`, set its
+1. Copy an existing target, e.g. `hiwg-seniors.clasp.json`, set its
    `scriptId` to the new Apps Script project (`rootDir` stays `../src`). Add matching
    `npm run status/push/pull/open:hiwg-seniors` scripts to `package.json`.
 2. Attach the GCP project from Phase 3: Apps Script editor → **Project Settings → GCP

@@ -1,8 +1,8 @@
 # Per-tenant configuration (`config-tenants/`)
 
 `src/config.gs` is **shared by all four Apps Script projects** and is **overwritten on every
-`clasp push`** (all targets use `rootDir: ../src`, and `.claspignore` ships everything under
-`src/`). Tenant-specific values therefore **cannot** live as literals in `config.gs` — a push
+`clasp push`** (the four `src` targets all set `rootDir: src`, which ships everything under
+it). Tenant-specific values therefore **cannot** live as literals in `config.gs` — a push
 would clobber them. This is what wiped the cadets project's config once already.
 
 Instead, each project's identity lives in that project's **Script Properties**, which `clasp push`
@@ -23,7 +23,7 @@ so clasp never uploads them. They exist for version control and disaster recover
   never shipped by clasp. See `docs/REGION_DIFF.md`.
 - `orwg.json` + `setup-orwg.gs` — Oregon Wing: ONE composite tenant (orwgcap.org, cadets and seniors
   together), `TENANT_PROFILE=composite`. Values taken from the project's pre-migration `config.js`.
-  Run `setupOrwgScriptProperties()` **before** the first push. Clasp target `clasp-targets/orwg.clasp.json`
+  Run `setupOrwgScriptProperties()` **before** the first push. Clasp target `orwg.clasp.json`
   (`npm run push:orwg`). First-run order: [`docs/ORWG_FIRST_RUN.md`](../docs/ORWG_FIRST_RUN.md).
 - `hiwg-seniors.json` / `hiwg-cadets.json` — **template** identity for a second wing (Hawaii
   Wing), same split senior/cadet structure as California. Tenant-specific values are marked

@@ -10,6 +10,51 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-10-12] — clasp 3 broke every push target
+
+### Fixed — push targets moved to the repo root; `.claspignore` retired
+
+Every `npm run push:*` in the repo was dead. clasp 3 treats a `rootDir` that leaves the
+config’s own directory as attempted path traversal, and all nine targets in `clasp-targets/`
+used `rootDir: ../<dir>`:
+
+```
+Security Error: srcDir "../admin-webapp" escapes project root.
+  Project root: clasp-targets
+```
+
+That is every tenant of every project — `src` (seniors, cadets, region, orwg), both signature
+targets, both admin targets, and the alias app — so nothing could be deployed at all.
+
+Each target is now a `<name>.clasp.json` at the **repo root** with `rootDir` naming the
+directory it pushes. The config has to sit ABOVE the code for clasp to accept it, and the root
+is the only place that is true for all four source directories.
+
+**`.claspignore` is deleted.** Its entire job was stopping a push of one directory from
+collecting the others, and `rootDir` now does that structurally. Keeping it would have been
+worse than useless: it is resolved from the config’s directory but *matched* relative to
+`rootDir`, so with the configs moved, `!src/**` matched nothing and the leading `**/*`
+ignored everything — a push that reports success and ships zero files. Observed while working
+this out.
+
+Two findings worth recording, both of which cost time here:
+
+- **`rootDir` must be a STRICT subdirectory.** A config placed inside the directory it pushes,
+  with `rootDir: "."`, is rejected by clasp **3.4** as an escape even though it resolves *to*
+  the project root; `"./"`, `""` and omitting the key fail the same way. clasp **3.2** accepts
+  all of them, so the first fix attempted here looked correct locally and would have shipped
+  broken.
+- **`npm run` was not running the same clasp as the shell.** The global install is 3.2.0 while
+  `npm`/`npx` resolved 3.4.1, which is why identical commands passed directly and failed under
+  `npm run`. Check `clasp --version` against `npm exec -- clasp --version` before trusting
+  either.
+
+Verified with `clasp status` across all nine targets under **both** versions: 41 files for each
+`src` target, 12 for admin, 8 each for signature and alias. Also pushed `admin-webapp` and
+pulled the live project back to confirm the stored file names are unchanged — a wrong
+`rootDir` would have created `admin-webapp/Accounts.gs` beside `Accounts.gs` rather than
+updating it.
+
 ## [2026-10-12] — the refusal now says which account it used
 
 ### Fixed — admin-webapp: "not authorized" named no account, and offered no way to switch
