@@ -35,7 +35,26 @@ started failing on its own when the clock rolled past August, which is how it su
 14-15 now **pin "today" away from the period** (December, backfilling August) so the calendar
 cannot hide it again; both were confirmed to fail against the unfixed module before being kept.
 
-The whole suite passes for the first time in a while: 39/39 files.
+### Added — SendRetentionEmail.gs 1.11.0: `scanRetentionLogDuplicates()`
+
+The fix above stops the backfill *making* duplicates; it does nothing about rows an earlier
+backfill already appended. This finds them: **read-only**, reports every row the log holds more
+than once for the same member, type and period, and names the row to keep (the earliest — the
+original send is the one whose timestamp means anything) against the rows to remove.
+
+It keys on `period|type|capid`, the same key the duplicate guard uses, which is what keeps it
+from over-reporting. The log is *supposed* to hold the same member in different months, and the
+same member twice in one month under different types — a cadet can turn 18 and expire in the same
+August. Rows the guard cannot read (no date, type or CAPID) are counted and ignored rather than
+accused, since the guard never protected those either.
+
+**Deleting is left to a human on purpose.** The rows carry no identifier of their own, so a delete
+is by row number, and a script doing it would be one off-by-one away from removing real sends. The
+output says to delete bottom-up, because removing a row renumbers everything beneath it.
+
+Worth running once on any tenant where a backfill of a past month was run before 1.10.0.
+
+The whole suite passes for the first time in a while: 40/40 files.
 
 ## [2026-10-12] — clasp 3 broke every push target
 

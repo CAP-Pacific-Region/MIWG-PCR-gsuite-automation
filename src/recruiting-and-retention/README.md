@@ -243,6 +243,31 @@ the CAPID for each address. Families share a primary address, so where one addre
 messages than candidates, only as many as were actually sent are written and the remainder are
 reported as ambiguous rather than guessed at.
 
+### Finding rows a backfill duplicated
+
+`scanRetentionLogDuplicates()` is **read-only** and reports any row the log holds more than once
+for the same member, type and period, naming the row to keep and the rows to remove.
+
+```javascript
+scanRetentionLogDuplicates();
+```
+
+Worth running once on any tenant where a backfill of a **past** month was run before
+`SendRetentionEmail.gs` 1.10.0. Until that version the backfill read its duplicate-protection
+keys for the *current* month while backfilling whichever month it was given, so backfilling
+August in October found no keys and appended rows the log already had.
+
+It keys on `period|type|capid` — the same key the duplicate guard uses — so it does not report
+the repeats that are supposed to be there: the same member in different months, or twice in one
+month under *different* types (a cadet can turn 18 and expire in the same August). Rows the guard
+cannot read (no date, no type, no CAPID) are counted and ignored rather than accused, since the
+guard never protected them either.
+
+**Deleting is manual, deliberately.** The rows carry no identifier of their own, so a delete is
+by row number and a script doing it would be one off-by-one away from removing real sends. Delete
+**from the bottom up** — removing a row renumbers everything beneath it — then re-run the scan to
+confirm it comes back clean.
+
 `previewRetentionCcLists()` is the one to read before a first real run. It prints each unit's
 commander and CC'd duty holders, the exact CC string each email type would carry, and then three
 lists worth acting on:
