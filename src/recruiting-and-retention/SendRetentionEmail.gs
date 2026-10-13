@@ -1,9 +1,26 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.9.0
- * Date: 2026-08-02
- * Changes: Members parked in a holding unit (CONFIG.EXCLUDED_ORG_IDS — CA-000
+ * Version: 1.11.0
+ * Date: 2026-10-12
+ * Changes: new scanRetentionLogDuplicates() — READ-ONLY, reports any row the log
+ *   holds more than once for the same member, type and period, and which of each
+ *   group to keep. For cleaning up after the 1.10.0 bug below, which appended rows
+ *   the log already had. Keys on period|type|capid, matching the duplicate guard,
+ *   so the legitimate repeats are not reported: the same member across months, or
+ *   twice in one month under different types. Deleting stays manual — the rows
+ *   carry no identifier, so a delete is by row number.
+ *   1.10.0: backfillRetentionLogFromSentMail() read its duplicate-protection keys
+ *   for TODAY (new Date()) while backfilling whatever period it was given, so a
+ *   backfill of any month but the current one found no keys and rewrote every row
+ *   that month already had, into the live retention log. It now reads the period
+ *   being backfilled. New retentionPeriodStart_() converts the period string once,
+ *   and an unparseable period is refused rather than run with protection silently
+ *   off. Pinned by test/SendRetentionEmail.backfill.test.js sections 14-15, which
+ *   fix "today" away from the period so the calendar cannot hide it again — the
+ *   original cases passed only because they were written in the month they
+ *   backfill, and began failing when the clock rolled past it.
+ *   1.9.0: Members parked in a holding unit (CONFIG.EXCLUDED_ORG_IDS — CA-000
  *   1297 and CA-999 368) are no longer selected for any retention mail. Nobody
  *   commands a holding unit, so there is no command channel for the mail to
  *   reach: the 2026-08-01 run produced a digest for ORGID 1297 addressed to
@@ -1435,6 +1452,13 @@ function backfillRetentionLogFromSentMail(opts) {
   const write = o.write === true;
   const period = o.period || retentionPeriodKey_(new Date());
 
+  // A typo here used to mean "backfill with duplicate protection silently off",
+  // the same failure as the bug fixed below, so it is refused outright.
+  const periodStart = retentionPeriodStart_(period);
+  if (!periodStart) {
+    throw new Error('Unusable period "' + period + '" -- expected YYYY-MM, e.g. "2026-08".');
+  }
+
   const S = RETENTION_CONFIG.SUBJECTS;
   const typeBySubject = {};
   typeBySubject[S.TURNING_18] = 'TURNING_18';
@@ -1490,7 +1514,12 @@ function backfillRetentionLogFromSentMail(opts) {
     .concat(getExpiringMembers().map(function (m) { return { type: 'EXPIRING', m: m }; }));
 
   // ---- 3. Join, respecting per-address message counts ---------------------
-  const alreadySent = retentionAlreadySentThisPeriod_(new Date());
+  // THE PERIOD BEING BACKFILLED, not today. This read used new Date(), so a
+  // backfill of any month other than the current one looked up duplicate keys for
+  // the wrong month, found none, and rewrote every row that month already had. It
+  // went unnoticed for as long as the only backfills run were of the current month,
+  // where the two happen to agree.
+  const alreadySent = retentionAlreadySentThisPeriod_(periodStart);
   const budget = {};
   Object.keys(sent).forEach(function (k) { budget[k] = sent[k].count; });
 
@@ -1582,6 +1611,25 @@ function backfillRetentionLogFromSentMail(opts) {
 
 /** Gmail date window for a 'yyyy-MM' period, deliberately wide; messages are
  *  then filtered exactly by retentionPeriodKey_. */
+/**
+ * The first instant of a period key ("2026-08" -> 1 Aug 2026).
+ *
+ * Exists because a period is a STRING everywhere else in the backfill, while
+ * retentionAlreadySentThisPeriod_() keys on a Date. Converting in one place stops
+ * the two drifting -- see the comment at its call site for what drifting cost us.
+ *
+ * @param {string} period - "YYYY-MM"
+ * @returns {Date|null} null when the string is not a usable period
+ */
+function retentionPeriodStart_(period) {
+  const parts = String(period || '').trim().split('-');
+  if (parts.length !== 2) return null;
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (!isFinite(y) || !isFinite(m) || y < 2000 || y > 2100 || m < 1 || m > 12) return null;
+  return new Date(y, m - 1, 1);
+}
+
 function retentionGmailWindow_(period) {
   const parts = String(period).split('-');
   const y = parseInt(parts[0], 10);
@@ -1905,6 +1953,150 @@ function retentionAlreadySentThisPeriod_(when) {
  * @param {Object} alreadySent - retentionAlreadySentThisPeriod_() output
  * @returns {Array<Object>} Members still due
  */
+/**
+ * Finds rows the log holds more than once for the same member, type and period.
+ * Pure — takes the rows and returns the findings, so the judgement is testable
+ * without a spreadsheet.
+ *
+ * WHY THIS EXISTS
+ *
+ * backfillRetentionLogFromSentMail() used to read its duplicate-protection keys
+ * for the CURRENT month while backfilling whichever month it was given (fixed in
+ * 1.10.0). A backfill of a past month therefore found no keys and appended rows
+ * the log already had. This finds what that left behind.
+ *
+ * THE KEY IS period|type|capid, which is exactly what
+ * retentionAlreadySentThisPeriod_() keys on. That matters: a second row for the
+ * same member in the same month is a duplicate precisely because the guard would
+ * have suppressed it — whereas the same member legitimately appears once per
+ * month across months, and twice in one month for DIFFERENT types (a cadet can
+ * turn 18 and expire in the same August).
+ *
+ * The EARLIEST row in a group is reported as the keeper: the original send is the
+ * one whose timestamp means something, and the later copies are the fabrications.
+ *
+ * @param {Array<Array>} rows - log rows from column A onward, in sheet order,
+ *   starting at sheet row 2 (the header is row 1)
+ * @returns {{scanned: number, usable: number, skipped: number,
+ *   duplicateRows: number, groups: Array<Object>}}
+ */
+function retentionFindLogDuplicates_(rows) {
+  const byKey = {};
+  const result = { scanned: 0, usable: 0, skipped: 0, duplicateRows: 0, groups: [] };
+
+  (rows || []).forEach(function (row, i) {
+    result.scanned++;
+    const sheetRow = i + 2; // row 1 is the header
+    const stamp = row[0];
+    const type = String(row[1] || '').trim();
+    const capid = String(row[2] || '').trim();
+
+    // The same three conditions retentionAlreadySentThisPeriod_() skips on. A row
+    // it cannot read is a row the guard never protected, so calling it a
+    // duplicate would be guessing.
+    if (!(stamp instanceof Date) || !type || !capid) {
+      result.skipped++;
+      return;
+    }
+
+    result.usable++;
+    const period = retentionPeriodKey_(stamp);
+    const key = period + '|' + type + '|' + capid;
+    if (!byKey[key]) {
+      byKey[key] = { key: key, period: period, type: type, capid: capid, rows: [] };
+    }
+    byKey[key].rows.push({ row: sheetRow, on: stamp });
+  });
+
+  Object.keys(byKey).forEach(function (key) {
+    const g = byKey[key];
+    if (g.rows.length < 2) return;
+
+    // Oldest first: the keeper is the original send.
+    g.rows.sort(function (a, b) { return a.on.getTime() - b.on.getTime(); });
+    g.keep = g.rows[0];
+    g.extras = g.rows.slice(1);
+    result.duplicateRows += g.extras.length;
+    result.groups.push(g);
+  });
+
+  // Reported in sheet order, so the output reads like the sheet.
+  result.groups.sort(function (a, b) { return a.keep.row - b.keep.row; });
+  return result;
+}
+
+/**
+ * READ-ONLY. Reports rows the retention log holds more than once for the same
+ * member, type and period, and which row of each group to keep. Changes NOTHING.
+ *
+ * Run this from the editor after any backfill of a past month made before 1.10.0
+ * — see retentionFindLogDuplicates_() for why those produced duplicates.
+ *
+ * Deleting is left to a human on purpose. The rows carry no identifier of their
+ * own, so a delete is by row number, and a script doing it would be one
+ * off-by-one away from removing real sends.
+ *
+ * @returns {Object} the findings, for a programmatic caller
+ */
+function scanRetentionLogDuplicates() {
+  const empty = { scanned: 0, usable: 0, skipped: 0, duplicateRows: 0, groups: [] };
+
+  if (!RETENTION_LOG_SPREADSHEET_ID) {
+    console.log('No retention log is configured (RETENTION_LOG_SPREADSHEET_ID is unset).');
+    return empty;
+  }
+
+  const sheet = SpreadsheetApp.openById(RETENTION_LOG_SPREADSHEET_ID).getSheetByName('Log');
+  if (!sheet || sheet.getLastRow() < 2) {
+    console.log('The retention log is empty — nothing to scan.');
+    return empty;
+  }
+
+  // Columns A-C only: Timestamp, Email Type, CAPID — the same three the duplicate
+  // guard reads.
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
+  const found = retentionFindLogDuplicates_(rows);
+
+  console.log('=== RETENTION LOG DUPLICATE SCAN (nothing was changed) ===');
+  console.log('');
+  console.log('Rows scanned:        ' + found.scanned);
+  console.log('Readable:            ' + found.usable);
+  console.log('Unreadable, ignored: ' + found.skipped + '  (no date, type or CAPID)');
+  console.log('Duplicate groups:    ' + found.groups.length);
+  console.log('Rows to remove:      ' + found.duplicateRows);
+  console.log('');
+
+  if (!found.groups.length) {
+    console.log('No member appears twice for the same type in the same month.');
+    return found;
+  }
+
+  const fmt = function (d) {
+    return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  };
+
+  found.groups.forEach(function (g) {
+    console.log(g.period + '  ' + g.type + '  CAPID ' + g.capid);
+    console.log('    keep   row ' + g.keep.row + '  (' + fmt(g.keep.on) + ')');
+    g.extras.forEach(function (e) {
+      console.log('    remove row ' + e.row + '  (' + fmt(e.on) + ')');
+    });
+  });
+
+  console.log('');
+  console.log('DELETE FROM THE BOTTOM UP — removing a row renumbers every row beneath it,');
+  console.log('so working top-down deletes the wrong rows after the first one.');
+  console.log('Re-run this scan afterwards to confirm it comes back clean.');
+
+  Logger.info('Retention log duplicate scan', {
+    scanned: found.scanned,
+    groups: found.groups.length,
+    duplicateRows: found.duplicateRows
+  });
+
+  return found;
+}
+
 function retentionFilterUnsent_(emailType, members, alreadySent) {
   if (!alreadySent || !alreadySent.usable) return members;
 
