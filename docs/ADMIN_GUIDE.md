@@ -18,7 +18,7 @@
 2. [What you need to take over (access checklist)](#2-what-you-need-to-take-over-access-checklist)
 3. [System inventory (the facts you cannot guess)](#3-system-inventory-the-facts-you-cannot-guess)
 4. [Google Apps Script crash course](#4-google-apps-script-crash-course)
-5. [The three tenants and how code gets deployed](#5-the-three-tenants-and-how-code-gets-deployed)
+5. [The tenants and how code gets deployed](#5-the-tenants-and-how-code-gets-deployed)
 6. [Local development with clasp](#6-local-development-with-clasp)
 7. [Secrets and Script Properties (the part that breaks silently)](#7-secrets-and-script-properties-the-part-that-breaks-silently)
 8. [What runs, when: the automation schedule](#8-what-runs-when-the-automation-schedule)
@@ -50,10 +50,10 @@ triggers fire the sync functions overnight. The only moving parts are: the Apps 
 projects, a few Google Drive folders/Sheets, and a per-tenant Google Cloud **service account**
 used only for the calls that need domain-wide user impersonation (Gmail settings and Calendar).
 
-**The single most important thing to understand:** this is deployed to **three completely
-separate Workspace tenants** (seniors, cadets, and Pacific Region), each with its **own**
-Apps Script project. The same `src/` code is pushed to all three, but each can drift. See
-[Section 5](#5-the-three-tenants-and-how-code-gets-deployed).
+**The single most important thing to understand:** this is deployed to **four completely
+separate Workspace tenants** (seniors, cadets, Pacific Region, and Oregon Wing), each with its
+**own** Apps Script project. The same `src/` code is pushed to all four, but each can drift. See
+[Section 5](#5-the-tenants-and-how-code-gets-deployed).
 
 ---
 
@@ -91,6 +91,10 @@ These IDs are the load-bearing facts. Keep this table current — it is the map 
 | Seniors (the driver) | `cawgcap.org` | `automation@cawgcap.org` | `clasp-targets/seniors.clasp.json` | `1ZjkCGQ2Dt-goAYO6n9y6cDwUnvm3Jor6DV0sLIsdCu4iB5zSzS9gmjAi` |
 | Cadets | `cawgcadets.org` | `automation@cawgcadets.org` | `clasp-targets/cadets.clasp.json` | `15LWpFVw0qis2XOZBZOo0YL4hMN-eNRGK6EC6yQAeirzrUl-iDcbzjUHc` |
 | Pacific Region | `pcr.cap.gov` | `automation@pcr.cap.gov` (project in a `pcr.cap.gov` Shared Drive) | `clasp-targets/region.clasp.json` | `1s2Fmdo0sxWjuPawYBU_dCGYa5qA0h8LuGbQkIGzptzhBlTqL14JqW-T0` |
+| Oregon Wing | `orwgcap.org` | `automation@orwgcap.org` | `clasp-targets/orwg.clasp.json` | `1YIJgMAp3SaiGLIIenHI2JEXjQBcEszCzSQDK-ojvWLQ5pnW4AF-uMiVZ` |
+
+Oregon runs `TENANT_PROFILE=composite` — one tenant holding cadets **and** seniors together, no
+cross-tenant peer. See [docs/ORWG_FIRST_RUN.md](ORWG_FIRST_RUN.md) for its bring-up.
 
 Open any project in the browser from the repo with e.g. `npm run open:seniors`.
 
@@ -149,7 +153,7 @@ deployment config wholesale and the entry point does not survive it.
 > (ORGID `188`, `cawgcadets.org`), Pacific in
 > [`config-tenants/region.json`](../config-tenants/region.json) (ORGID `434`, `pcr.cap.gov`). The
 > cadet cross-tenant nesting is **not** addressed via `CONFIG.DOMAIN`; see
-> [Section 5](#5-the-three-tenants-and-how-code-gets-deployed). To trust a value for a tenant, read
+> [Section 5](#5-the-tenants-and-how-code-gets-deployed). To trust a value for a tenant, read
 > that tenant's `config-tenants/*.json` (or its live Script Properties), not the shared `config.gs`.
 
 ### Service accounts (Google Cloud)
@@ -207,7 +211,7 @@ bundle of `.gs` files (server-side JavaScript) and `.html` files, attached to yo
 account, that can call Google APIs (Gmail, Drive, Admin SDK, Calendar, Chat, …) as *you*.
 There is no build step and nothing to deploy to run it interactively — you press **Run**.
 
-**Where it lives.** <https://script.google.com>. Each of our three tenants has its own
+**Where it lives.** <https://script.google.com>. Each of our four tenants has its own
 project (see inventory). Open the editor to see the files, run functions, view logs, and
 manage triggers and properties.
 
@@ -256,7 +260,7 @@ web-app deployment. Don't assume "the versions list didn't change" means "nothin
 
 ---
 
-## 5. The three tenants and how code gets deployed
+## 5. The tenants and how code gets deployed
 
 There is **one** `src/` directory in this repo. It is deployed, unchanged, to **three**
 Apps Script projects via three clasp targets. Each target is just a `{ scriptId, rootDir }` pointer:
@@ -301,16 +305,17 @@ on triggers **except** the final delete, which stays manual. Full detail:
 > Script Properties, so a push no longer repoints it at the seniors domain, and its automation runs
 > on schedule again.
 
-> Because the three projects are pushed **independently**, they can **silently run different code**
+> Because the four projects are pushed **independently**, they can **silently run different code**
 > from each other and from git. **Do not assume HEAD reflects what is live on any tenant.**
-> **Deployment status (2026-07-09):** all three tenants — seniors, cadets, and Pacific — have been
-> pushed to the reconciled `master` and run **identical `src/`**, differentiated only by Script
-> Properties + `TENANT_PROFILE`. The earlier gap (live tenants behind HEAD on the security-hardening
-> pass) is closed. Still, treat this as a point-in-time fact: always confirm before assuming.
+> **Deployment status (2026-07-09, seniors/cadets/Pacific; 2026-09-28, Oregon):** all four tenants —
+> seniors, cadets, Pacific, and Oregon — have been pushed to the reconciled `master` and run
+> **identical `src/`**, differentiated only by Script Properties + `TENANT_PROFILE`. The earlier gap
+> (live tenants behind HEAD on the security-hardening pass) is closed. Still, treat this as a
+> point-in-time fact: always confirm before assuming.
 
 ### ⚠️ `config.gs` is shared and overwritten on every push — keep per-tenant config in Script Properties
 
-`.claspignore` ships **everything under `src/`**, and `config.gs` lives there; all three targets use
+`.claspignore` ships **everything under `src/`**, and `config.gs` lives there; all four targets use
 `rootDir: ../src`. So **every `clasp push` overwrites that project's `config.gs` with the shared
 copy.** The design accounts for this: `config.gs` is **tenant-neutral** — it hard-codes no domain,
 ORGID, folder, or sheet values. `getTenantConfig_()` reads the per-tenant identity (`DOMAIN`,
@@ -341,10 +346,11 @@ and see [Section 7](#7-secrets-and-script-properties-the-part-that-breaks-silent
 npm run push:seniors    # push src/ to the seniors project
 npm run push:cadets     # then cadets
 npm run push:region    # then pacific
+npm run push:orwg       # then Oregon
 ```
 
 Push to one, confirm it's healthy (run a preview function, check Executions), then the next.
-Never push all three blind — and remember each push resets the target's `config.gs` to the shared values.
+Never push all four blind — and remember each push resets the target's `config.gs` to the shared values.
 
 ---
 
@@ -532,6 +538,18 @@ an internal helper. **Preview/test functions never modify Workspace** — use th
   from a wing CAPWATCH pull entirely, so it comes from the region tenant's shared extract. It adds
   duties for members you already have and never touches `dutyPositionIds`, so group membership is
   unaffected. Diagnose with `previewOutOfWingDuties()` in the signature web app project.
+- **Send-As display name** — `buildSendAsDisplayName_()` (consolidated from two duplicated
+  blocks in `addOrUpdateUser()` and `updateAllSendAsNames()`'s batch worker) inserts `"Ch"`
+  before the grade for any duty title matching `/chaplain/i` in CAPWATCH `DutyPosition.txt`
+  (e.g. `"Last, First M Ch Grade"`). Everyone else still reads `"Last, First M Grade"`.
+- **Renewal during the ~20-day soft-delete window** — `addOrUpdateUser()` checks for a
+  soft-deleted user at the derived address (`findDeletedUserByEmail_` in
+  `DuplicateAccountGuard.gs`) before falling through to `Users.insert`, and calls
+  `Users.undelete` to restore it instead of failing. `updateAfterUndelete_()` then retries the
+  immediately-following un-suspend `Users.update` on 404 (up to ~1 minute) — Google doesn't make
+  a just-undeleted account available to further Directory calls right away, and
+  `executeWithRetry` deliberately does not retry 404s elsewhere. Without this a restored account
+  came back suspended and stayed that way until the next night's run.
 
 ### Welcome email for an account created by hand (`WelcomeEmailResend.gs`)
 The welcome email is sent from **one place only**: the insert branch of `addOrUpdateUser()`. An
@@ -557,6 +575,12 @@ detects this.
   A member with **no account at all** is not a resend case. Run `updateAllMembers()`; if they
   are a senior, check they have completed Level I (`REQUIRE_LEVEL_I_FOR_SENIORS` gates new
   senior accounts, and an account that appears *before* Level I was made by hand).
+  `REQUIRE_LEVEL_I_FOR_SENIORS` is **per-tenant** (`config.gs` 1.15.0): `true` on seniors/cadets,
+  **`false` on region and on Oregon's `composite` profile** — those tenants provision seniors
+  without waiting on Level I. Completion itself is read from the union of `MbrAchievements.txt`
+  (AchvID 96, `ACTIVE`) and `SeniorLevel.txt` (`loadLevel1CompletedCapids()` in
+  `UpdateMembers.gs`) — the latter catches pre-2018 completions that `MbrAchievements.txt`
+  never recorded.
 
 ### Finding unwelcomed accounts (`WelcomeEmailAudit.gs`)
 Nothing on a Workspace account records whether a welcome email was ever sent to it, so
@@ -999,11 +1023,11 @@ serves the new code. Keeping the same deployment preserves the URL FileMaker alr
 
 These are the non-obvious things that will bite a successor. Read them before you debug.
 
-1. **Three tenants can drift.** `master` is not ground truth for any live tenant. Verify per-project
-   file lists / Project History. (See [Section 5](#5-the-three-tenants-and-how-code-gets-deployed).)
+1. **Four tenants can drift.** `master` is not ground truth for any live tenant. Verify per-project
+   file lists / Project History. (See [Section 5](#5-the-tenants-and-how-code-gets-deployed).)
 
-2. **`config.gs` in git = seniors.** Cadets/Pacific use different domain, ORGID, and folder/sheet
-   IDs held in their own project copies. Read the live config before trusting a value.
+2. **`config.gs` in git = seniors.** Cadets/Pacific/Oregon use different domain, ORGID, and
+   folder/sheet IDs held in their own project copies. Read the live config before trusting a value.
 
 3. **Workspace for Nonprofits license cap.** The domain has a **2,000-user cap** that counts **all**
    accounts regardless of suspension. Suspending a member does **not** free a seat — only **deletion**
@@ -1039,10 +1063,13 @@ These are the non-obvious things that will bite a successor. Read them before yo
 12. **A few `cawgcap.org` literals remain outside the automated path** (audited when config was moved to
     Script Properties). These are **not** in the nightly sync, so they were intentionally left, but be
     aware on non-seniors tenants: the `GROUP_ADMINISTRATION_STALE_GROUP_EMAILS` list in
-    `groupAdministration.gs` (operator input for the manual stale-group cleanup utilities), the
-    `automation@pcr.cap.gov` in `testMissionProvisioningPayload_()` (test helper), and the help-desk
-    intranet link in `recruiting-and-retention/WelcomeEmail.html` (shown to new members). The daily
-    OrgPath sync email was fixed to use this tenant's IT mailbox (`getOrgPathSyncEmail_()` → `ITSUPPORT_EMAIL`).
+    `groupAdministration.gs` (operator input for the manual stale-group cleanup utilities), and the
+    `automation@pcr.cap.gov` in `testMissionProvisioningPayload_()` (test helper). The daily OrgPath
+    sync email was fixed to use this tenant's IT mailbox (`getOrgPathSyncEmail_()` → `ITSUPPORT_EMAIL`).
+    The help-desk/support links in `recruiting-and-retention/WelcomeEmail.html` were likewise fixed
+    (2026-09-28): they now read `TENANT_HELP_GUIDE_URL` / `TENANT_SUPPORT_URL` Script Properties
+    instead of hardcoded California/PCR URLs — **every tenant must set both**, or the new member just
+    gets no link (blank omits it, it does not fall back to California's).
 
 ---
 
@@ -1060,11 +1087,11 @@ These are the non-obvious things that will bite a successor. Read them before yo
 
 **Quarterly / on personnel change:**
 - Re-run `setAuthorization()` if the CAPWATCH credential owner changed.
-- Re-verify Super Admin access across all three tenants and Apps Script project ownership.
+- Re-verify Super Admin access across all four tenants and Apps Script project ownership.
 - Rotate the service-account key and the mission webhook secret if anyone with access has left.
-- Reconcile the three tenants: `clasp pull` each and diff against `master`; re-push to align.
+- Reconcile the four tenants: `clasp pull` each and diff against `master`; re-push to align.
 
-**When you change code:** push seniors → verify → cadets → pacific; update
+**When you change code:** push seniors → verify → cadets → pacific → Oregon; update
 [CHANGELOG.md](../CHANGELOG.md) / [PCR_CHANGELOG.md](../PCR_CHANGELOG.md); PR to the PCR repo.
 
 ---

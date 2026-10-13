@@ -1,6 +1,6 @@
 # Per-tenant configuration (`config-tenants/`)
 
-`src/config.gs` is **shared by all three Apps Script projects** and is **overwritten on every
+`src/config.gs` is **shared by all four Apps Script projects** and is **overwritten on every
 `clasp push`** (all targets use `rootDir: ../src`, and `.claspignore` ships everything under
 `src/`). Tenant-specific values therefore **cannot** live as literals in `config.gs` — a push
 would clobber them. This is what wiped the cadets project's config once already.

@@ -3,10 +3,13 @@
 > Records the reconciliation of the **`region`** profile (formerly `pacific`); the deploying
 > instance is Pacific Region. Kept as the pattern for future single-unit region tenants.
 
-**Status: COMPLETE — deployed to the region tenant (Pacific) 2026-07-09.** All three tenants now run identical
-`src/`, differentiated only by configuration. This document is the record of that reconciliation:
-what diverged, the decisions taken, and the migration that was executed (§6). Retained for history
-and as the pattern for future tenants.
+**Status: COMPLETE — deployed to the region tenant (Pacific) 2026-07-09.** As of that date, all
+three tenants then in existence (seniors, cadets, Pacific) ran identical `src/`, differentiated
+only by configuration. This document is the record of that reconciliation: what diverged, the
+decisions taken, and the migration that was executed (§6). Retained for history and as the
+pattern for future tenants — a fourth tenant, Oregon Wing (`composite` profile, onboarded
+2026-09-28), followed this same pattern; see [docs/ORWG_FIRST_RUN.md](ORWG_FIRST_RUN.md) for its
+own bring-up record rather than updating the tenant count throughout this historical document.
 
 **Post-reconciliation sync history:** region isn't pushed on every merge — it drifts behind
 master between deploy passes and gets caught up periodically via the standard pre-flight-diff
