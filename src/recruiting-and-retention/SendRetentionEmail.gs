@@ -1,9 +1,19 @@
 /**
  * Retention Email Automation Module
  *
- * Version: 1.9.0
- * Date: 2026-08-02
- * Changes: Members parked in a holding unit (CONFIG.EXCLUDED_ORG_IDS — CA-000
+ * Version: 1.10.0
+ * Date: 2026-10-12
+ * Changes: backfillRetentionLogFromSentMail() read its duplicate-protection keys
+ *   for TODAY (new Date()) while backfilling whatever period it was given, so a
+ *   backfill of any month but the current one found no keys and rewrote every row
+ *   that month already had, into the live retention log. It now reads the period
+ *   being backfilled. New retentionPeriodStart_() converts the period string once,
+ *   and an unparseable period is refused rather than run with protection silently
+ *   off. Pinned by test/SendRetentionEmail.backfill.test.js sections 14-15, which
+ *   fix "today" away from the period so the calendar cannot hide it again — the
+ *   original cases passed only because they were written in the month they
+ *   backfill, and began failing when the clock rolled past it.
+ *   1.9.0: Members parked in a holding unit (CONFIG.EXCLUDED_ORG_IDS — CA-000
  *   1297 and CA-999 368) are no longer selected for any retention mail. Nobody
  *   commands a holding unit, so there is no command channel for the mail to
  *   reach: the 2026-08-01 run produced a digest for ORGID 1297 addressed to
@@ -1435,6 +1445,13 @@ function backfillRetentionLogFromSentMail(opts) {
   const write = o.write === true;
   const period = o.period || retentionPeriodKey_(new Date());
 
+  // A typo here used to mean "backfill with duplicate protection silently off",
+  // the same failure as the bug fixed below, so it is refused outright.
+  const periodStart = retentionPeriodStart_(period);
+  if (!periodStart) {
+    throw new Error('Unusable period "' + period + '" -- expected YYYY-MM, e.g. "2026-08".');
+  }
+
   const S = RETENTION_CONFIG.SUBJECTS;
   const typeBySubject = {};
   typeBySubject[S.TURNING_18] = 'TURNING_18';
@@ -1490,7 +1507,12 @@ function backfillRetentionLogFromSentMail(opts) {
     .concat(getExpiringMembers().map(function (m) { return { type: 'EXPIRING', m: m }; }));
 
   // ---- 3. Join, respecting per-address message counts ---------------------
-  const alreadySent = retentionAlreadySentThisPeriod_(new Date());
+  // THE PERIOD BEING BACKFILLED, not today. This read used new Date(), so a
+  // backfill of any month other than the current one looked up duplicate keys for
+  // the wrong month, found none, and rewrote every row that month already had. It
+  // went unnoticed for as long as the only backfills run were of the current month,
+  // where the two happen to agree.
+  const alreadySent = retentionAlreadySentThisPeriod_(periodStart);
   const budget = {};
   Object.keys(sent).forEach(function (k) { budget[k] = sent[k].count; });
 
@@ -1582,6 +1604,25 @@ function backfillRetentionLogFromSentMail(opts) {
 
 /** Gmail date window for a 'yyyy-MM' period, deliberately wide; messages are
  *  then filtered exactly by retentionPeriodKey_. */
+/**
+ * The first instant of a period key ("2026-08" -> 1 Aug 2026).
+ *
+ * Exists because a period is a STRING everywhere else in the backfill, while
+ * retentionAlreadySentThisPeriod_() keys on a Date. Converting in one place stops
+ * the two drifting -- see the comment at its call site for what drifting cost us.
+ *
+ * @param {string} period - "YYYY-MM"
+ * @returns {Date|null} null when the string is not a usable period
+ */
+function retentionPeriodStart_(period) {
+  const parts = String(period || '').trim().split('-');
+  if (parts.length !== 2) return null;
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (!isFinite(y) || !isFinite(m) || y < 2000 || y > 2100 || m < 1 || m > 12) return null;
+  return new Date(y, m - 1, 1);
+}
+
 function retentionGmailWindow_(period) {
   const parts = String(period).split('-');
   const y = parseInt(parts[0], 10);

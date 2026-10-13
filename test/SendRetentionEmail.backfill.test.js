@@ -14,7 +14,7 @@
  * Run: npm test
  */
 const path = require('path');
-const { loadModule, makeLogger, makeChecker, Session, Utilities } = require('./helpers/apps-script');
+const { loadModule, makeLogger, makeChecker, makeClock, Session, Utilities } = require('./helpers/apps-script');
 
 const MODULE = path.join(__dirname, '..', 'src', 'recruiting-and-retention', 'SendRetentionEmail.gs');
 const { section, check, done } = makeChecker();
@@ -56,7 +56,11 @@ function load(opts) {
   // One thread per message keeps the fake honest about the threads->messages walk.
   const threads = (o.messages || []).map(m => ({ getMessages: () => [m] }));
 
-  const mod = loadModule(MODULE, {
+  // Pinning "today" is opt-in: only the cases that assert on the difference
+  // between today and the period being backfilled need it.
+  const clock = o.now ? makeClock(o.now) : null;
+
+  const mod = loadModule(MODULE, Object.assign(clock ? { Date: clock.Date } : {}, {
     Logger: logger,
     Session: Session,
     Utilities: Utilities,
@@ -98,7 +102,7 @@ function load(opts) {
         })
       })
     }
-  }, ['backfillRetentionLogFromSentMail', 'retentionParseAddresses_', 'retentionGmailWindow_']);
+  }), ['backfillRetentionLogFromSentMail', 'retentionParseAddresses_', 'retentionGmailWindow_']);
 
   const candidates = []
     .concat((o.t18 || []).map(m => ({ type: 'TURNING_18', m: m })))
@@ -304,6 +308,55 @@ section('13. The Gmail window brackets the period');
   const m = load();
   check('August 2026', m.retentionGmailWindow_('2026-08'), 'after:2026/7/31 before:2026/9/2');
   check('January rolls back a year', m.retentionGmailWindow_('2026-01'), 'after:2025/12/31 before:2026/2/2');
+}
+
+// ---------------------------------------------------------------------------
+section('14. Duplicate protection reads the period being backfilled, not today');
+{
+  /**
+   * THE BUG THIS PINS. The dedupe keys were read with `new Date()` while the
+   * backfill worked on whatever period it was given, so a backfill of any month
+   * other than the current one found no keys and rewrote every row that month
+   * already had -- silently, into the live retention log.
+   *
+   * It went unnoticed because the cases above happened to be written in the month
+   * they backfill. "Today" is pinned here instead, far from the period, so the
+   * calendar can never hide it again.
+   */
+  const m = load({
+    now: '2026-12-15',
+    messages: [msg(SUBJECTS.EXPIRING, 'a@example.com')],
+    expiring: [member('600001', 'a@example.com')],
+    logged: [[AUG1, 'EXPIRING', '600001']]
+  });
+
+  const r = m.run({ write: true, period: '2026-08' });
+
+  check('the August row is recognised in December', r.alreadyLogged, 1);
+  check('so nothing is written', m.appended.length, 0);
+  check('and it is not counted as a fresh confirmation', r.confirmed, 0);
+}
+
+// ---------------------------------------------------------------------------
+section('15. A period it cannot parse is refused, not run unprotected');
+{
+  // Same failure mode as the bug above: an unparseable period yields no dedupe
+  // keys, which would mean a backfill with duplicate protection quietly off.
+  const attempt = (period) => {
+    const m = load({
+      messages: [msg(SUBJECTS.EXPIRING, 'a@example.com')],
+      expiring: [member('600001', 'a@example.com')]
+    });
+    try { m.run({ write: true, period: period }); return 'ran'; }
+    catch (e) { return /Unusable period/.test(e.message) ? 'refused' : 'other: ' + e.message; }
+  };
+
+  check('a month that does not exist', attempt('2026-13'), 'refused');
+  check('a month of zero', attempt('2026-00'), 'refused');
+  check('a bare year', attempt('2026'), 'refused');
+  check('free text', attempt('august'), 'refused');
+  check('empty', attempt(''), 'ran');   // falls back to the current month
+  check('a real period still runs', attempt('2026-08'), 'ran');
 }
 
 done();

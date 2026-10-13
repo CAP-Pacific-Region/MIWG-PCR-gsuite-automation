@@ -10,6 +10,33 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-10-12] — the backfill duplicated rows for any month but this one
+
+### Fixed — SendRetentionEmail.gs 1.10.0: duplicate protection read the wrong month
+
+`backfillRetentionLogFromSentMail()` reads the retention log to avoid re-logging a member it
+already has. It read those keys with **`new Date()`** while backfilling whatever period it was
+given — so a backfill of any month other than the current one looked up the wrong month, found
+no keys, and **rewrote every row that month already had** into the live retention log. The guard
+was there; it was simply asking about the wrong month.
+
+It now reads the period being backfilled. A new `retentionPeriodStart_()` converts the period
+string to a Date in one place, because the period is a string everywhere else in the backfill
+and `retentionAlreadySentThisPeriod_()` keys on a Date — the conversion going missing is exactly
+what happened.
+
+An **unparseable period is now refused** rather than run. `2026-13` or a typo produced no dedupe
+keys, which is the same failure as the bug itself: a backfill with duplicate protection silently
+off.
+
+**How it hid.** `test/SendRetentionEmail.backfill.test.js` covered this case and passed, because
+the cases were written in the month they backfill — where today and the period agree. The test
+started failing on its own when the clock rolled past August, which is how it surfaced. Sections
+14-15 now **pin "today" away from the period** (December, backfilling August) so the calendar
+cannot hide it again; both were confirmed to fail against the unfixed module before being kept.
+
+The whole suite passes for the first time in a while: 39/39 files.
+
 ## [2026-10-12] — clasp 3 broke every push target
 
 ### Fixed — push targets moved to the repo root; `.claspignore` retired
