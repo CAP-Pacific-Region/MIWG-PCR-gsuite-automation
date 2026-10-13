@@ -90,6 +90,18 @@ const ADMIN_WEBAPP_SETUP_VALUES = {
     WEBAPP_PEER_ADMIN_URL: 'https://script.google.com/a/macros/cawgcadets.org/s/' +
       'AKfycbx7yMbuNp2So9PbKMzwrn7OL1X6oSddxaml5re_YkHWF6b-ZQEWGsC8-3P8N6mpXM2AeA/exec',
 
+    /**
+     * THIS deployment's own URL — only used to send someone back here as a
+     * different Google account. See SELF_URL in Config.gs for why the app cannot
+     * work it out for itself.
+     *
+     * It is the deployment's /exec URL, so it changes only if the deployment is
+     * replaced rather than updated in place. If the switch link ever lands
+     * somewhere stale, this is the value to correct.
+     */
+    WEBAPP_SELF_URL: 'https://script.google.com/a/macros/cawgcap.org/s/' +
+      'AKfycby1lqAHHsPq9hHU4ACfuGrZ1wCDOQYX38mA19s-LOtgirB1fP6bN4ZwbJ20nRaOaAcL/exec',
+
     /** Extra groups this app may change. A security boundary — see Config.gs. */
     WEBAPP_MANAGED_GROUPS: ''
   },
@@ -121,6 +133,10 @@ const ADMIN_WEBAPP_SETUP_VALUES = {
 
     /** Linked when an admin opens a SENIOR here: the seniors admin site. */
     WEBAPP_PEER_ADMIN_URL: 'https://script.google.com/a/macros/cawgcap.org/s/AKfycby1lqAHHsPq9hHU4ACfuGrZ1wCDOQYX38mA19s-LOtgirB1fP6bN4ZwbJ20nRaOaAcL/exec',
+
+    /** This deployment's own URL — see the seniors entry above. */
+    WEBAPP_SELF_URL: 'https://script.google.com/a/macros/cawgcadets.org/s/' +
+      'AKfycbx7yMbuNp2So9PbKMzwrn7OL1X6oSddxaml5re_YkHWF6b-ZQEWGsC8-3P8N6mpXM2AeA/exec',
 
     WEBAPP_MANAGED_GROUPS: ''
   }

@@ -10,6 +10,40 @@ Individual source files carry their own SemVer version in their header
 (see [docs/VERSIONING.md](docs/VERSIONING.md)); the per-file version is noted
 next to each entry below.
 
+## [2026-10-12] — the refusal now says which account it used
+
+### Fixed — admin-webapp: "not authorized" named no account, and offered no way to switch
+
+Reported from live use: *"I have multiple Google accounts, and it will often tell me I am not
+authorized because it's using the wrong account. There's no way to change which account it is
+logging with."*
+
+Both halves were true, and the first was the real defect. `doGet()` resolved the caller,
+decided they were not an admin, and then said so **without naming the account it had
+resolved** — leaving someone with four Google accounts no way to tell which one the browser
+had used, or that an account was the problem at all. The page knew and did not say.
+
+Every refusal now names it: *"You are signed in as X, which does not hold an administrator
+role here. It needs a @cawgcap.org account with the Help Desk Administrator role…"* — plus the
+observation that multiple accounts are the usual cause. No identity at all gets a different
+sentence rather than a blank address, which would read as a bug in the page.
+
+The second half had an answer the app was not offering. Refusals and every cross-tenant link
+now go through Google's account chooser, hinted with `hd` to the domain the destination wants
+and returning via `continue`. **The cross-tenant case was a guaranteed failure**: the peer link
+opens the OTHER Workspace's copy of this app, where the current account cannot be authorized by
+definition, so the cross-linking added in August reliably produced a refusal for anyone who
+followed it. It now asks which account first.
+
+`WEBAPP_SELF_URL` (optional, set on both tenants) makes the switch one click by sending the
+browser back to the page afterwards. The app cannot discover its own URL:
+`ScriptApp.getService().getUrl()` needs the `script.scriptapp` scope, and adding a scope to a
+live `USER_DEPLOYING` web app stops it serving anyone until the deployer re-authorizes — not a
+price worth paying for a convenience link, so it is a Script Property.
+
+Also adds a "not you?" switch link beside the signed-in address in the header, for the case
+where the account IS authorized but is not the one the admin meant to use.
+
 ## [2026-09-28] — Oregon: no Level I gate
 
 The `composite` profile (`config.gs` 1.17.1) sets `REQUIRE_LEVEL_I_FOR_SENIORS` to `false`, so new

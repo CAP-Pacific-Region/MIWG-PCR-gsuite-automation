@@ -144,6 +144,7 @@ the same names the main project uses.
 | `TENANT_WING_ABBREVIATION` | no | derived from `TENANT_WING` when blank |
 | `TENANT_PROFILE` | no | `seniors` (default) / `cadets` / `region` / `composite` — decides which members this tenant provisions, see §5.1 |
 | `WEBAPP_PEER_ADMIN_URL` | no | linked when an admin opens a member from the other tenant. `WEBAPP_CADET_TOOLS_URL` is still read as a fallback for the older name |
+| `WEBAPP_SELF_URL` | no | this deployment's own `/exec` URL, used only to offer a one-click "open this page as a different account". The app cannot discover it — see §8.1 |
 | `XT_PEER_DOMAIN` | no | the peer tenant's domain, named when no peer admin URL is set. `TENANT_CADETS_TENANT_DOMAIN` is still read as a fallback for the older name |
 | `WEBAPP_2SV_SETUP_GROUP` | no | the 2SV group's address. **Blank disables the group panel entirely**. `TENANT_2SV_SETUP_GROUP` is accepted as a fallback, since `src/` already uses that name for the same group |
 | `WEBAPP_MANAGED_GROUPS` | no | comma-separated extra groups the app may change |
@@ -296,6 +297,34 @@ reporting that member as MISSED. This is shared state: the format, including its
 version number, must match, and the test pins both.
 
 ## 8. Troubleshooting
+
+### 8.1 "Not authorized" when you are, in fact, an admin
+
+Almost always the wrong Google account, not the wrong role. A browser signed into
+several accounts opens a link as whichever one it considers current, and anyone
+holding both a senior and a cadet account has at least two.
+
+The refusal page **names the account it actually used** and the domain it needs,
+so the first thing to do is read it. It also offers Google's account chooser,
+hinted to this tenant's domain.
+
+Two deliberate details:
+
+- **Every cross-tenant link goes through the chooser.** The peer link opens the
+  *other* Workspace's copy of this app, where your current account cannot be
+  authorized by definition — sending the browser straight there produced a
+  guaranteed refusal. `admAccountChooserUrl_()` asks which account first.
+- **`WEBAPP_SELF_URL` makes the switch one click.** With it set, the chooser
+  returns the browser to this page as the chosen account; without it, the chooser
+  still opens and you re-open the page yourself. The app cannot work the URL out
+  on its own: `ScriptApp.getService().getUrl()` needs the `script.scriptapp`
+  scope, and adding a scope to a live `USER_DEPLOYING` web app stops it serving
+  anyone until the deployer re-authorizes. A Script Property is not worth that.
+
+If the switch link lands somewhere stale, `WEBAPP_SELF_URL` is the value to
+correct — it is the deployment's `/exec` URL, which only changes if the
+deployment is replaced rather than updated in place.
+
 
 **"This page is not set up for … yet."** A required Script Property is unset. The
 names are in the execution log, not on the page — an admin cannot act on a
