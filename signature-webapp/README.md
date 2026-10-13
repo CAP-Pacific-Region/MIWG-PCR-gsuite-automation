@@ -4,8 +4,8 @@
 deployed by `npm run push:seniors`. The same source is pushed to its own script project inside each
 Workspace — a project lives in one tenant, and a cadet cannot sign in to one on the senior domain —
 each with its own manifest, Script Properties, OAuth scopes and clasp target
-([seniors](../clasp-targets/signature-webapp-seniors.clasp.json) ·
-[cadets](../clasp-targets/signature-webapp-cadets.clasp.json)).
+([seniors](../signature-webapp-seniors.clasp.json) ·
+[cadets](../signature-webapp-cadets.clasp.json)).
 
 ```bash
 npm run push:signature:seniors     # deploy to the seniors tenant's project

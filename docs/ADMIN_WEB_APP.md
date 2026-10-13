@@ -84,16 +84,16 @@ member's inbox.
 ## 4. Setting it up on a tenant
 
 One script project per tenant (a project lives in one Workspace). It now runs on
-**both** CAWG tenants — `clasp-targets/admin-webapp-seniors.clasp.json` and
-`clasp-targets/admin-webapp-cadets.clasp.json` — each pointed at its own project
+**both** CAWG tenants — `admin-webapp-seniors.clasp.json` and
+`admin-webapp-cadets.clasp.json` — each pointed at its own project
 and, on the page, linked to the other. Repeat with a new clasp target for any
 other tenant.
 
 ### 4.1 Create the project and push
 
 The seniors and cadets projects already exist; their IDs are in
-`clasp-targets/admin-webapp-seniors.clasp.json` and
-`clasp-targets/admin-webapp-cadets.clasp.json`. For a new tenant:
+`admin-webapp-seniors.clasp.json` and
+`admin-webapp-cadets.clasp.json`. For a new tenant:
 
 ```bash
 clasp create-script --title "CAWG Account Admin" --type standalone

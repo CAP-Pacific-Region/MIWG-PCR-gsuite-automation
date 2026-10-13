@@ -141,7 +141,8 @@ secondary-alias-webapp/       # SEPARATE Apps Script project: CAPID-scoped secon
 
 config-tenants/               # Canonical NON-SECRET per-tenant values (repo-only; never pushed)
 ├── seniors.json  cadets.json  region.json  orwg.json
-clasp-targets/                # {scriptId, rootDir} pointers, one per tenant (incl. orwg.clasp.json) + one per web app
+*.clasp.json                  # Push targets at the repo ROOT: {scriptId, rootDir}, one per tenant
+                              # (incl. orwg.clasp.json) + one per web app
 docs/                         # Admin Guide, cross-tenant, migration, troubleshooting, etc.
 ```
 

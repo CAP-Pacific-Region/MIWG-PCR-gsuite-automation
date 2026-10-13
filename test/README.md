@@ -43,9 +43,8 @@ dry run the *second* check rather than the first.
 | `WelcomeEmailAudit.test.js` | The audit's verdicts: an unseeded ledger accuses nobody, and the seed vouches only for accounts with login history |
 | `TwoSvSetupGroup.test.js` | Who leaves the 2SV holding pen: enrollment or 7 days, whichever first — and never on a 2SV read that failed |
 
-Nothing here ships to Apps Script: clasp's `rootDir` is `../src` and
-`.claspignore` excludes everything outside `src/`, so `test/` never leaves the
-repo.
+Nothing here ships to Apps Script: clasp's `rootDir` is `src`, and a push only
+ever collects files beneath it, so `test/` never leaves the repo.
 
 ## Writing a new one
 
