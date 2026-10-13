@@ -219,8 +219,10 @@ function requireAdmin_() {
       user: actor || '(no identity)',
       allowedRoles: ADMIN_CONFIG.ALLOWED_ROLES
     });
-    throw new Error('Your account does not hold an administrator role that may use ' +
-      'this page. ' + admSupportSentence_());
+    // Names the account for the same reason doGet does. This path is reached when
+    // the page was served and a later call is refused -- most often because the
+    // browser switched the active account underneath an open tab.
+    throw new Error(admWrongAccountMessage_(actor) + ' ' + admSupportSentence_());
   }
   return privileges;
 }

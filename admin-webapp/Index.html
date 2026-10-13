@@ -92,6 +92,9 @@
     <div class="sub">
       Signed in as <?= actor ?> &middot; every action on this page is recorded
       against your name.
+      <? if (switchUrl) { ?>
+        &middot; <a href="<?= switchUrl ?>" target="_blank" rel="noopener">not you?</a>
+      <? } ?>
     </div>
   </header>
 
@@ -218,9 +221,13 @@ function clearFlash() { el('flash').className = 'banner hidden'; }
 function flashElsewhere(sentence) {
   var f = el('flash');
   var url = STATE.config && STATE.config.peerAdminUrl;
+  // The href goes through the account chooser (the other tenant is a different
+  // Workspace, so the current account cannot work there); the visible text stays
+  // the plain URL, which is what someone would recognise or copy.
+  var href = (STATE.config && STATE.config.peerSwitchUrl) || url;
   f.innerHTML = url
     ? esc(sentence.replace(url, '')).replace(/\s+$/, '') +
-      ' <a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>'
+      ' <a href="' + esc(href) + '" target="_blank" rel="noopener">' + esc(url) + '</a>'
     : esc(sentence);
   f.className = 'banner warn';
   window.scrollTo(0, 0);
@@ -339,8 +346,9 @@ function renderMember(res) {
   var elsewhere = '';
   if (m.offTenant) {
     elsewhere = '<div class="banner warn">' + esc(res.elsewhere || '') +
-      (STATE.config && STATE.config.peerAdminUrl
-        ? ' <a href="' + esc(STATE.config.peerAdminUrl) + '" target="_blank" rel="noopener">Open it</a>'
+      (STATE.config && (STATE.config.peerSwitchUrl || STATE.config.peerAdminUrl)
+        ? ' <a href="' + esc(STATE.config.peerSwitchUrl || STATE.config.peerAdminUrl) +
+          '" target="_blank" rel="noopener">Open it</a>'
         : '') +
       (res.accounts.length
         ? ' <strong>This member does also hold an account on this Workspace</strong>, shown ' +

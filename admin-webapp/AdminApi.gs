@@ -43,16 +43,34 @@ function doGet() {
   const privileges = admActorPrivileges_(actor);
   if (!privileges.allowed) {
     Logger.warn('Refused to serve the admin page', { user: actor || '(no identity)' });
+
+    // The account is NAMED, and a switch is offered. A refusal that does not say
+    // which of someone's four Google accounts it used is a dead end -- see
+    // admWrongAccountMessage_() in Config.gs.
+    const switchUrl = admAccountChooserUrl_(ADMIN_CONFIG.SELF_URL, ADMIN_CONFIG.EMAIL_DOMAIN);
     return HtmlService.createHtmlOutput(
-      '<p style="font:14px/1.5 system-ui,sans-serif;padding:2rem">' +
-      'Your account does not hold an administrator role that may use this page.<br>' +
-      admEscape_(admSupportSentence_()) + '</p>'
-    ).setTitle('Not authorized');
+      '<div style="font:14px/1.6 system-ui,sans-serif;padding:2rem;max-width:34rem">' +
+      '<p>' + admEscape_(admWrongAccountMessage_(actor)) + '</p>' +
+      '<p><a href="' + admEscape_(switchUrl) + '" target="_blank" rel="noopener">' +
+      (ADMIN_CONFIG.SELF_URL
+        ? 'Open this page as a different account'
+        : 'Switch Google account') + '</a>' +
+      (ADMIN_CONFIG.SELF_URL ? '' :
+        ' &mdash; then open this page again from your bookmark.') + '</p>' +
+      '<p style="color:#59636e;font-size:.875rem">' + admEscape_(admSupportSentence_()) + '</p>' +
+      '</div>'
+    ).setTitle('Wrong account');
   }
 
   const template = HtmlService.createTemplateFromFile('Index');
   template.actor = actor;
   template.orgLabel = ADMIN_CONFIG.ORG_LABEL;
+  // Lets someone who IS authorized but signed in as the wrong one of their
+  // accounts correct it without hunting for the account switcher. Blank when
+  // WEBAPP_SELF_URL is unset, and the header then just names the account.
+  template.switchUrl = ADMIN_CONFIG.SELF_URL
+    ? admAccountChooserUrl_(ADMIN_CONFIG.SELF_URL, ADMIN_CONFIG.EMAIL_DOMAIN)
+    : '';
 
   return template.evaluate()
     .setTitle(ADMIN_CONFIG.ORG_LABEL + ' Account Admin')
@@ -74,9 +92,22 @@ function apiGetState() {
     orgLabel: ADMIN_CONFIG.ORG_LABEL,
     supportEmail: ADMIN_CONFIG.SUPPORT_EMAIL,
     twoSvGroup: ADMIN_CONFIG.TWO_SV_GROUP,
-    // So the page can offer the cadet tools site as a link rather than as text
+    // So the page can offer the other tenant's site as a link rather than as text
     // an admin has to retype.
     peerAdminUrl: ADMIN_CONFIG.PEER_ADMIN_URL,
+
+    /**
+     * The same destination, via the account chooser hinted to the peer domain.
+     * Used as the href while peerAdminUrl stays the readable text.
+     *
+     * Following the peer link is the one hop where the current account is
+     * GUARANTEED wrong -- the other tenant is a different Workspace - so sending
+     * it straight there reliably produced a refusal. This asks which account
+     * first.
+     */
+    peerSwitchUrl: ADMIN_CONFIG.PEER_ADMIN_URL
+      ? admAccountChooserUrl_(ADMIN_CONFIG.PEER_ADMIN_URL, ADMIN_CONFIG.PEER_DOMAIN)
+      : '',
     managedGroups: admManagedGroups_(),
     auditVisible: !!ADMIN_CONFIG.AUDIT_SPREADSHEET_ID
   };

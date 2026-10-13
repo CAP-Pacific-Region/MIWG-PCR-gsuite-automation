@@ -164,6 +164,21 @@ function getAdminWebAppConfig_() {
      */
     PEER_DOMAIN: get('XT_PEER_DOMAIN', get('TENANT_CADETS_TENANT_DOMAIN')),
 
+    /**
+     * This deployment's own /exec URL.
+     *
+     * OPTIONAL, and only ever used to send someone BACK here as a different
+     * Google account — see admAccountChooserUrl_(). The app cannot discover its
+     * own URL: ScriptApp.getService().getUrl() needs the script.scriptapp scope,
+     * and adding a scope to a live USER_DEPLOYING web app forces the deployer to
+     * re-authorize before it will serve anyone again. A Script Property is not
+     * worth that.
+     *
+     * Blank means the refusal still names the account and the domain it needs;
+     * it just cannot offer the one-click switch.
+     */
+    SELF_URL: get('WEBAPP_SELF_URL'),
+
     /** Shown to an admin the app cannot help, and CC'd on credentials it mails. */
     SUPPORT_EMAIL: get('TENANT_ITSUPPORT_EMAIL'),
 
@@ -272,6 +287,61 @@ function admElsewhereSentence_(type) {
       : 'Their accounts live on the other tenant\'s Workspace, which has its own admin page.');
   return kind + ' accounts are not on this Workspace, so nothing on this page can ' +
     'act on them. ' + where;
+}
+
+/**
+ * Google's account chooser, aimed at a URL and hinted to a domain.
+ *
+ * WHY EVERY CROSS-ACCOUNT LINK GOES THROUGH THIS
+ *
+ * A browser signed into several Google accounts opens a link as whichever one it
+ * considers current, which for anyone holding both a senior and a cadet account
+ * is a coin toss — and the two tenants each run their own copy of this app, so
+ * following the peer link lands you on a page your current account is guaranteed
+ * NOT to be authorized for. The app then says you are not authorized, which is
+ * true and useless.
+ *
+ * `hd` tells the chooser which domain the page wants, so the right account is
+ * the obvious one to pick; `continue` sends the browser back to the page
+ * afterwards, as that account. Without `continue` the chooser still works, it
+ * just leaves the person to re-open the page themselves.
+ *
+ * @param {string} url - where to land afterwards; '' omits `continue`
+ * @param {string} domain - the domain to hint, with or without a leading '@'
+ * @returns {string}
+ */
+function admAccountChooserUrl_(url, domain) {
+  const params = [];
+  const hd = String(domain || '').trim().toLowerCase().replace(/^@+/, '');
+  if (hd) params.push('hd=' + encodeURIComponent(hd));
+  if (url) params.push('continue=' + encodeURIComponent(url));
+
+  return 'https://accounts.google.com/AccountChooser' +
+    (params.length ? '?' + params.join('&') : '');
+}
+
+/**
+ * The refusal, which NAMES THE ACCOUNT IT SAW.
+ *
+ * That is the whole point of this function. "You are not authorized" is a dead
+ * end when the reader has four Google accounts and no idea which one the browser
+ * used; "you are signed in as X, this page needs a @y account" is something they
+ * can act on in five seconds. The address is not a secret — it is theirs, and
+ * the page is already running as them.
+ *
+ * @param {string} actor - the resolved caller, or '' when there is no identity
+ * @returns {string} plain text, safe to escape into HTML or throw as an error
+ */
+function admWrongAccountMessage_(actor) {
+  const domain = String(ADMIN_CONFIG.EMAIL_DOMAIN || '').trim().replace(/^@+/, '');
+  const needs = domain ? '@' + domain : ADMIN_CONFIG.ORG_LABEL;
+
+  return (actor
+    ? 'You are signed in as ' + actor + ', which does not hold an administrator role here.'
+    : 'You do not appear to be signed in to an account this page can identify.') +
+    ' It needs a ' + needs + ' account with the Help Desk Administrator role, or a super admin. ' +
+    'If you have more than one Google account, your browser has probably opened this ' +
+    'page as the wrong one.';
 }
 
 /** A CAPID on these tenants is a 5-7 digit number. Mirrors DUP_GUARD_CAPID_RE. */

@@ -549,6 +549,62 @@ check('the WEBAPP_ name wins when both are set',
   loadGroupsFor({ WEBAPP_2SV_SETUP_GROUP: 'a@x.org', TENANT_2SV_SETUP_GROUP: 'b@x.org' }),
   ['a@x.org']);
 
+section('A refusal names the account it saw, and offers a way to switch');
+
+/**
+ * Reported from live use: "it will often tell me I am not authorized because
+ * it's using the wrong account, and there's no way to change which account it is
+ * logging with."
+ *
+ * Both halves were real. The refusal knew exactly which of someone's several
+ * Google accounts it had resolved and did not say, and nothing on the page led
+ * anywhere useful. A refusal that cannot be acted on is a dead end, so the
+ * account is named and the chooser is offered.
+ */
+const acctCfg = loadModule(path.join(APP, 'Config.gs'), {
+  PropertiesService: {
+    getScriptProperties: () => ({
+      getProperty: (key) => ({
+        TENANT_EMAIL_DOMAIN: '@cawgcap.org',
+        TENANT_DOMAIN: 'cawgcap.org',
+        TENANT_WING: 'CA',
+        TENANT_CAPWATCH_DATA_FOLDER_ID: 'folder-id',
+        TENANT_ITSUPPORT_EMAIL: 'it@cawgcap.org'
+      }[key] || null)
+    })
+  },
+  console: console
+}, ['admWrongAccountMessage_', 'admAccountChooserUrl_']);
+
+const refusal = acctCfg.admWrongAccountMessage_('personal@example.com');
+check('the refusal names the account that was actually used',
+  refusal.indexOf('personal@example.com') !== -1, true);
+check('…and the domain it needs instead',
+  refusal.indexOf('@cawgcap.org account') !== -1, true);
+check('…and says multiple accounts are the usual cause',
+  refusal.indexOf('more than one Google account') !== -1, true);
+
+// No identity at all is a different sentence: naming '' as the account would
+// read as a blank-address bug rather than "you are not signed in".
+check('no identity is described as not signed in',
+  acctCfg.admWrongAccountMessage_('').indexOf('do not appear to be signed in') !== -1, true);
+check('…and names no account',
+  acctCfg.admWrongAccountMessage_('').indexOf('signed in as') !== -1, false);
+
+check('the chooser is hinted to the domain and returns to the page',
+  acctCfg.admAccountChooserUrl_('https://script.google.com/a/macros/cawgcap.org/s/ID/exec',
+    '@cawgcap.org'),
+  'https://accounts.google.com/AccountChooser?hd=cawgcap.org' +
+  '&continue=https%3A%2F%2Fscript.google.com%2Fa%2Fmacros%2Fcawgcap.org%2Fs%2FID%2Fexec');
+
+// WEBAPP_SELF_URL is optional, so the chooser must still be useful without it.
+check('with no return URL it still hints the domain',
+  acctCfg.admAccountChooserUrl_('', 'cawgcadets.org'),
+  'https://accounts.google.com/AccountChooser?hd=cawgcadets.org');
+check('with neither it is still a valid chooser link',
+  acctCfg.admAccountChooserUrl_('', ''),
+  'https://accounts.google.com/AccountChooser');
+
 section('Who may use the app, and whom they may act on');
 
 /**
