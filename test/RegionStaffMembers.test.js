@@ -9,7 +9,7 @@ const { loadModule, makeLogger, makeChecker } = require('./helpers/apps-script')
 
 const MODULE = path.join(__dirname, '..', 'src', 'accounts-and-groups', 'RegionStaffMembers.gs');
 const { section, check, done } = makeChecker();
-const m = loadModule(MODULE, { Logger: makeLogger().logger }, ['deriveRegionStaffMembers_']);
+const m = loadModule(MODULE, { Logger: makeLogger().logger }, ['deriveRegionStaffMembers_', 'explainRegionStaffExclusions_']);
 
 const squadrons = {
   '100': { charter: 'PCR-CA-070' }, '200': { charter: 'PCR-CA-001' }, '1297': { charter: 'PCR-CA-000' }
@@ -51,5 +51,18 @@ section('placement');
   check('all wing duties are kept', r['1'].duties.length, 3);
   const a = derive([mem('2', '434')], [duty('2', 'Deputy', true, '100')]);
   check('assistant-only member is still placed at HQ', a['2'].placementOrgid, '434');
+}
+section('explainRegionStaffExclusions_');
+{
+  const mems = [mem('1', '100'), mem('2', '434', 'SENIOR', 'EXPIRED'), mem('3', '434', 'CADET'),
+                mem('4', '434'), mem('5', '434')];
+  const duties = [duty('4', 'X', false, '434'), duty('5', 'Y', false, '100')];
+  const why = m.explainRegionStaffExclusions_(['9', '1', '2', '3', '4', '5'], mems, duties, squadrons, opts);
+  check('absent from extract', why['9'], 'not in region extract');
+  check('wing-primary', why['1'], 'primary org 100 (not HQ)');
+  check('inactive', why['2'], 'status EXPIRED');
+  check('ineligible type', why['3'], 'type CADET not eligible');
+  check('HQ-only duty', why['4'], 'no duty in a wing unit (1 duties elsewhere)');
+  check('would qualify', why['5'], 'qualifies (rule should have derived it)');
 }
 done();

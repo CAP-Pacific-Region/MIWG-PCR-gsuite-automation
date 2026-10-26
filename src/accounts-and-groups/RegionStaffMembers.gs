@@ -1,6 +1,6 @@
 /**
  * RegionStaffMembers.gs
- * Version: 1.0.0
+ * Version: 1.1.0
  *
  * Finds region-HQ members (primary unit PCR-PCR-001) who ALSO hold a duty
  * position in one of THIS wing's units — the people who today only get a
@@ -20,6 +20,8 @@
  * Entry point: previewRegionStaffMembers()
  *
  * Changelog:
+ *   1.1.0 — Placement is always the HQ org; preview reports WHY each manual row
+ *           was not derived (explainRegionStaffExclusions_).
  *   1.0.0 — Initial: pure matcher (deriveRegionStaffMembers_) + preview.
  */
 
@@ -83,11 +85,58 @@ function deriveRegionStaffMembers_(memberRows, dutyRows, squadrons, opts) {
 }
 
 /**
+ * PURE. For CAPIDs the rule did NOT derive, says why — the first failing test in the
+ * order the rule applies them. Used to tell a legitimate manual exception from a
+ * data gap in the region extract.
+ *
+ * @param {string[]} capids
+ * @param {Array<Array>} memberRows - region Member.txt data rows
+ * @param {Array<Array>} dutyRows - region DutyPosition.txt data rows
+ * @param {Object} squadrons - wing org lookup (see deriveRegionStaffMembers_)
+ * @param {{hqOrgId?:string, types:string[], excludedOrgIds?:string[]}} opts
+ * @returns {Object} capid -> reason string, e.g. 'not in region extract',
+ *   'primary org 100 (not HQ)', 'status EXPIRED', 'type CADET not eligible',
+ *   'no duty in a wing unit (N duties elsewhere)'
+ */
+function explainRegionStaffExclusions_(capids, memberRows, dutyRows, squadrons, opts) {
+  const hq = String((opts && opts.hqOrgId) || REGION_STAFF_HQ_ORGID);
+  const types = (opts && opts.types) || [];
+  const excluded = ((opts && opts.excludedOrgIds) || []).map(String);
+
+  const memberByCapid = {};
+  (memberRows || []).forEach(r => { memberByCapid[String((r || [])[0] || '').trim()] = r; });
+  const dutiesByCapid = {};
+  (dutyRows || []).forEach(r => {
+    const capid = String((r || [])[0] || '').trim();
+    (dutiesByCapid[capid] = dutiesByCapid[capid] || []).push(r);
+  });
+
+  const reasons = {};
+  capids.forEach(capid => {
+    const row = memberByCapid[capid];
+    if (!row) { reasons[capid] = 'not in region extract'; return; }
+    const org = String(row[11] || '').trim();
+    if (org !== hq) { reasons[capid] = 'primary org ' + org + ' (not HQ)'; return; }
+    if (row[24] !== 'ACTIVE') { reasons[capid] = 'status ' + row[24]; return; }
+    if (types.indexOf(row[21]) === -1) { reasons[capid] = 'type ' + row[21] + ' not eligible'; return; }
+    const duties = dutiesByCapid[capid] || [];
+    const wing = duties.filter(d => {
+      const o = String(d[7] || '').trim();
+      return squadrons[o] && excluded.indexOf(o) === -1;
+    });
+    reasons[capid] = wing.length
+      ? 'qualifies (rule should have derived it)'
+      : 'no duty in a wing unit (' + duties.length + ' duties elsewhere)';
+  });
+  return reasons;
+}
+
+/**
  * READ-ONLY. Logs who would be derived and how they compare with what is already
  * on the Manual Members sheet / the wing's own roster. Run by hand.
  *
  * @returns {{derived:Object, alreadyManual:string[], newToRoster:string[],
- *            manualNotDerived:string[], inWingRoster:string[]}}
+ *            manualNotDerived:string[], manualNotDerivedWhy:Object, inWingRoster:string[]}}
  */
 function previewRegionStaffMembers() {
   const folderId = String(CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID || '').trim();
@@ -97,11 +146,10 @@ function previewRegionStaffMembers() {
   }
 
   const squadrons = getSquadrons();
-  const derived = deriveRegionStaffMembers_(
-    parseCapwatchFromFolder_(folderId, 'Member'),
-    parseCapwatchFromFolder_(folderId, 'DutyPosition'),
-    squadrons,
-    { types: CONFIG.MEMBER_TYPES.ACTIVE, excludedOrgIds: CONFIG.EXCLUDED_ORG_IDS });
+  const regionMembers = parseCapwatchFromFolder_(folderId, 'Member');
+  const regionDuties = parseCapwatchFromFolder_(folderId, 'DutyPosition');
+  const ruleOpts = { types: CONFIG.MEMBER_TYPES.ACTIVE, excludedOrgIds: CONFIG.EXCLUDED_ORG_IDS };
+  const derived = deriveRegionStaffMembers_(regionMembers, regionDuties, squadrons, ruleOpts);
 
   const manual = loadManualMembers(squadrons);
   const wingRoster = {};
@@ -117,13 +165,15 @@ function previewRegionStaffMembers() {
     // Should be empty: a region-HQ primary member should not be in the wing's own file.
     inWingRoster: derivedIds.filter(id => wingRoster[id])
   };
+  out.manualNotDerivedWhy = explainRegionStaffExclusions_(
+    out.manualNotDerived, regionMembers, regionDuties, squadrons, ruleOpts);
 
   // CAPIDs only: member names stay out of the logs.
   Logger.info('Region staff preview', {
     derivedCount: derivedIds.length,
     alreadyManual: out.alreadyManual.length,
     newToRoster: out.newToRoster,
-    manualNotDerived: out.manualNotDerived,
+    manualNotDerived: out.manualNotDerivedWhy,
     inWingRoster: out.inWingRoster
   });
   return out;
