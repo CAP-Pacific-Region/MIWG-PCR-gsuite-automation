@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Region-staff preview** (`src/accounts-and-groups/RegionStaffMembers.gs`) - `previewRegionStaffMembers()` is read-only and lists region-HQ (PCR-PCR-001) members who hold a duty in one of this wing's units, using the region-wide CAPWATCH extract. It compares them with the Manual Members sheet and the wing's own roster, to show whether those manual rows could be derived automatically. Nothing is provisioned from it yet.
+
 ### Fixed
 
 - **Restored account no longer stays suspended for an extra run** (`src/accounts-and-groups/UpdateMembers.gs`) - the `Users.update` that un-suspends a just-undeleted account (added in the soft-delete restore fix) could 404 while Google was still propagating the `Users.undelete`, and the shared retry helper doesn't retry 404s. New `updateAfterUndelete_()` retries specifically on that error with backoff, so a restored account is un-suspended in the same run instead of the next one.
