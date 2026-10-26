@@ -2307,6 +2307,7 @@ function auditWorkspaceUsersForRemoval() {
       errorMessage: e && e.message ? e.message : String(e)
     });
   }
+  addDerivedRegionStaffCapids_(manualCapids); // derived region staff have no wing CAPWATCH record by design
 
   const eligibleTypes = CONFIG.MEMBER_TYPES.ACTIVE;
   const ineligibleType = [];

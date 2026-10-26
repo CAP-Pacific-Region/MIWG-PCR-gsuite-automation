@@ -4,9 +4,10 @@
  * Provides organization-specific parameters, email domains, folder IDs, and time zone mapping.
  * Author: Noel Luneau
  * Contributors: Maj Isaac Wilson IV, California Wing (1.4.0–1.8.0)
- * Version: 1.17.1
+ * Version: 1.18.0
  * Date: 2026-09-28
- * Changes: The 'composite' profile sets REQUIRE_LEVEL_I_FOR_SENIORS false (Oregon does
+ * Changes: 1.18.0: Optional TENANT_DERIVE_REGION_STAFF flag (CONFIG.DERIVE_REGION_STAFF), off by default.
+ *   The 'composite' profile sets REQUIRE_LEVEL_I_FOR_SENIORS false (Oregon does
  *   not want new senior accounts held for Level I).
  *   1.17.0: Added optional TENANT_HELP_GUIDE_URL / TENANT_SUPPORT_URL (TENANT.HELP_GUIDE_URL /
  *   SUPPORT_URL) so the welcome email's help links are per-tenant, not California's.
@@ -166,6 +167,10 @@ function getTenantConfig_() {
     CADETS_TENANT_DOMAIN: get('TENANT_CADETS_TENANT_DOMAIN'),
     CAPWATCH_DATA_FOLDER_ID: get('TENANT_CAPWATCH_DATA_FOLDER_ID'),
     REGION_CAPWATCH_DATA_FOLDER_ID: get('TENANT_REGION_CAPWATCH_DATA_FOLDER_ID'),
+    // 'true' turns on account provisioning for region-HQ members who hold a duty in
+    // this wing's units (RegionStaffMembers.gs). Anything else = off. Needs the
+    // region folder above.
+    DERIVE_REGION_STAFF: get('TENANT_DERIVE_REGION_STAFF').toLowerCase() === 'true',
     AUTOMATION_FOLDER_ID: get('TENANT_AUTOMATION_FOLDER_ID'),
     AUTOMATION_SPREADSHEET_ID: get('TENANT_AUTOMATION_SPREADSHEET_ID'),
     RETENTION_LOG_SPREADSHEET_ID: get('TENANT_RETENTION_LOG_SPREADSHEET_ID'),
@@ -565,6 +570,7 @@ function setupTenantConfig() {
     TENANT_REGION: '',                     // '' unless this project is a Region-level pull
     TENANT_CAPWATCH_DATA_FOLDER_ID: '',
     TENANT_REGION_CAPWATCH_DATA_FOLDER_ID: '', // Region-level all-members CAPWATCH folder (region tenants only)
+    TENANT_DERIVE_REGION_STAFF: '',        // 'true' = auto-provision PCR-HQ members with wing duties (needs the region folder); '' = off
     TENANT_AUTOMATION_FOLDER_ID: '',
     TENANT_AUTOMATION_SPREADSHEET_ID: '',
     TENANT_RETENTION_LOG_SPREADSHEET_ID: '',
@@ -820,6 +826,9 @@ CADET_LITE_EXCLUDED_GRADES: [
    * Used by updateRegionGroupChats(); empty on wing tenants.
    */
   REGION_CAPWATCH_DATA_FOLDER_ID: TENANT.REGION_CAPWATCH_DATA_FOLDER_ID,
+
+  /** Auto-provision region-HQ members with wing duties (see RegionStaffMembers.gs). */
+  DERIVE_REGION_STAFF: TENANT.DERIVE_REGION_STAFF,
 
   /**
    * Google Drive folder ID for automation files (per tenant).

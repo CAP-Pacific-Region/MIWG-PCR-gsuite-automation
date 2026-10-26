@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Auto-provisioning for region-HQ staff with wing duties** (`src/accounts-and-groups/RegionStaffMembers.gs`, `UpdateMembers.gs`, `ManageLicenses.gs`, `config.gs` 1.18.0) - behind the new `TENANT_DERIVE_REGION_STAFF` Script Property (off by default), `getMembers()` adds PCR-PCR-001 members who hold a duty in this wing's units, placed in the `/PCR-001` OU. Manual Members rows and the wing roster win over a derived entry. Derived members count as active in `getActiveMembers()` only while the rule holds, so they are suspended on the normal grace clock once the duty ends; `suspendExpiredMembers()` skips its run if the region extract is unreadable. The Level I gate uses the region extract's completions for them.
 - **Region-staff preview** (`src/accounts-and-groups/RegionStaffMembers.gs`) - `previewRegionStaffMembers()` is read-only and lists region-HQ (PCR-PCR-001) members who hold a duty in one of this wing's units, using the region-wide CAPWATCH extract. It compares them with the Manual Members sheet and the wing's own roster, to show whether those manual rows could be derived automatically. Nothing is provisioned from it yet.
 
 ### Fixed
