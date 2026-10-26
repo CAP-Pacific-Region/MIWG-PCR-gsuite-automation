@@ -1,6 +1,6 @@
 /**
  * RegionStaffMembers.gs
- * Version: 1.2.0
+ * Version: 2.0.0
  *
  * Finds region-HQ members (primary unit PCR-PCR-001) who ALSO hold a duty
  * position in one of THIS wing's units — the people who today only get a
@@ -14,12 +14,30 @@
  * (CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID) has both halves of the join: the
  * member's primary org (Member.txt) and every duty row (DutyPosition.txt).
  *
- * THIS FILE IS READ-ONLY. It only reports who would qualify and how that compares
- * with the Manual Members sheet. Nothing is provisioned from it yet.
+ * TWO PARTS
  *
- * Entry point: previewRegionStaffMembers()
+ *   previewRegionStaffMembers() - READ-ONLY report of who qualifies and how that
+ *   compares with the Manual Members sheet. Works whether or not the flag is on.
+ *
+ *   mergeDerivedRegionStaff_() - PROVISIONING. Gated by CONFIG.DERIVE_REGION_STAFF
+ *   (Script Property TENANT_DERIVE_REGION_STAFF=true; OFF by default). Called by
+ *   getMembers(), so derived members flow through every consumer exactly as
+ *   Manual Members rows do. Rules:
+ *     - They are placed in the region HQ org (/PCR-001 OU), not the duty unit's.
+ *     - The Manual Members sheet and the wing's own roster both WIN over a derived
+ *       entry, so enabling this changes nothing for anyone already covered.
+ *     - Unlike manual rows they are NOT exempt from the lifecycle: they count as
+ *       active (getActiveMembers) only while the rule holds, so an account is
+ *       suspended on the normal grace clock once the wing duty ends. That is the
+ *       whole point of deriving them.
+ *     - FAIL-SAFE: if the region extract cannot be read, suspendExpiredMembers()
+ *       aborts rather than treat every derived member as lapsed.
+ *     - The Level I gate still applies, judged on the REGION extract's records.
  *
  * Changelog:
+ *   2.0.0 - Provisioning behind CONFIG.DERIVE_REGION_STAFF: mergeDerivedRegionStaff_,
+ *           loadDerivedRegionStaff_, derivedRegionStaffExpirations_,
+ *           addRegionLevel1Completions_, addDerivedRegionStaffCapids_.
  *   1.2.0 — Preview flags manual rows the wing's own roster already covers
  *           (wingCoverageForManual_), i.e. rows that are redundant.
  *   1.1.0 — Placement is always the HQ org; preview reports WHY each manual row
@@ -162,6 +180,161 @@ function wingCoverageForManual_(capids, wingMemberRows, opts) {
     out[capid] = 'covered by wing roster';
   });
   return out;
+}
+
+// One load per execution: getMembers() and the lifecycle both ask.
+let _derivedRegionStaffCache = undefined;
+
+/** Builds a getMembers()-shaped member object for one derived entry. */
+function regionStaffToMember_(entry, memberRow, org) {
+  return {
+    capsn: entry.capid,
+    lastName: entry.lastName,
+    firstName: entry.firstName,
+    middleName: memberRow[4] || '',
+    suffix: memberRow[5] || '',
+    orgid: org.orgid,
+    group: '',
+    charter: org.charter,
+    orgName: org.name,
+    rank: entry.rank,
+    type: entry.type,
+    status: memberRow[24],
+    joined: memberRow[15],
+    modified: memberRow[19],
+    orgPath: org.orgPath,
+    email: null,
+    derivedFromRegion: true,
+    dutyPositions: [],
+    dutyPositionIds: [],
+    dutyPositionIdsAndLevel: []
+  };
+}
+
+/**
+ * Loads the derived members for this execution (cached).
+ *
+ * @param {Object} [squadrons] - getSquadrons()
+ * @returns {Object|null} { derived, memberRowsByCapid, org, dutyRows, contactRows };
+ *   an empty `derived` when the flag is off; or NULL when the flag is on but the
+ *   region extract (or the HQ org's OU path) cannot be read. Callers must treat
+ *   null as "unknown", never as "nobody".
+ */
+function loadDerivedRegionStaff_(squadrons) {
+  if (!CONFIG.DERIVE_REGION_STAFF) {
+    return { derived: {}, memberRowsByCapid: {}, dutyRows: [], contactRows: [] };
+  }
+  if (_derivedRegionStaffCache !== undefined) return _derivedRegionStaffCache;
+
+  const folderId = String(CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID || '').trim();
+  const memberRows = folderId ? parseCapwatchFromFolder_(folderId, 'Member') : [];
+  if (!memberRows.length) {
+    Logger.error('Derived region staff: region extract unreadable', { folderId: folderId });
+    return (_derivedRegionStaffCache = null);
+  }
+  squadrons = squadrons || getSquadrons();
+  const dutyRows = parseCapwatchFromFolder_(folderId, 'DutyPosition');
+
+  let orgPath = '';
+  parseFile('OrgPaths').forEach(r => {
+    if (String(r[0] || '').trim() === REGION_STAFF_HQ_ORGID) orgPath = String(r[1] || '').trim();
+  });
+  if (!orgPath) {
+    Logger.error('Derived region staff: no OrgPaths entry for the region HQ org',
+      { orgid: REGION_STAFF_HQ_ORGID });
+    return (_derivedRegionStaffCache = null);
+  }
+  const org = { orgid: REGION_STAFF_HQ_ORGID, orgPath: orgPath, name: 'Region HQ', charter: '' };
+  parseCapwatchFromFolder_(folderId, 'Organization').forEach(r => {
+    if (String(r[0] || '').trim() !== REGION_STAFF_HQ_ORGID) return;
+    org.name = String(r[5] || '').trim() || org.name;
+    try { org.charter = Utilities.formatString('%s-%s-%03d', r[1], r[2], r[3]); } catch (ignored) {}
+  });
+
+  const derived = deriveRegionStaffMembers_(memberRows, dutyRows, squadrons,
+    { types: CONFIG.MEMBER_TYPES.ACTIVE, excludedOrgIds: CONFIG.EXCLUDED_ORG_IDS });
+  const memberRowsByCapid = {};
+  memberRows.forEach(r => { memberRowsByCapid[String((r || [])[0] || '').trim()] = r; });
+
+  return (_derivedRegionStaffCache = {
+    derived: derived,
+    memberRowsByCapid: memberRowsByCapid,
+    org: org,
+    dutyRows: dutyRows,
+    contactRows: parseCapwatchFromFolder_(folderId, 'MbrContact')
+  });
+}
+
+/**
+ * Adds derived region staff to a getMembers() roster. Called before the Manual
+ * Members merge, so a manual row for the same CAPID overwrites the derived one.
+ * Anyone already on the roster (from the wing's own file) is left alone.
+ *
+ * @param {Object} members - roster indexed by CAPID (mutated)
+ * @param {Object} squadrons
+ * @returns {number} members added
+ */
+function mergeDerivedRegionStaff_(members, squadrons) {
+  const loaded = loadDerivedRegionStaff_(squadrons);
+  if (!loaded || !Object.keys(loaded.derived).length) return 0;
+
+  const added = {};
+  Object.keys(loaded.derived).forEach(capid => {
+    if (members[capid]) return;
+    added[capid] = regionStaffToMember_(loaded.derived[capid], loaded.memberRowsByCapid[capid], loaded.org);
+  });
+  const ids = Object.keys(added);
+  if (!ids.length) return 0;
+
+  // Same readers the wing roster uses, fed from the region extract and scoped to
+  // the added members only (both skip CAPIDs that are not in the object they get).
+  addContactInfo(added, loaded.contactRows);
+  addDutyPositions(added,
+    loaded.dutyRows.filter(r => squadrons[String((r || [])[7] || '').trim()]), squadrons);
+
+  ids.forEach(capid => { members[capid] = added[capid]; });
+  Logger.info('Derived region staff merged', { count: ids.length });
+  return ids.length;
+}
+
+/**
+ * CAPID -> expiration for derived members, for getActiveMembers(). Empty when the
+ * flag is off OR the region extract is unreadable (use regionExtractReadable_()
+ * to tell those apart before suspending anyone).
+ */
+function derivedRegionStaffExpirations_() {
+  const loaded = loadDerivedRegionStaff_();
+  const out = {};
+  if (!loaded) return out;
+  Object.keys(loaded.derived).forEach(capid => {
+    out[capid] = (loaded.memberRowsByCapid[capid] || [])[16];
+  });
+  return out;
+}
+
+/** False only when the flag is ON and the region extract could not be read. */
+function regionExtractReadable_() {
+  return !CONFIG.DERIVE_REGION_STAFF || loadDerivedRegionStaff_() !== null;
+}
+
+/** Adds region-extract Level I completions to a Set (derived members are not in the wing's files). */
+function addRegionLevel1Completions_(completed) {
+  if (!CONFIG.DERIVE_REGION_STAFF) return completed;
+  const folderId = String(CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID || '').trim();
+  if (!folderId) return completed;
+  parseCapwatchFromFolder_(folderId, 'MbrAchievements').forEach(r => {
+    if (String(r[1]) === '96' && r[2] === 'ACTIVE') completed.add(String(r[0]));
+  });
+  parseCapwatchFromFolder_(folderId, 'SeniorLevel').forEach(r => {
+    if (String(r[1]) === 'LV1') completed.add(String(r[0]));
+  });
+  return completed;
+}
+
+/** Adds derived CAPIDs to an allow-list object ({capid: 1}), e.g. the audit's. */
+function addDerivedRegionStaffCapids_(allowList) {
+  Object.keys(derivedRegionStaffExpirations_()).forEach(c => { allowList[c] = 1; });
+  return allowList;
 }
 
 /**

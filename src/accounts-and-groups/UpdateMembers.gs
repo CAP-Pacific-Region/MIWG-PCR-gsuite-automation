@@ -597,6 +597,10 @@ function getMembers(types = CONFIG.MEMBER_TYPES.ACTIVE, includeDutyPositions = t
     });
   }
 
+  // Derived region staff (PCR-HQ members with wing duties). Off unless
+  // CONFIG.DERIVE_REGION_STAFF; merged BEFORE the manual sheet so a manual row wins.
+  mergeDerivedRegionStaff_(members, squadrons);
+
   // Merge in manual members from the ManualMembers sheet
   const manualMembers = loadManualMembers(squadrons);
   Object.assign(members, manualMembers);
@@ -1728,6 +1732,13 @@ function getActiveMembers() {
     }
   }
 
+  // Derived region staff are not in the wing's Member.txt: count them as active
+  // while the rule holds, or suspendExpiredMembers() would suspend them.
+  const derivedExpirations = derivedRegionStaffExpirations_();
+  Object.keys(derivedExpirations).forEach(capid => {
+    if (!(capid in activeMembers)) activeMembers[capid] = derivedExpirations[capid];
+  });
+
   Logger.info('Active members retrieved', {
     count: Object.keys(activeMembers).length
   });
@@ -1897,7 +1908,7 @@ function updateAllMembers() {
 
   // Gate new senior accounts on Level I completion
   if (CONFIG.REQUIRE_LEVEL_I_FOR_SENIORS) {
-    const level1Capids = loadLevel1CompletedCapids();
+    const level1Capids = addRegionLevel1Completions_(loadLevel1CompletedCapids());
 
     // Members transitioning up from the cadet tenant are exempt: they already
     // hold an account and are not new to the organization, so the Level I gate
@@ -2060,6 +2071,13 @@ function updateAllMembers() {
 function suspendExpiredMembers() {
   const start = new Date();
   Logger.info('Starting expired member suspension process');
+
+  // Fail safe: with derived region staff on, an unreadable region extract would make
+  // every derived member look lapsed. Skip the run instead of guessing.
+  if (!regionExtractReadable_()) {
+    Logger.error('Suspension run skipped: derived region staff is enabled but the region extract is unreadable');
+    return;
+  }
 
   let activeMembers = getActiveMembers();
   let users = getActiveUsers();
