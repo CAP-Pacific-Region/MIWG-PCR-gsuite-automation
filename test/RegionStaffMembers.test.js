@@ -47,9 +47,9 @@ section('placement');
 {
   const r = derive([mem('1', '434')], [
     duty('1', 'Deputy', true, '200'), duty('1', 'Director', false, '100'), duty('1', 'Chief', false, '200')]);
-  check('primary duty beats assistant; lowest charter breaks ties', r['1'].placementOrgid, '200');
+  check('placed in the region HQ org, not a duty unit', r['1'].placementOrgid, '434');
   check('all wing duties are kept', r['1'].duties.length, 3);
   const a = derive([mem('2', '434')], [duty('2', 'Deputy', true, '100')]);
-  check('assistant-only member is still placed', a['2'].placementOrgid, '100');
+  check('assistant-only member is still placed at HQ', a['2'].placementOrgid, '434');
 }
 done();

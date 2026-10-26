@@ -39,8 +39,9 @@ const REGION_STAFF_HQ_ORGID = '434';
  * @param {{hqOrgId?:string, types:string[], excludedOrgIds?:string[]}} opts
  * @returns {Object} qualifying members indexed by CAPID:
  *   { capid, lastName, firstName, rank, type, duties:[{id,assistant,orgid,charter}],
- *     placementOrgid } — placement is the unit of the member's first PRIMARY duty
- *     (assistant duties only if they have no primary one), lowest charter on ties.
+ *     placementOrgid } — placement is ALWAYS the region HQ org (their home unit), so a
+ *     derived member lands in the same /PCR-001 OU the Manual Members rows use today,
+ *     not in the OU of the wing unit where they hold the duty.
  */
 function deriveRegionStaffMembers_(memberRows, dutyRows, squadrons, opts) {
   const hq = String((opts && opts.hqOrgId) || REGION_STAFF_HQ_ORGID);
@@ -68,17 +69,14 @@ function deriveRegionStaffMembers_(memberRows, dutyRows, squadrons, opts) {
     if (String(row[11] || '').trim() !== hq) return;
     if (row[24] !== 'ACTIVE' || types.indexOf(row[21]) === -1) return;
 
-    const duties = dutiesByCapid[capid];
-    const ranked = duties.slice().sort((a, b) =>
-      (a.assistant - b.assistant) || String(a.charter).localeCompare(String(b.charter)));
     result[capid] = {
       capid: capid,
       lastName: row[2] || '',
       firstName: row[3] || '',
       rank: row[14] || '',
       type: row[21],
-      duties: duties,
-      placementOrgid: ranked[0].orgid
+      duties: dutiesByCapid[capid],
+      placementOrgid: hq
     };
   });
   return result;
