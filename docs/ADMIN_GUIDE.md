@@ -527,6 +527,9 @@ an internal helper. **Preview/test functions never modify Workspace** — use th
 - `testGetCapwatch()` — same, wrapped in error logging for a manual smoke test.
 - `setAuthorization()` — store eServices credentials (run once; see [Section 7](#7-secrets-and-script-properties-the-part-that-breaks-silently)).
 
+### Region staff preview (`RegionStaffMembers.gs`)
+- `previewRegionStaffMembers()` — **read-only.** Lists PCR-PCR-001 members with a duty in this wing's units (from the region extract, `TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`) and compares them with the Manual Members sheet. Logs CAPIDs only.
+
 ### Members & accounts (`UpdateMembers.gs`)
 - `updateAllMembers()` — main account sync (create/update, OU placement, aliases, custom schema).
 - `suspendExpiredMembers()` — suspend members past the grace period.
