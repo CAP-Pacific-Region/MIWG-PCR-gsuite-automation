@@ -9,7 +9,7 @@ const { loadModule, makeLogger, makeChecker } = require('./helpers/apps-script')
 
 const MODULE = path.join(__dirname, '..', 'src', 'accounts-and-groups', 'RegionStaffMembers.gs');
 const { section, check, done } = makeChecker();
-const m = loadModule(MODULE, { Logger: makeLogger().logger }, ['deriveRegionStaffMembers_', 'explainRegionStaffExclusions_']);
+const m = loadModule(MODULE, { Logger: makeLogger().logger }, ['deriveRegionStaffMembers_', 'explainRegionStaffExclusions_', 'wingCoverageForManual_']);
 
 const squadrons = {
   '100': { charter: 'PCR-CA-070' }, '200': { charter: 'PCR-CA-001' }, '1297': { charter: 'PCR-CA-000' }
@@ -64,5 +64,15 @@ section('explainRegionStaffExclusions_');
   check('ineligible type', why['3'], 'type CADET not eligible');
   check('HQ-only duty', why['4'], 'no duty in a wing unit (1 duties elsewhere)');
   check('would qualify', why['5'], 'qualifies (rule should have derived it)');
+}
+section('wingCoverageForManual_');
+{
+  const wing = [mem('1', '100'), mem('2', '100', 'SENIOR', 'EXPIRED'), mem('3', '100', 'CADET'), mem('4', '1297')];
+  const c = m.wingCoverageForManual_(['1', '2', '3', '4', '9'], wing, opts);
+  check('active eligible wing member is covered', c['1'], 'covered by wing roster');
+  check('inactive', c['2'], 'status EXPIRED');
+  check('ineligible type', c['3'], 'type CADET not eligible');
+  check('holding unit', c['4'], 'in excluded org 1297');
+  check('absent', c['9'], 'not in wing file');
 }
 done();

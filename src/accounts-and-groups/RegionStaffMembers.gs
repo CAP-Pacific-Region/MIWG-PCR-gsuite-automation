@@ -1,6 +1,6 @@
 /**
  * RegionStaffMembers.gs
- * Version: 1.1.0
+ * Version: 1.2.0
  *
  * Finds region-HQ members (primary unit PCR-PCR-001) who ALSO hold a duty
  * position in one of THIS wing's units — the people who today only get a
@@ -20,6 +20,8 @@
  * Entry point: previewRegionStaffMembers()
  *
  * Changelog:
+ *   1.2.0 — Preview flags manual rows the wing's own roster already covers
+ *           (wingCoverageForManual_), i.e. rows that are redundant.
  *   1.1.0 — Placement is always the HQ org; preview reports WHY each manual row
  *           was not derived (explainRegionStaffExclusions_).
  *   1.0.0 — Initial: pure matcher (deriveRegionStaffMembers_) + preview.
@@ -132,11 +134,43 @@ function explainRegionStaffExclusions_(capids, memberRows, dutyRows, squadrons, 
 }
 
 /**
+ * PURE. For manual-sheet CAPIDs, says whether the wing's OWN Member.txt already
+ * covers them — i.e. whether getMembers() would include them without the sheet.
+ * Same eligibility test as shouldProcessMember(): ACTIVE, eligible type, not in an
+ * excluded holding unit. A 'covered' row is redundant and safe to delete.
+ *
+ * @param {string[]} capids
+ * @param {Array<Array>} wingMemberRows - this wing's Member.txt data rows
+ * @param {{types:string[], excludedOrgIds?:string[]}} opts
+ * @returns {Object} capid -> 'covered by wing roster' | 'not in wing file' |
+ *   'status X' | 'type X not eligible' | 'in excluded org X'
+ */
+function wingCoverageForManual_(capids, wingMemberRows, opts) {
+  const types = (opts && opts.types) || [];
+  const excluded = ((opts && opts.excludedOrgIds) || []).map(String);
+  const byCapid = {};
+  (wingMemberRows || []).forEach(r => { byCapid[String((r || [])[0] || '').trim()] = r; });
+
+  const out = {};
+  capids.forEach(capid => {
+    const row = byCapid[capid];
+    if (!row) { out[capid] = 'not in wing file'; return; }
+    if (row[24] !== 'ACTIVE') { out[capid] = 'status ' + row[24]; return; }
+    if (types.indexOf(row[21]) === -1) { out[capid] = 'type ' + row[21] + ' not eligible'; return; }
+    const org = String(row[11] || '').trim();
+    if (excluded.indexOf(org) > -1) { out[capid] = 'in excluded org ' + org; return; }
+    out[capid] = 'covered by wing roster';
+  });
+  return out;
+}
+
+/**
  * READ-ONLY. Logs who would be derived and how they compare with what is already
  * on the Manual Members sheet / the wing's own roster. Run by hand.
  *
  * @returns {{derived:Object, alreadyManual:string[], newToRoster:string[],
- *            manualNotDerived:string[], manualNotDerivedWhy:Object, inWingRoster:string[]}}
+ *            manualNotDerived:string[], manualNotDerivedWhy:Object, manualWingCoverage:Object,
+ *            inWingRoster:string[]}}
  */
 function previewRegionStaffMembers() {
   const folderId = String(CONFIG.REGION_CAPWATCH_DATA_FOLDER_ID || '').trim();
@@ -152,8 +186,9 @@ function previewRegionStaffMembers() {
   const derived = deriveRegionStaffMembers_(regionMembers, regionDuties, squadrons, ruleOpts);
 
   const manual = loadManualMembers(squadrons);
+  const wingMemberRows = parseFile('Member');
   const wingRoster = {};
-  parseFile('Member').forEach(r => { wingRoster[String(r[0])] = true; });
+  wingMemberRows.forEach(r => { wingRoster[String(r[0])] = true; });
 
   const derivedIds = Object.keys(derived);
   const out = {
@@ -167,6 +202,8 @@ function previewRegionStaffMembers() {
   };
   out.manualNotDerivedWhy = explainRegionStaffExclusions_(
     out.manualNotDerived, regionMembers, regionDuties, squadrons, ruleOpts);
+  // Every manual row, not only the underived ones: a 'covered' row is redundant.
+  out.manualWingCoverage = wingCoverageForManual_(Object.keys(manual), wingMemberRows, ruleOpts);
 
   // CAPIDs only: member names stay out of the logs.
   Logger.info('Region staff preview', {
@@ -174,7 +211,8 @@ function previewRegionStaffMembers() {
     alreadyManual: out.alreadyManual.length,
     newToRoster: out.newToRoster,
     manualNotDerived: out.manualNotDerivedWhy,
-    inWingRoster: out.inWingRoster
+    inWingRoster: out.inWingRoster,
+    manualWingCoverage: out.manualWingCoverage
   });
   return out;
 }
