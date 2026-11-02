@@ -17,7 +17,7 @@ This module handles the core automation for synchronizing CAPWATCH member data w
 
 ## Overview
 
-This module consists of seven main components:
+This module consists of eight main components:
 
 1. **UpdateMembers.gs** - User account lifecycle management
 2. **UpdateGroups.gs** - Email group membership synchronization
@@ -26,6 +26,7 @@ This module consists of seven main components:
 5. **WelcomeEmailResend.gs** - Welcome email for an account created outside provisioning
 6. **WelcomeEmailAudit.gs** - Detecting accounts that never received one
 7. **TwoSvSetupGroup.gs** - Expiring the 2SV setup group exemption nightly
+8. **RegionStaffMembers.gs** - Region-HQ staff with wing duties: preview, and optional auto-provisioning (region tenants only)
 
 Together, these scripts ensure that your Google Workspace environment stays synchronized with CAPWATCH membership data automatically.
 
@@ -484,6 +485,35 @@ grace clock runs from there. Consequences worth knowing, both deliberate:
   number of people's exemption with it.
 - A removal that **fails** keeps its ledger entry, so tomorrow judges it on the original date
   rather than restarting the clock the failure caused.
+
+### 8. RegionStaffMembers.gs - Region-HQ Staff with Wing Duties
+
+**Purpose**: Region-HQ members (primary unit PCR-PCR-001) who also hold a duty position in one
+of this wing's units are invisible to the normal roster — `getMembers()` builds from the wing's
+own `Member.txt`, scoped to members whose primary unit is in the wing, so a region-HQ member
+needs a Manual Members row today however many wing duties they hold. This module finds them from
+the region-wide CAPWATCH extract (`TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`) and, optionally,
+provisions them automatically.
+
+**Key Functions**:
+- `previewRegionStaffMembers()` — **read-only.** Lists qualifying region-HQ members and compares
+  them with the Manual Members sheet and the wing's own roster, flagging manual rows the rule
+  already covers and explaining why any that don't qualify were excluded. Works whether or not
+  provisioning is on. **Run this before enabling the flag.**
+- `mergeDerivedRegionStaff_()` — **provisioning**, called by `getMembers()` when enabled.
+
+**Configuration**: `TENANT_DERIVE_REGION_STAFF` Script Property (`CONFIG.DERIVE_REGION_STAFF`).
+**Blank/anything but `'true'` disables it, and that's the default.** Needs
+`TENANT_REGION_CAPWATCH_DATA_FOLDER_ID`. When on:
+- Derived members are placed in the region HQ org (`/PCR-001` OU), not the duty unit's.
+- A Manual Members row or the wing's own roster entry always **wins** over a derived one, so
+  turning this on changes nothing for anyone already covered.
+- Unlike manual rows, derived members are **not exempt from the lifecycle** — they count as
+  active only while the rule holds, so the account is suspended on the normal grace clock once
+  the wing duty ends. `suspendExpiredMembers()` skips its run rather than suspend them if the
+  region extract is unreadable. The Level I gate still applies, judged on the region extract.
+
+See [`docs/ADMIN_GUIDE.md`](../../docs/ADMIN_GUIDE.md) for the full Script Properties reference.
 
 ## How It Works
 
